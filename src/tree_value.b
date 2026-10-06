@@ -43,17 +43,13 @@ class TreeFields {
     }
 }
 
-class TreeValue {
-    kind: string
-    bool_data: bool
-    int_data: int
-    uint_data: u64
-    int_bits: int
-    int_unsigned: bool
-    float_data: float
-    decimal_data: decimal
-    bytes_data: Option<Bytes>
-    text: string
+// The mutable collection storage of one non-scalar value. Scalars omit it;
+// compound values construct it before publication, never on a first read.
+// Lists and maps are move-only host owners, so return this class reference
+// rather than returning or moving a collection out of an optional field.
+class TreeValueData {
+    // Keep the previous TreeValue field order: reverse destruction releases
+    // map key aliases, map entries, object fields, and sequence items in turn.
     items: List<TreeValue>
     fields: TreeFields
     // A tree map keeps one entry as one value so the two halves die as a unit,
@@ -69,6 +65,29 @@ class TreeValue {
     // keys, which is the split #97 was.
     map_values: Map<string, TreeValue>
     map_keys: List<TreeValue>
+
+    fn init() {
+        self.items = []
+        self.fields = new TreeFields()
+        self.map_values = {}
+        self.map_keys = []
+    }
+}
+
+class TreeValue {
+    kind: string
+    bool_data: bool
+    int_data: int
+    uint_data: u64
+    int_bits: int
+    int_unsigned: bool
+    float_data: float
+    decimal_data: decimal
+    bytes_data: Option<Bytes>
+    text: string
+    // Keep the payload before the remaining owning fields, just where its
+    // contents lived before grouping them. Those later fields still drop first.
+    payload: Option<TreeValueData>
     map_version: int
     // A list carries the same structural change count a map does, plus the
     // name of the operation that last moved it, so an invalidated loop can
@@ -105,7 +124,7 @@ class TreeValue {
     // needs this small side channel for operations such as type_of(T).
     generic_types: Map<string, HirType>
 
-    fn init(kind: string) {
+    fn init(kind: string, with_payloads: bool = true) {
         self.kind = kind
         self.bool_data = false
         self.int_data = 0
@@ -116,10 +135,7 @@ class TreeValue {
         self.decimal_data = 0.0
         self.bytes_data = none
         self.text = ""
-        self.items = []
-        self.fields = new TreeFields()
-        self.map_values = {}
-        self.map_keys = []
+        self.payload = none
         self.map_version = 0
         self.list_version = 0
         self.list_change = ""
@@ -144,10 +160,30 @@ class TreeValue {
         self.brew_work = none
         self.group_work = none
         self.generic_types = {}
+        if with_payloads {
+            self.payload = some(new TreeValueData())
+        }
+    }
+
+    fn data() -> TreeValueData {
+        match self.payload {
+            some(data) => { return data }
+            none => { panic("interpreter scalar has no collection storage") }
+        }
+    }
+
+    // An absent field stays an ordinary failed lookup even if a previous
+    // expression failure produced a unit. Preserve the interpreter's own
+    // field diagnostic instead of exposing a payload invariant panic.
+    fn field_value(name: string) -> Option<TreeValue> {
+        match self.payload {
+            some(data) => { return data.fields.value(name) }
+            none => { return none }
+        }
     }
 
     static fn unit() -> TreeValue {
-        return new TreeValue("unit")
+        return new TreeValue("unit", false)
     }
 
     // A field slot reserved by construction and not written yet. It is not
@@ -155,17 +191,17 @@ class TreeValue {
     // as uninitialized. It exists only to fix where the field sits in the
     // object's storage, and therefore where it lands in the release order.
     static fn unset() -> TreeValue {
-        return new TreeValue("unset")
+        return new TreeValue("unset", false)
     }
 
     static fn boolean(value: bool) -> TreeValue {
-        let result: TreeValue = new TreeValue("bool")
+        let result: TreeValue = new TreeValue("bool", false)
         result.bool_data = value
         return result
     }
 
     static fn integer(value: int) -> TreeValue {
-        let result: TreeValue = new TreeValue("int")
+        let result: TreeValue = new TreeValue("int", false)
         result.int_data = value
         result.uint_data = value as u64
         return result
@@ -173,7 +209,7 @@ class TreeValue {
 
     static fn unsigned_integer(
         value: u64, bits: int) -> TreeValue {
-        let result: TreeValue = new TreeValue("int")
+        let result: TreeValue = new TreeValue("int", false)
         result.uint_data =
             tree_mask_unsigned(value, bits)
         result.int_data =
@@ -192,7 +228,7 @@ class TreeValue {
 
     static fn signed_integer_bits(
         value: u64, bits: int) -> TreeValue {
-        let result: TreeValue = new TreeValue("int")
+        let result: TreeValue = new TreeValue("int", false)
         result.uint_data =
             tree_mask_unsigned(value, bits)
         result.int_data =
@@ -203,20 +239,20 @@ class TreeValue {
     }
 
     static fn floating(value: float) -> TreeValue {
-        let result: TreeValue = new TreeValue("float")
+        let result: TreeValue = new TreeValue("float", false)
         result.float_data = value
         return result
     }
 
     static fn decimal_value(value: decimal) -> TreeValue {
         let result: TreeValue =
-            new TreeValue("decimal")
+            new TreeValue("decimal", false)
         result.decimal_data = value
         return result
     }
 
     static fn string(value: string) -> TreeValue {
-        let result: TreeValue = new TreeValue("string")
+        let result: TreeValue = new TreeValue("string", false)
         result.text = value
         return result
     }
@@ -231,7 +267,7 @@ class TreeValue {
                        values: List<TreeValue>) -> TreeValue {
         let result: TreeValue = new TreeValue(kind)
         for value: TreeValue in values {
-            result.items.push(value)
+            result.data().items.push(value)
         }
         return result
     }
@@ -241,7 +277,7 @@ class TreeValue {
     }
 
     static fn option_none() -> TreeValue {
-        return new TreeValue("none")
+        return new TreeValue("none", false)
     }
 
     static fn result_ok(value: TreeValue) -> TreeValue {
@@ -257,9 +293,9 @@ class TreeValue {
         let result: TreeValue =
             new TreeValue("error")
         result.text = "Error"
-        result.fields.entries["msg"] =
+        result.data().fields.entries["msg"] =
             TreeValue.string(message)
-        result.fields.entries["kind"] =
+        result.data().fields.entries["kind"] =
             TreeValue.string(kind)
         return result
     }
@@ -357,17 +393,17 @@ class TreeObjectValue extends TreeValue {
 fn tree_map_entry(key: TreeValue,
                   value: TreeValue) -> TreeValue {
     let entry: TreeValue = new TreeValue("map_entry")
-    entry.items.push(key)
-    entry.items.push(value)
+    entry.data().items.push(key)
+    entry.data().items.push(value)
     return entry
 }
 
 fn tree_map_entry_key(entry: TreeValue) -> TreeValue {
-    return entry.items[0]
+    return entry.data().items[0]
 }
 
 fn tree_map_entry_value(entry: TreeValue) -> TreeValue {
-    return entry.items[1]
+    return entry.data().items[1]
 }
 
 fn tree_value_text(value: TreeValue) -> string {
@@ -392,27 +428,27 @@ fn tree_value_text(value: TreeValue) -> string {
         return value.text
     }
     if value.kind == "none" { return "none" }
-    if value.kind == "some" && value.items.len() == 1 {
-        return "some({tree_value_text(value.items[0])})"
+    if value.kind == "some" && value.data().items.len() == 1 {
+        return "some({tree_value_text(value.data().items[0])})"
     }
-    if value.kind == "ok" && value.items.len() == 1 {
-        return "ok({tree_value_text(value.items[0])})"
+    if value.kind == "ok" && value.data().items.len() == 1 {
+        return "ok({tree_value_text(value.data().items[0])})"
     }
-    if value.kind == "err" && value.items.len() == 1 {
-        return "err({tree_value_text(value.items[0])})"
+    if value.kind == "err" && value.data().items.len() == 1 {
+        return "err({tree_value_text(value.data().items[0])})"
     }
     if value.kind == "list" || value.kind == "array" {
         var pieces: List<string> = []
-        for item: TreeValue in value.items {
+        for item: TreeValue in value.data().items {
             pieces.push(tree_value_text(item))
         }
         return "[{pieces.join(", ")}]"
     }
     if value.kind == "map" {
         var pieces: List<string> = []
-        for key: TreeValue in value.map_keys {
+        for key: TreeValue in value.data().map_keys {
             let encoded: string = tree_value_key(key)
-            match value.map_values.get(encoded) {
+            match value.data().map_values.get(encoded) {
                 some(entry) => {
                     pieces.push(
                         "{tree_value_text(key)}: {tree_value_text(tree_map_entry_value(entry))}")
@@ -423,11 +459,11 @@ fn tree_value_text(value: TreeValue) -> string {
         return "\{{pieces.join(", ")}\}"
     }
     if value.kind == "variant" {
-        if value.items.len() == 0 {
+        if value.data().items.len() == 0 {
             return value.text
         }
         var payload: List<string> = []
-        for item: TreeValue in value.items {
+        for item: TreeValue in value.data().items {
             payload.push(tree_value_text(item))
         }
         return "{value.text}({payload.join(", ")})"
@@ -478,12 +514,12 @@ fn tree_value_key(value: TreeValue) -> string {
     }
     if value.kind == "record" {
         var names: List<string> =
-            value.fields.entries.keys()
+            value.data().fields.entries.keys()
         names.sort()
         var result: string =
             "r:{value.text.len()}:{value.text}"
         for name: string in names {
-            match value.fields.value(name) {
+            match value.field_value(name) {
                 some(stored) => {
                     let field_key: string =
                         tree_value_key(stored)
@@ -516,7 +552,7 @@ fn tree_value_key(value: TreeValue) -> string {
        value.kind == "range" {
         var result: string =
             "v:{value.kind.len()}:{value.kind}:{value.text.len()}:{value.text}"
-        for item: TreeValue in value.items {
+        for item: TreeValue in value.data().items {
             let item_key: string =
                 tree_value_key(item)
             result =
@@ -614,17 +650,17 @@ fn tree_value_total_equal(left: TreeValue,
     }
     if left.kind == "record" {
         if left.text != right.text ||
-           left.fields.entries.len() !=
-               right.fields.entries.len() {
+           left.data().fields.entries.len() !=
+               right.data().fields.entries.len() {
             return false
         }
         // A reserved slot on one side and a written one on the other are as
         // different as two written values that disagree; two reserved slots
         // are the same absence.
-        for name: string in left.fields.entries.keys() {
-            match left.fields.value(name) {
+        for name: string in left.data().fields.entries.keys() {
+            match left.field_value(name) {
                 some(mine) => {
-                    match right.fields.value(name) {
+                    match right.field_value(name) {
                         some(value) => {
                             if !tree_value_total_equal(
                                    mine, value) {
@@ -635,7 +671,7 @@ fn tree_value_total_equal(left: TreeValue,
                     }
                 }
                 none => {
-                    if right.fields.value(name).is_some() {
+                    if right.field_value(name).is_some() {
                         return false
                     }
                 }
@@ -654,13 +690,13 @@ fn tree_value_total_equal(left: TreeValue,
         // and-ed), so its lanes take the operator's equality, not the
         // interface's. Anything else would be a backend split.
         if left.text != right.text { return false }
-        if left.items.len() != right.items.len() {
+        if left.data().items.len() != right.data().items.len() {
             return false
         }
-        for index: int in 0..left.items.len() {
+        for index: int in 0..left.data().items.len() {
             if !tree_value_equal(
-                   left.items[index],
-                   right.items[index]) {
+                   left.data().items[index],
+                   right.data().items[index]) {
                 return false
             }
         }
@@ -673,13 +709,13 @@ fn tree_value_total_equal(left: TreeValue,
        left.kind == "list" ||
        left.kind == "array" ||
        left.kind == "range" {
-        if left.items.len() != right.items.len() {
+        if left.data().items.len() != right.data().items.len() {
             return false
         }
-        for index: int in 0..left.items.len() {
+        for index: int in 0..left.data().items.len() {
             if !tree_value_total_equal(
-                   left.items[index],
-                   right.items[index]) {
+                   left.data().items[index],
+                   right.data().items[index]) {
                 return false
             }
         }
@@ -819,9 +855,9 @@ fn tree_value_copy(value: TreeValue) -> TreeValue {
             }
             none => {}
         }
-        for name: string in value.fields.entries.keys() {
-            result.fields.entries[name] =
-                tree_value_copy(value.fields.entries[name])
+        for name: string in value.data().fields.entries.keys() {
+            result.data().fields.entries[name] =
+                tree_value_copy(value.data().fields.entries[name])
         }
         return result
     }
@@ -832,7 +868,7 @@ fn tree_value_copy(value: TreeValue) -> TreeValue {
        value.kind == "ok" ||
        value.kind == "err" {
         var items: List<TreeValue> = []
-        for item: TreeValue in value.items {
+        for item: TreeValue in value.data().items {
             items.push(tree_value_copy(item))
         }
         let result: TreeValue =

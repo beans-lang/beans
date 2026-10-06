@@ -88,16 +88,16 @@ fn dap_value_summary(value: TreeValue) -> string {
         return "\"{value.text}\""
     }
     if value.kind == "list" {
-        return "[{value.items.len()} item(s)]"
+        return "[{value.data().items.len()} item(s)]"
     }
     if value.kind == "map" {
-        return "\{{value.map_keys.len()} entry(s)\}"
+        return "\{{value.data().map_keys.len()} entry(s)\}"
     }
     if value.kind == "object" {
         return "{display_symbol(value.text)} \{...\}"
     }
     if value.kind == "enum" {
-        if value.items.len() == 0 {
+        if value.data().items.len() == 0 {
             return display_symbol(value.text)
         }
         return "{display_symbol(value.text)}(...)"
@@ -122,18 +122,18 @@ fn dap_value_type(value: TreeValue) -> string {
 
 // True when a value has parts worth expanding.
 fn dap_value_expandable(value: TreeValue) -> bool {
-    if value.kind == "list" { return value.items.len() != 0 }
-    if value.kind == "map" { return value.map_keys.len() != 0 }
+    if value.kind == "list" { return value.data().items.len() != 0 }
+    if value.kind == "map" { return value.data().map_keys.len() != 0 }
     if value.kind == "object" { return true }
-    if value.kind == "enum" { return value.items.len() != 0 }
+    if value.kind == "enum" { return value.data().items.len() != 0 }
     return false
 }
 
 fn dap_child_count(value: TreeValue) -> int {
-    if value.kind == "list" { return value.items.len() }
-    if value.kind == "map" { return value.map_keys.len() }
-    if value.kind == "object" { return value.fields.written() }
-    if value.kind == "enum" { return value.items.len() }
+    if value.kind == "list" { return value.data().items.len() }
+    if value.kind == "map" { return value.data().map_keys.len() }
+    if value.kind == "object" { return value.data().fields.written() }
+    if value.kind == "enum" { return value.data().items.len() }
     return 0
 }
 
@@ -578,15 +578,15 @@ class DebugSession {
         if value.kind == "list" || value.kind == "enum" {
             for index: int in from..limit {
                 found.push(
-                    self.describe("{index}", value.items[index]))
+                    self.describe("{index}", value.data().items[index]))
             }
             return move found
         }
         if value.kind == "map" {
             for index: int in from..limit {
-                let key: TreeValue = value.map_keys[index]
+                let key: TreeValue = value.data().map_keys[index]
                 let shown: string = tree_value_text(key)
-                match value.map_values.get(
+                match value.data().map_values.get(
                           tree_value_key(key)) {
                     some(entry) => {
                         found.push(
@@ -606,15 +606,15 @@ class DebugSession {
             // does not list it — the same field is invisible to a read.
             var names: List<string> = []
             for candidate: string in
-                value.fields.entries.keys() {
-                if value.fields.value(candidate).is_some() {
+                value.data().fields.entries.keys() {
+                if value.field_value(candidate).is_some() {
                     names.push(candidate)
                 }
             }
             names.sort()
             for index: int in from..limit {
                 let name: string = names[index]
-                match value.fields.value(name) {
+                match value.field_value(name) {
                     some(stored) => {
                         found.push(
                             self.describe(name, stored))
@@ -684,7 +684,7 @@ class DebugSession {
                 let field: string = tokens[at].text
                 at += 1
                 if value.kind != "object" { return none }
-                match value.fields.value(field) {
+                match value.field_value(field) {
                     some(next) => {
                         value = self.resolve_value(next)
                     }
@@ -706,10 +706,10 @@ class DebugSession {
                 }
                 at += 1
                 if value.kind != "list" { return none }
-                if index < 0 || index >= value.items.len() {
+                if index < 0 || index >= value.data().items.len() {
                     return none
                 }
-                value = self.resolve_value(value.items[index])
+                value = self.resolve_value(value.data().items[index])
                 continue
             }
             return none

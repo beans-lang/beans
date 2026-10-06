@@ -1,0 +1,14 @@
+defer cast
+drop guard
+caught panic: runtime panic at 17:43: original reflect failure
+defer union
+drop guard
+caught panic: runtime panic at 18:38: original array failure
+defer literal
+drop guard
+caught panic: runtime panic at 18:38: original array failure
+defer slice
+drop guard
+caught panic: runtime panic at 18:38: original array failure
+preserved 21
+caught panic: runtime panic at 66:11: divide by zero

@@ -1,0 +1,24 @@
+lower evaluated
+upper evaluated
+once 9
+fixed 9
+empty 0
+i8 low -128
+i8 low -127
+i8 low -126
+i8 high 126
+i8 high 127
+u8 high 254
+u8 high 255
+int high 9223372036854775806
+int high 9223372036854775807
+u64 high 18446744073709551614
+u64 high 18446744073709551615
+captured 4
+captured 5
+captured 6
+drop loop 0
+drop loop 1
+drop return 0
+return defer
+returned 40

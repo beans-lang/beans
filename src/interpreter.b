@@ -260,6 +260,14 @@ class TreeInterpreter {
     // once per object it renders, and a scan of every function per object
     // made printing a list of them cost the whole program per element.
     string_form_by_owner: Map<string, HirFunction>
+    // Literal source text is immutable once checking has finished. Cache only
+    // its decoded scalar payload, then construct a fresh value at each use.
+    // HIR is shared by spawned interpreters, so these caches belong here, not
+    // in mutable fields on the shared nodes. Interpolations still run each time.
+    literal_strings: Map<string, string>
+    literal_integers: Map<string, u64>
+    literal_floats: Map<string, float>
+    literal_decimals: Map<string, decimal>
 
     fn init(program: HirProgram,
             move arguments: List<string>) {
@@ -270,6 +278,10 @@ class TreeInterpreter {
         self.declaration_by_qualified = {}
         self.declaration_by_name = {}
         self.string_form_by_owner = {}
+        self.literal_strings = {}
+        self.literal_integers = {}
+        self.literal_floats = {}
+        self.literal_decimals = {}
         self.arguments = move arguments
         self.failed = false
         self.panic_text = ""
@@ -612,9 +624,9 @@ class TreeInterpreter {
     // it prints 0:0 — this must render the identical line.
     fn check_sort_shape(receiver: TreeValue, pinned: int) {
         if self.failed { return }
-        if receiver.items.len() == pinned { return }
+        if receiver.data().items.len() == pinned { return }
         self.fail_with_text(
-            "runtime panic at 0:0: list changed during sort (length {pinned} -> {receiver.items.len()})")
+            "runtime panic at 0:0: list changed during sort (length {pinned} -> {receiver.data().items.len()})")
     }
 
     // The full panic line, position already rendered. Everything user-facing
@@ -1260,8 +1272,8 @@ class TreeInterpreter {
         match answer {
             some(value) => {
                 if value.kind == "ok" &&
-                   value.items.len() == 1 {
-                    return some(value.items[0])
+                   value.data().items.len() == 1 {
+                    return some(value.data().items[0])
                 }
                 return none
             }
@@ -1433,7 +1445,7 @@ class TreeInterpreter {
                           value, "elements")) {
                 some(items) => {
                     var decoded: List<TreeValue> = []
-                    for item: TreeValue in items.items {
+                    for item: TreeValue in items.data().items {
                         match self.tree_json_typed_value(
                                   item, type.args[0],
                                   depth + 1, max_depth) {
@@ -1501,9 +1513,9 @@ class TreeInterpreter {
                   self.tree_json_value_call(
                       value, "entries")) {
             some(entries) => {
-                for entry: TreeValue in entries.items {
+                for entry: TreeValue in entries.data().items {
                     var key: string = ""
-                    match entry.fields.value("key") {
+                    match entry.field_value("key") {
                         some(text) => { key = text.text }
                         none => { return none }
                     }
@@ -1512,7 +1524,7 @@ class TreeInterpreter {
                             if decoded.contains_key(index) {
                                 return none
                             }
-                            match entry.fields.value(
+                            match entry.field_value(
                                       "value") {
                                 some(child) => {
                                     match self.tree_json_typed_field(
@@ -1535,7 +1547,7 @@ class TreeInterpreter {
                             if !unknown_ok { return none }
                             // a skipped subtree is still measured: the depth
                             // limit is a whole-document policy (issue #142)
-                            match entry.fields.value(
+                            match entry.field_value(
                                       "value") {
                                 some(child) => {
                                     if !self.tree_json_within_depth(
@@ -1560,7 +1572,7 @@ class TreeInterpreter {
                 declaration.fields[index]
             match decoded.get(index) {
                 some(stored) => {
-                    record.fields.entries[field.name] =
+                    record.data().fields.entries[field.name] =
                         stored
                     continue
                 }
@@ -1569,7 +1581,7 @@ class TreeInterpreter {
             if self.tree_json_ignored(field) {
                 match field.default_value {
                     some(expression) => {
-                        record.fields.entries[field.name] =
+                        record.data().fields.entries[field.name] =
                             tree_value_copy(
                                 self.expression(
                                     expression, frame))
@@ -1581,7 +1593,7 @@ class TreeInterpreter {
             }
             if canonical_hir_name(field.type.name) ==
                    "Option" {
-                record.fields.entries[field.name] =
+                record.data().fields.entries[field.name] =
                     TreeValue.option_none()
                 continue
             }
@@ -1634,9 +1646,9 @@ class TreeInterpreter {
                       self.tree_json_value_call(
                           value, "elements")) {
                 some(items) => {
-                    if items.items.len() == 0 { return true }
+                    if items.data().items.len() == 0 { return true }
                     if depth + 1 > max_depth { return false }
-                    for item: TreeValue in items.items {
+                    for item: TreeValue in items.data().items {
                         if !self.tree_json_within_depth(
                                item, depth + 1, max_depth) {
                             return false
@@ -1651,10 +1663,10 @@ class TreeInterpreter {
                   self.tree_json_value_call(
                       value, "entries")) {
             some(entries) => {
-                if entries.items.len() == 0 { return true }
+                if entries.data().items.len() == 0 { return true }
                 if depth + 1 > max_depth { return false }
-                for entry: TreeValue in entries.items {
-                    match entry.fields.value("value") {
+                for entry: TreeValue in entries.data().items {
+                    match entry.field_value("value") {
                         some(child) => {
                             if !self.tree_json_within_depth(
                                    child, depth + 1,
@@ -1699,7 +1711,7 @@ class TreeInterpreter {
             }
             parser = "parse_with_options"
             parse_arguments.push(arguments[0])
-            match arguments[1].fields.value("parse") {
+            match arguments[1].field_value("parse") {
                 some(options) => {
                     parse_arguments.push(options)
                 }
@@ -1707,7 +1719,7 @@ class TreeInterpreter {
                     return self.tree_json_decode_failure()
                 }
             }
-            match arguments[1].fields.value("max_depth") {
+            match arguments[1].field_value("max_depth") {
                 some(limit) => {
                     max_depth = limit.int_data
                 }
@@ -1729,10 +1741,10 @@ class TreeInterpreter {
             }
         }
         if parsed.kind != "ok" ||
-           parsed.items.len() != 1 {
+           parsed.data().items.len() != 1 {
             return self.tree_json_decode_failure()
         }
-        let root: TreeValue = parsed.items[0]
+        let root: TreeValue = parsed.data().items[0]
         if canonical_hir_name(target.name) == "List" &&
            target.args.len() == 1 {
             if self.tree_json_node_kind(root) != "array" {
@@ -1745,13 +1757,13 @@ class TreeInterpreter {
                                   root, "elements")) {
                         some(items) => {
                             // the root array is depth 1, its records depth 2
-                            if items.items.len() != 0 &&
+                            if items.data().items.len() != 0 &&
                                2 > max_depth {
                                 return self.tree_json_decode_failure()
                             }
                             var records: List<TreeValue> = []
                             for item: TreeValue in
-                                items.items {
+                                items.data().items {
                                 match self.tree_json_typed_record(
                                           item, declaration,
                                           2, max_depth) {
@@ -1929,24 +1941,24 @@ class TreeInterpreter {
         if value.kind == "none" {
             return some("null")
         }
-        if value.kind == "some" && value.items.len() == 1 {
-            return self.tree_json_value(value.items[0], depth, indent)
+        if value.kind == "some" && value.data().items.len() == 1 {
+            return self.tree_json_value(value.data().items[0], depth, indent)
         }
         if value.kind == "list" {
             var output: string = "["
-            for index: int in 0..value.items.len() {
+            for index: int in 0..value.data().items.len() {
                 if index != 0 { output = "{output}," }
                 if indent != 0 {
                     output =
                         "{output}{self.tree_json_padding(depth + 1, indent)}"
                 }
                 match self.tree_json_value(
-                        value.items[index], depth + 1, indent) {
+                        value.data().items[index], depth + 1, indent) {
                     some(encoded) => { output = "{output}{encoded}" }
                     none => { return none }
                 }
             }
-            if indent != 0 && value.items.len() != 0 {
+            if indent != 0 && value.data().items.len() != 0 {
                 output =
                     "{output}{self.tree_json_padding(depth, indent)}"
             }
@@ -1962,7 +1974,7 @@ class TreeInterpreter {
                                field.annotations, "ignore").is_some() {
                             continue
                         }
-                        match value.fields.value(field.name) {
+                        match value.field_value(field.name) {
                             some(field_value) => {
                                 if written != 0 { output = "{output}," }
                                 if indent != 0 {
@@ -3060,7 +3072,7 @@ class TreeInterpreter {
                                 self.reflect_error_message =
                                     "reflected operation is unsupported"
                             } else if name == "field_get" {
-                                match receiver.fields.value(field_name) {
+                                match receiver.field_value(field_name) {
                                     some(value) => {
                                         let handle: int =
                                             self.next_reflect_value
@@ -3102,7 +3114,7 @@ class TreeInterpreter {
                                     match self.reflect_values.get(
                                               value_handle) {
                                         some(value) => {
-                                            receiver.fields.entries[field_name] =
+                                            receiver.data().fields.entries[field_name] =
                                                 tree_value_copy(value)
                                             return TreeValue.boolean(true)
                                         }
@@ -3293,7 +3305,7 @@ class TreeInterpreter {
                             result.object_id = self.next_object_id
                             self.next_object_id += 1
                             for index: int in 0..declaration.fields.len() {
-                                result.fields.entries[
+                                result.data().fields.entries[
                                     declaration.fields[index].name] =
                                     values[index]
                             }
@@ -4261,6 +4273,10 @@ class TreeInterpreter {
         node: HirNode, memory: TreeMemory,
         address: u64, type: HirType,
         value: TreeValue) -> bool {
+        // A failed expression carries a unit placeholder, not a value of
+        // the requested layout. Preserve its panic and never publish bytes
+        // from that placeholder while the represented stack unwinds.
+        if self.failed { return false }
         let answer: LayoutAnswer =
             self.layout(type)
         if !answer.ok ||
@@ -4330,14 +4346,14 @@ class TreeInterpreter {
                 self.layout(type.args[0])
             if !element.ok { return false }
             for index: int in 0..type.array_length {
-                if index < value.items.len() &&
+                if index < value.data().items.len() &&
                    !self.memory_write_value(
                        node, memory,
                        address +
                            ((index *
                              element.value.size) as u64),
                        type.args[0],
-                       value.items[index]) {
+                       value.data().items[index]) {
                     return false
                 }
             }
@@ -4350,14 +4366,14 @@ class TreeInterpreter {
             let element: LayoutAnswer =
                 self.layout(element_type)
             if !element.ok { return false }
-            for index: int in 0..value.items.len() {
+            for index: int in 0..value.data().items.len() {
                 if !self.memory_write_value(
                        node, memory,
                        address +
                            ((index *
                              element.value.size) as u64),
                        element_type,
-                       value.items[index]) {
+                       value.data().items[index]) {
                     return false
                 }
             }
@@ -4393,7 +4409,7 @@ class TreeInterpreter {
                 }
                 for field: HirField in
                     declaration.fields {
-                    match value.fields.value(field.name) {
+                    match value.field_value(field.name) {
                         some(field_value) => {
                             match record.offsets.get(
                                     field.name) {
@@ -4593,7 +4609,7 @@ class TreeInterpreter {
                     match record.offsets.get(
                             field.name) {
                         some(offset) => {
-                            result.fields.entries[field.name] =
+                            result.data().fields.entries[field.name] =
                                 self.memory_read_value(
                                     node, memory,
                                     address +
@@ -4723,7 +4739,7 @@ class TreeInterpreter {
             memory.data.slice(0, memory.data.len()))
         for field: HirField in
             declaration.fields {
-            value.fields.entries[field.name] =
+            value.data().fields.entries[field.name] =
                 self.memory_read_value(
                     node, memory, 0, field.type)
         }
@@ -5024,7 +5040,7 @@ class TreeInterpreter {
     // tree replaced where the native backend appended.
     fn map_key(map: TreeValue,
                key: TreeValue) -> string {
-        for stored: TreeValue in map.map_keys {
+        for stored: TreeValue in map.data().map_keys {
             if tree_value_total_equal(stored, key) {
                 return tree_value_key(stored)
             }
@@ -5042,18 +5058,18 @@ class TreeInterpreter {
                       encoded: string,
                       key: TreeValue,
                       value: TreeValue) -> bool {
-        if map.map_values.contains_key(encoded) {
-            map.map_values[encoded] =
+        if map.data().map_values.contains_key(encoded) {
+            map.data().map_values[encoded] =
                 tree_map_entry(
                     tree_value_copy(
                         tree_map_entry_key(
-                            map.map_values[encoded])),
+                            map.data().map_values[encoded])),
                     tree_value_copy(value))
             return false
         }
-        map.map_keys.push(tree_value_copy(key))
+        map.data().map_keys.push(tree_value_copy(key))
         map.map_version += 1
-        map.map_values[encoded] =
+        map.data().map_values[encoded] =
             tree_map_entry(
                 tree_value_copy(key),
                 tree_value_copy(value))
@@ -5172,27 +5188,27 @@ class TreeInterpreter {
             return self.render_object_for_string(
                 value, inout cycle_path)
         }
-        if value.kind == "some" && value.items.len() == 1 {
-            return "some({self.render_for_string(value.items[0], inout cycle_path)})"
+        if value.kind == "some" && value.data().items.len() == 1 {
+            return "some({self.render_for_string(value.data().items[0], inout cycle_path)})"
         }
-        if value.kind == "ok" && value.items.len() == 1 {
-            return "ok({self.render_for_string(value.items[0], inout cycle_path)})"
+        if value.kind == "ok" && value.data().items.len() == 1 {
+            return "ok({self.render_for_string(value.data().items[0], inout cycle_path)})"
         }
-        if value.kind == "err" && value.items.len() == 1 {
-            return "err({self.render_for_string(value.items[0], inout cycle_path)})"
+        if value.kind == "err" && value.data().items.len() == 1 {
+            return "err({self.render_for_string(value.data().items[0], inout cycle_path)})"
         }
         // The builtin Error prints as its message, the string a caller passed
         // to err(...) — matched to the native backend, which reads the same
         // field.
         if value.kind == "error" {
-            match value.fields.entries.get("msg") {
+            match value.data().fields.entries.get("msg") {
                 some(message) => { return message.text }
                 none => { return "" }
             }
         }
         if value.kind == "list" || value.kind == "array" {
             var pieces: List<string> = []
-            for item: TreeValue in value.items {
+            for item: TreeValue in value.data().items {
                 pieces.push(
                     self.render_for_string(item, inout cycle_path))
             }
@@ -5200,9 +5216,9 @@ class TreeInterpreter {
         }
         if value.kind == "map" {
             var pieces: List<string> = []
-            for key: TreeValue in value.map_keys {
+            for key: TreeValue in value.data().map_keys {
                 let encoded: string = tree_value_key(key)
-                match value.map_values.get(encoded) {
+                match value.data().map_values.get(encoded) {
                     some(entry) => {
                         pieces.push(
                             "{self.render_for_string(key, inout cycle_path)}: {self.render_for_string(tree_map_entry_value(entry), inout cycle_path)}")
@@ -5213,11 +5229,11 @@ class TreeInterpreter {
             return "\{{pieces.join(", ")}\}"
         }
         if value.kind == "variant" {
-            if value.items.len() == 0 {
+            if value.data().items.len() == 0 {
                 return value.text
             }
             var payload: List<string> = []
-            for item: TreeValue in value.items {
+            for item: TreeValue in value.data().items {
                 payload.push(
                     self.render_for_string(item, inout cycle_path))
             }
@@ -5275,7 +5291,7 @@ class TreeInterpreter {
                         pieces.push("{field.name}: <weak>")
                         continue
                     }
-                    match value.fields.value(field.name) {
+                    match value.field_value(field.name) {
                         some(item) => {
                             pieces.push(
                                 "{field.name}: {self.render_for_string(item, inout cycle_path)}")
@@ -5437,49 +5453,73 @@ class TreeInterpreter {
                 return TreeValue.string(
                     self.interpolation(node, frame))
             }
-            return TreeValue.string(
-                string_literal_decode(node.value))
+            match self.literal_strings.get(node.value) {
+                some(decoded) => { return TreeValue.string(decoded) }
+                none => {}
+            }
+            let decoded: string = string_literal_decode(node.value)
+            self.literal_strings[node.value] = decoded
+            return TreeValue.string(decoded)
         }
         if name == "bool" {
             return TreeValue.boolean(
                 node.value == "true")
         }
         if hir_is_integer(node.type) {
+            var decoded: u64 = 0
+            match self.literal_integers.get(node.value) {
+                some(cached) => { decoded = cached }
+                none => {
+                    decoded = tree_parse_unsigned(node.value)
+                    self.literal_integers[node.value] = decoded
+                }
+            }
             if tree_integer_unsigned(name) {
                 return TreeValue.unsigned_integer(
-                    tree_parse_unsigned(node.value),
+                    decoded,
                     tree_integer_bits(name))
             }
             return TreeValue.signed_integer_bits(
-                tree_parse_unsigned(node.value),
+                decoded,
                 tree_integer_bits(name))
         }
         // A hex or binary literal is the integer it spells, in a float or a
         // decimal as much as in an int. strtod reads "0xFF" as a C hex float
         // and stops dead at "0b101", and the decimal parser takes neither, so
         // the digits are rewritten before either parser sees them.
-        let based: string =
-            base_literal_decimal_text(node.value)
         if hir_is_float(node.type) {
+            match self.literal_floats.get(node.value) {
+                some(decoded) => {
+                    return self.floating_value(node.type, decoded)
+                }
+                none => {}
+            }
+            let based: string = base_literal_decimal_text(node.value)
             let clean: string =
                 if based != "" {
                     based
                 } else {
                     node.value.replace("_", "")
                 }
-            return self.floating_value(
-                node.type,
-                clean.to_float().or(0.0))
+            let decoded: float = clean.to_float().or(0.0)
+            self.literal_floats[node.value] = decoded
+            return self.floating_value(node.type, decoded)
         }
         if name == "decimal" {
+            match self.literal_decimals.get(node.value) {
+                some(decoded) => { return TreeValue.decimal_value(decoded) }
+                none => {}
+            }
+            let based: string = base_literal_decimal_text(node.value)
             let clean: string =
                 if based != "" {
                     based
                 } else {
                     node.value.replace("_", "")
                 }
-            return TreeValue.decimal_value(
-                clean.to_decimal().or(0.0))
+            let decoded: decimal = clean.to_decimal().or(0.0)
+            self.literal_decimals[node.value] = decoded
+            return TreeValue.decimal_value(decoded)
         }
         return self.fail(
             node,
@@ -5503,7 +5543,7 @@ class TreeInterpreter {
                 package_symbol("std.reflect", "Type")
             result.object_id = self.next_object_id
             self.next_object_id += 1
-            result.fields.entries["qualified"] =
+            result.data().fields.entries["qualified"] =
                 TreeValue.string(
                     render_hir_type(queried))
             return result
@@ -5558,6 +5598,7 @@ class TreeInterpreter {
     }
 
     fn integer_binary(node: HirNode,
+                      operation: string,
                       left: TreeValue,
                       right: TreeValue) -> TreeValue {
         if left.int_unsigned ||
@@ -5570,19 +5611,19 @@ class TreeInterpreter {
                 }
             let lhs: u64 = left.uint_data
             let rhs: u64 = right.uint_data
-            if node.value == "+" {
+            if operation == "+" {
                 return TreeValue.unsigned_integer(
                     lhs + rhs, bits)
             }
-            if node.value == "-" {
+            if operation == "-" {
                 return TreeValue.unsigned_integer(
                     lhs - rhs, bits)
             }
-            if node.value == "*" {
+            if operation == "*" {
                 return TreeValue.unsigned_integer(
                     lhs * rhs, bits)
             }
-            if node.value == "/" {
+            if operation == "/" {
                 if rhs == 0 {
                     return self.fail(
                         node, "divide by zero")
@@ -5590,7 +5631,7 @@ class TreeInterpreter {
                 return TreeValue.unsigned_integer(
                     lhs / rhs, bits)
             }
-            if node.value == "%" {
+            if operation == "%" {
                 if rhs == 0 {
                     return self.fail(
                         node, "modulo by zero")
@@ -5598,136 +5639,136 @@ class TreeInterpreter {
                 return TreeValue.unsigned_integer(
                     lhs % rhs, bits)
             }
-            if node.value == "&" {
+            if operation == "&" {
                 return TreeValue.unsigned_integer(
                     lhs & rhs, bits)
             }
-            if node.value == "|" {
+            if operation == "|" {
                 return TreeValue.unsigned_integer(
                     lhs | rhs, bits)
             }
-            if node.value == "^" {
+            if operation == "^" {
                 return TreeValue.unsigned_integer(
                     lhs ^ rhs, bits)
             }
-            if node.value == "<<" {
+            if operation == "<<" {
                 // the count is masked by the operand width, not by 64
                 return TreeValue.unsigned_integer(
                     lhs << (rhs & ((bits - 1) as u64)), bits)
             }
-            if node.value == ">>" {
+            if operation == ">>" {
                 return TreeValue.unsigned_integer(
                     lhs >> (rhs & ((bits - 1) as u64)), bits)
             }
-            if node.value == "<" {
+            if operation == "<" {
                 return TreeValue.boolean(lhs < rhs)
             }
-            if node.value == "<=" {
+            if operation == "<=" {
                 return TreeValue.boolean(lhs <= rhs)
             }
-            if node.value == ">" {
+            if operation == ">" {
                 return TreeValue.boolean(lhs > rhs)
             }
-            if node.value == ">=" {
+            if operation == ">=" {
                 return TreeValue.boolean(lhs >= rhs)
             }
-            if node.value == ".." ||
-               node.value == "..=" {
+            if operation == ".." ||
+               operation == "..=" {
                 let result: TreeValue =
                     TreeValue.sequence(
                         "range",
                         [tree_value_copy(left),
                          tree_value_copy(right)])
                 result.bool_data =
-                    node.value == "..="
+                    operation == "..="
                 return result
             }
             return self.fail(
                 node,
-                "integer operator '{node.value}' is not in the Beans interpreter yet")
+                "integer operator '{operation}' is not in the Beans interpreter yet")
         }
         let lhs: int = left.int_data
         let rhs: int = right.int_data
         let bits: int = left.int_bits
-        if node.value == "+" {
+        if operation == "+" {
             return TreeValue.signed_integer(
                 lhs + rhs, bits)
         }
-        if node.value == "-" {
+        if operation == "-" {
             return TreeValue.signed_integer(
                 lhs - rhs, bits)
         }
-        if node.value == "*" {
+        if operation == "*" {
             return TreeValue.signed_integer(
                 lhs * rhs, bits)
         }
-        if node.value == "/" {
+        if operation == "/" {
             if rhs == 0 {
                 return self.fail(node, "divide by zero")
             }
             return TreeValue.signed_integer(
                 lhs / rhs, bits)
         }
-        if node.value == "%" {
+        if operation == "%" {
             if rhs == 0 {
                 return self.fail(node, "modulo by zero")
             }
             return TreeValue.signed_integer(
                 lhs % rhs, bits)
         }
-        if node.value == "&" {
+        if operation == "&" {
             return TreeValue.signed_integer(
                 lhs & rhs, bits)
         }
-        if node.value == "|" {
+        if operation == "|" {
             return TreeValue.signed_integer(
                 lhs | rhs, bits)
         }
-        if node.value == "^" {
+        if operation == "^" {
             return TreeValue.signed_integer(
                 lhs ^ rhs, bits)
         }
-        if node.value == "<<" {
+        if operation == "<<" {
             // the count is masked by the operand width, not by 64
             return TreeValue.signed_integer(
                 lhs << (rhs & (bits - 1)), bits)
         }
-        if node.value == ">>" {
+        if operation == ">>" {
             return TreeValue.signed_integer(
                 lhs >> (rhs & (bits - 1)), bits)
         }
-        if node.value == "==" {
+        if operation == "==" {
             return TreeValue.boolean(lhs == rhs)
         }
-        if node.value == "!=" {
+        if operation == "!=" {
             return TreeValue.boolean(lhs != rhs)
         }
-        if node.value == "<" {
+        if operation == "<" {
             return TreeValue.boolean(lhs < rhs)
         }
-        if node.value == "<=" {
+        if operation == "<=" {
             return TreeValue.boolean(lhs <= rhs)
         }
-        if node.value == ">" {
+        if operation == ">" {
             return TreeValue.boolean(lhs > rhs)
         }
-        if node.value == ">=" {
+        if operation == ">=" {
             return TreeValue.boolean(lhs >= rhs)
         }
-        if node.value == ".." ||
-           node.value == "..=" {
+        if operation == ".." ||
+           operation == "..=" {
             let result: TreeValue =
                 TreeValue.sequence(
                 "range",
                 [tree_value_copy(left),
                  tree_value_copy(right)])
             result.bool_data =
-                node.value == "..="
+                operation == "..="
             return result
         }
         return self.fail(
             node,
-            "integer operator '{node.value}' is not in the Beans interpreter yet")
+            "integer operator '{operation}' is not in the Beans interpreter yet")
     }
 
     fn binary(node: HirNode,
@@ -5774,19 +5815,19 @@ class TreeInterpreter {
         }
         if left.kind == "int" && right.kind == "int" {
             return self.integer_binary(
-                node, left, right)
+                node, node.value, left, right)
         }
         if left.kind == "simd" &&
            right.kind == "simd" {
             let result: TreeValue =
                 tree_value_copy(left)
             for index: int in
-                0..left.items.len() {
-                result.items[index] =
+                0..left.data().items.len() {
+                result.data().items[index] =
                     self.simd_scalar(
                         node, node.value,
-                        left.items[index],
-                        right.items[index])
+                        left.data().items[index],
+                        right.data().items[index])
             }
             return result
         }
@@ -7342,13 +7383,8 @@ class TreeInterpreter {
                     left
                 }
             }
-            let binary: HirNode =
-                new HirNode(
-                    "binary", operation,
-                    node.type, node.file,
-                    node.line, node.col)
             return self.integer_binary(
-                binary, left, right)
+                node, operation, left, right)
         }
         if left.kind == "float" &&
            right.kind == "float" {
@@ -7473,48 +7509,48 @@ class TreeInterpreter {
         }
         if node.value == "lane_count" {
             return some(TreeValue.integer(
-                receiver.items.len()))
+                receiver.data().items.len()))
         }
         if node.value == "lane" &&
            arguments.len() == 2 {
             let lane: int = arguments[1].int_data
             if lane < 0 ||
-               lane >= receiver.items.len() {
+               lane >= receiver.data().items.len() {
                 self.fail_at(
                     node,
                     node.col,
-                    "SIMD lane out of range (lanes {receiver.items.len()})")
+                    "SIMD lane out of range (lanes {receiver.data().items.len()})")
                 return some(TreeValue.unit())
             }
             return some(tree_value_copy(
-                receiver.items[lane]))
+                receiver.data().items[lane]))
         }
         if node.value == "with_lane" &&
            arguments.len() == 3 {
             let lane: int = arguments[1].int_data
             if lane < 0 ||
-               lane >= receiver.items.len() {
+               lane >= receiver.data().items.len() {
                 self.fail_at(
                     node,
                     node.col,
-                    "SIMD lane out of range (lanes {receiver.items.len()})")
+                    "SIMD lane out of range (lanes {receiver.data().items.len()})")
                 return some(TreeValue.unit())
             }
             let result: TreeValue =
                 tree_value_copy(receiver)
-            result.items[lane] =
+            result.data().items[lane] =
                 tree_value_copy(arguments[2])
             return some(result)
         }
         if node.value == "sum" ||
            node.value == "product" {
-            if receiver.items.len() == 0 {
+            if receiver.data().items.len() == 0 {
                 return some(TreeValue.integer(0))
             }
             var result: TreeValue =
-                tree_value_copy(receiver.items[0])
+                tree_value_copy(receiver.data().items[0])
             for index: int in
-                1..receiver.items.len() {
+                1..receiver.data().items.len() {
                 result = self.simd_scalar(
                     node,
                     if node.value == "sum" {
@@ -7523,7 +7559,7 @@ class TreeInterpreter {
                         "*"
                     },
                     result,
-                    receiver.items[index])
+                    receiver.data().items[index])
             }
             return some(result)
         }
@@ -7531,7 +7567,7 @@ class TreeInterpreter {
            node.value == "all_true" {
             var answer: bool =
                 node.value == "all_true"
-            for lane: TreeValue in receiver.items {
+            for lane: TreeValue in receiver.data().items {
                 let set: bool =
                     if lane.kind == "bool" {
                         lane.bool_data
@@ -7555,10 +7591,10 @@ class TreeInterpreter {
             let result: TreeValue =
                 tree_value_copy(receiver)
             for index: int in
-                0..result.items.len() {
+                0..result.data().items.len() {
                 let lane: TreeValue =
-                    result.items[index]
-                result.items[index] =
+                    result.data().items[index]
+                result.data().items[index] =
                     if lane.int_unsigned {
                         TreeValue.unsigned_integer(
                             ~lane.uint_data,
@@ -7578,21 +7614,21 @@ class TreeInterpreter {
             let result: TreeValue =
                 tree_value_copy(yes)
             for index: int in
-                0..receiver.items.len() {
+                0..receiver.data().items.len() {
                 let mask: TreeValue =
-                    receiver.items[index]
+                    receiver.data().items[index]
                 let selected: bool =
                     if mask.kind == "bool" {
                         mask.bool_data
                     } else {
                         mask.uint_data != 0
                     }
-                result.items[index] =
+                result.data().items[index] =
                     tree_value_copy(
                         if selected {
-                            yes.items[index]
+                            yes.data().items[index]
                         } else {
-                            no.items[index]
+                            no.data().items[index]
                         })
             }
             return some(result)
@@ -7631,12 +7667,12 @@ class TreeInterpreter {
             if operation == "le" { operation = "<=" }
             if operation == "eq" { operation = "==" }
             for index: int in
-                0..receiver.items.len() {
-                result.items[index] =
+                0..receiver.data().items.len() {
+                result.data().items[index] =
                     self.simd_scalar(
                         node, operation,
-                        receiver.items[index],
-                        other.items[index])
+                        receiver.data().items[index],
+                        other.data().items[index])
             }
             return some(result)
         }
@@ -7647,10 +7683,10 @@ class TreeInterpreter {
                 tree_value_copy(receiver)
             let shift: TreeValue = arguments[1]
             let width: int =
-                if receiver.items.len() == 0 {
+                if receiver.data().items.len() == 0 {
                     0
                 } else {
-                    receiver.items[0].int_bits
+                    receiver.data().items[0].int_bits
                 }
             if shift.int_data < 0 ||
                shift.int_data >= width {
@@ -7661,8 +7697,8 @@ class TreeInterpreter {
                 return some(TreeValue.unit())
             }
             for index: int in
-                0..receiver.items.len() {
-                result.items[index] =
+                0..receiver.data().items.len() {
+                result.data().items[index] =
                     self.simd_scalar(
                         node,
                         if node.value == "shl" {
@@ -7670,7 +7706,7 @@ class TreeInterpreter {
                         } else {
                             ">>"
                         },
-                        receiver.items[index],
+                        receiver.data().items[index],
                         shift)
             }
             return some(result)
@@ -9847,11 +9883,11 @@ class TreeInterpreter {
             if receiver.kind == "list" ||
                receiver.kind == "array" {
                 return TreeValue.integer(
-                    receiver.items.len())
+                    receiver.data().items.len())
             }
             if receiver.kind == "map" {
                 return TreeValue.integer(
-                    receiver.map_values.len())
+                    receiver.data().map_values.len())
             }
         }
         if node.value == "is_empty" {
@@ -9862,11 +9898,11 @@ class TreeInterpreter {
             if receiver.kind == "list" ||
                receiver.kind == "array" {
                 return TreeValue.boolean(
-                    receiver.items.len() == 0)
+                    receiver.data().items.len() == 0)
             }
             if receiver.kind == "map" {
                 return TreeValue.boolean(
-                    receiver.map_values.len() == 0)
+                    receiver.data().map_values.len() == 0)
             }
         }
         if receiver.kind == "string" &&
@@ -10108,7 +10144,7 @@ class TreeInterpreter {
         if receiver.kind == "list" &&
            node.value == "push" &&
            arguments.len() == 2 {
-            receiver.items.push(
+            receiver.data().items.push(
                 tree_value_copy(arguments[1]))
             tree_list_changed(receiver, "push")
             return TreeValue.unit()
@@ -10124,50 +10160,50 @@ class TreeInterpreter {
             // is the native runtime's (beans_list_insert), so both backends
             // print the same report.
             let index: int = arguments[1].int_data
-            if index < 0 || index > receiver.items.len() {
+            if index < 0 || index > receiver.data().items.len() {
                 return self.fail(
                     node,
-                    "insert at {index} out of range (len {receiver.items.len()})")
+                    "insert at {index} out of range (len {receiver.data().items.len()})")
             }
-            receiver.items.insert(
+            receiver.data().items.insert(
                 index, tree_value_copy(arguments[2]))
             tree_list_changed(receiver, "insert")
             return TreeValue.unit()
         }
         if receiver.kind == "list" &&
            node.value == "pop" {
-            if receiver.items.len() == 0 {
+            if receiver.data().items.len() == 0 {
                 return TreeValue.option_none()
             }
             let popped: TreeValue =
-                receiver.items.pop().expect("non-empty list")
+                receiver.data().items.pop().expect("non-empty list")
             tree_list_changed(receiver, "pop")
             return TreeValue.option_some(popped)
         }
         if receiver.kind == "list" &&
            (node.value == "first" ||
             node.value == "last") {
-            if receiver.items.len() == 0 {
+            if receiver.data().items.len() == 0 {
                 return TreeValue.option_none()
             }
             let index: int =
                 if node.value == "first" {
                     0
                 } else {
-                    receiver.items.len() - 1
+                    receiver.data().items.len() - 1
                 }
             return TreeValue.option_some(
                 tree_value_copy(
-                    receiver.items[index]))
+                    receiver.data().items[index]))
         }
         if receiver.kind == "list" &&
            (node.value == "contains" ||
             node.value == "index_of") &&
            arguments.len() == 2 {
-            for index: int in 0..receiver.items.len() {
+            for index: int in 0..receiver.data().items.len() {
                 // Eq, not `==`: the native scan is slot_eq
                 if tree_value_total_equal(
-                       receiver.items[index],
+                       receiver.data().items[index],
                        arguments[1]) {
                     if node.value == "contains" {
                         return TreeValue.boolean(true)
@@ -10186,29 +10222,29 @@ class TreeInterpreter {
            arguments.len() == 2 {
             let index: int = arguments[1].int_data
             if index < 0 ||
-               index >= receiver.items.len() {
+               index >= receiver.data().items.len() {
                 return self.fail_at(
                     node,
                     node.col,
-                    "list index {index} out of range (len {receiver.items.len()})")
+                    "list index {index} out of range (len {receiver.data().items.len()})")
             }
             let removed: TreeValue =
-                receiver.items.remove(index)
+                receiver.data().items.remove(index)
             tree_list_changed(receiver, "remove")
             return removed
         }
         if receiver.kind == "list" &&
            node.value == "clear" {
-            if receiver.items.len() != 0 {
+            if receiver.data().items.len() != 0 {
                 tree_list_changed(receiver, "clear")
             }
-            receiver.items = []
+            receiver.data().items = []
             return TreeValue.unit()
         }
         if receiver.kind == "list" &&
            node.value == "clone" {
             var copy: List<TreeValue> = []
-            for value: TreeValue in receiver.items {
+            for value: TreeValue in receiver.data().items {
                 copy.push(tree_value_copy(value))
             }
             return TreeValue.sequence(
@@ -10216,18 +10252,18 @@ class TreeInterpreter {
         }
         if receiver.kind == "list" &&
            node.value == "reverse" {
-            if receiver.items.len() > 1 {
+            if receiver.data().items.len() > 1 {
                 tree_list_changed(receiver, "reverse")
             }
             var left: int = 0
             var right: int =
-                receiver.items.len() - 1
+                receiver.data().items.len() - 1
             for left < right {
                 let saved: TreeValue =
-                    receiver.items[left]
-                receiver.items[left] =
-                    receiver.items[right]
-                receiver.items[right] = saved
+                    receiver.data().items[left]
+                receiver.data().items[left] =
+                    receiver.data().items[right]
+                receiver.data().items[right] = saved
                 left += 1
                 right -= 1
             }
@@ -10239,15 +10275,15 @@ class TreeInterpreter {
             let start: int = arguments[1].int_data
             let end: int = arguments[2].int_data
             if start < 0 || end < start ||
-               end > receiver.items.len() {
+               end > receiver.data().items.len() {
                 return self.fail_at(
                     node,
                     node.col,
-                    "list slice {start}..{end} out of range (len {receiver.items.len()})")
+                    "list slice {start}..{end} out of range (len {receiver.data().items.len()})")
             }
             var values: List<TreeValue> = []
             for index: int in start..end {
-                values.push(receiver.items[index])
+                values.push(receiver.data().items[index])
             }
             return TreeValue.sequence(
                 "list", move values)
@@ -10255,15 +10291,15 @@ class TreeInterpreter {
         if receiver.kind == "list" &&
            (node.value == "min" ||
             node.value == "max") {
-            if receiver.items.len() == 0 {
+            if receiver.data().items.len() == 0 {
                 return TreeValue.option_none()
             }
             var best: TreeValue =
-                receiver.items[0]
+                receiver.data().items[0]
             for index: int in
-                1..receiver.items.len() {
+                1..receiver.data().items.len() {
                 let candidate: TreeValue =
-                    receiver.items[index]
+                    receiver.data().items[index]
                 let replace: bool =
                     if node.value == "min" {
                         tree_value_less(
@@ -10283,7 +10319,7 @@ class TreeInterpreter {
             // the native backend (which joins through the same show driver)
             // and the tree agree on a list of printable objects too.
             var pieces: List<string> = []
-            for value: TreeValue in receiver.items {
+            for value: TreeValue in receiver.data().items {
                 pieces.push(
                     self.render_for_string_top(value))
             }
@@ -10301,7 +10337,7 @@ class TreeInterpreter {
             // leaves it recorded when a panicking callback restores the
             // elements (the restore puts the storage back, not the fact that
             // the list was reshaped).
-            if receiver.items.len() > 1 {
+            if receiver.data().items.len() > 1 {
                 tree_list_changed(receiver, "sort")
             }
             // The same bottom-up stable merge the native runtime runs
@@ -10322,11 +10358,11 @@ class TreeInterpreter {
             // tree_value_less, which cannot panic, and takes no snapshot.
             var snapshot: List<TreeValue> = []
             if node.value != "sort" {
-                for value: TreeValue in receiver.items {
+                for value: TreeValue in receiver.data().items {
                     snapshot.push(value)
                 }
             }
-            let length: int = receiver.items.len()
+            let length: int = receiver.data().items.len()
             // One key call per item, checked as each returns: a callback
             // structurally changing the list is refused, exactly as the
             // native runtime's rt_sort_check refuses it.
@@ -10338,13 +10374,13 @@ class TreeInterpreter {
                     keys.push(
                         self.invoke_closure(
                             node, arguments[1],
-                            [receiver.items[extract]]))
+                            [receiver.data().items[extract]]))
                     self.check_sort_shape(receiver, length)
                     extract += 1
                 }
             }
             var buffer: List<TreeValue> = []
-            for value: TreeValue in receiver.items {
+            for value: TreeValue in receiver.data().items {
                 buffer.push(value)
             }
             var key_buffer: List<TreeValue> = []
@@ -10378,15 +10414,15 @@ class TreeInterpreter {
                             var take_right: bool = false
                             if node.value == "sort" {
                                 take_right = tree_value_less(
-                                    receiver.items[right],
-                                    receiver.items[left])
+                                    receiver.data().items[right],
+                                    receiver.data().items[left])
                             } else if node.value == "sort_by" &&
                                       arguments.len() == 2 {
                                 let compared: TreeValue =
                                     self.invoke_closure(
                                         node, arguments[1],
-                                        [receiver.items[right],
-                                         receiver.items[left]])
+                                        [receiver.data().items[right],
+                                         receiver.data().items[left]])
                                 take_right =
                                     self.truth(node, compared)
                                 self.check_sort_shape(
@@ -10397,7 +10433,7 @@ class TreeInterpreter {
                             }
                             if take_right {
                                 buffer[out] =
-                                    receiver.items[right]
+                                    receiver.data().items[right]
                                 if keys.len() != 0 {
                                     key_buffer[out] =
                                         keys[right]
@@ -10405,7 +10441,7 @@ class TreeInterpreter {
                                 right += 1
                             } else {
                                 buffer[out] =
-                                    receiver.items[left]
+                                    receiver.data().items[left]
                                 if keys.len() != 0 {
                                     key_buffer[out] =
                                         keys[left]
@@ -10415,7 +10451,7 @@ class TreeInterpreter {
                             out += 1
                         }
                         for left < mid {
-                            buffer[out] = receiver.items[left]
+                            buffer[out] = receiver.data().items[left]
                             if keys.len() != 0 {
                                 key_buffer[out] = keys[left]
                             }
@@ -10423,7 +10459,7 @@ class TreeInterpreter {
                             out += 1
                         }
                         for right < high {
-                            buffer[out] = receiver.items[right]
+                            buffer[out] = receiver.data().items[right]
                             if keys.len() != 0 {
                                 key_buffer[out] = keys[right]
                             }
@@ -10433,7 +10469,7 @@ class TreeInterpreter {
                         if !self.failed {
                             var back: int = low
                             for back < high {
-                                receiver.items[back] =
+                                receiver.data().items[back] =
                                     buffer[back]
                                 if keys.len() != 0 {
                                     keys[back] =
@@ -10448,7 +10484,7 @@ class TreeInterpreter {
                 width *= 2
             }
             if self.failed && node.value != "sort" &&
-               receiver.items.len() == snapshot.len() {
+               receiver.data().items.len() == snapshot.len() {
                 // an ordinary comparator panic: put the items back. A
                 // mutation refusal leaves the list as the mutation made it
                 // — the lengths differ and there is nothing coherent to
@@ -10456,7 +10492,7 @@ class TreeInterpreter {
                 // way).
                 var restore: int = 0
                 for restore < snapshot.len() {
-                    receiver.items[restore] =
+                    receiver.data().items[restore] =
                         snapshot[restore]
                     restore += 1
                 }
@@ -10469,10 +10505,10 @@ class TreeInterpreter {
            arguments[1].kind == "int" {
             let index: int = arguments[1].int_data
             if index >= 0 &&
-               index < receiver.items.len() {
+               index < receiver.data().items.len() {
                 return TreeValue.option_some(
                     tree_value_copy(
-                        receiver.items[index]))
+                        receiver.data().items[index]))
             }
             return TreeValue.option_none()
         }
@@ -10484,7 +10520,7 @@ class TreeInterpreter {
                 self.map_key(
                     receiver, arguments[1])
             if node.value == "insert" &&
-               receiver.map_values.contains_key(
+               receiver.data().map_values.contains_key(
                    encoded) {
                 return TreeValue.boolean(false)
             }
@@ -10501,7 +10537,7 @@ class TreeInterpreter {
         if receiver.kind == "map" &&
            node.value == "get" &&
            arguments.len() == 2 {
-            match receiver.map_values.get(
+            match receiver.data().map_values.get(
                 self.map_key(
                     receiver, arguments[1])) {
                 some(entry) => {
@@ -10518,7 +10554,7 @@ class TreeInterpreter {
            node.value == "contains_key" &&
            arguments.len() == 2 {
             return TreeValue.boolean(
-                receiver.map_values.contains_key(
+                receiver.data().map_values.contains_key(
                     self.map_key(
                         receiver, arguments[1])))
         }
@@ -10528,24 +10564,24 @@ class TreeInterpreter {
             let encoded: string =
                 self.map_key(
                     receiver, arguments[1])
-            if !receiver.map_values.contains_key(encoded) {
+            if !receiver.data().map_values.contains_key(encoded) {
                 return TreeValue.boolean(false)
             }
-            receiver.map_values.remove(encoded)
+            receiver.data().map_values.remove(encoded)
             var kept: List<TreeValue> = []
-            for key: TreeValue in receiver.map_keys {
+            for key: TreeValue in receiver.data().map_keys {
                 if tree_value_key(key) != encoded {
                     kept.push(key)
                 }
             }
-            receiver.map_keys = move kept
+            receiver.data().map_keys = move kept
             receiver.map_version += 1
             return TreeValue.boolean(true)
         }
         if receiver.kind == "map" &&
            node.value == "keys" {
             var keys: List<TreeValue> = []
-            for key: TreeValue in receiver.map_keys {
+            for key: TreeValue in receiver.data().map_keys {
                 keys.push(tree_value_copy(key))
             }
             return TreeValue.sequence(
@@ -10554,8 +10590,8 @@ class TreeInterpreter {
         if receiver.kind == "map" &&
            node.value == "values" {
             var values: List<TreeValue> = []
-            for key: TreeValue in receiver.map_keys {
-                match receiver.map_values.get(
+            for key: TreeValue in receiver.data().map_keys {
+                match receiver.data().map_values.get(
                     tree_value_key(key)) {
                     some(entry) => {
                         values.push(
@@ -10571,7 +10607,7 @@ class TreeInterpreter {
         }
         if receiver.kind == "map" &&
            node.value == "clear" {
-            if receiver.map_values.len() != 0 {
+            if receiver.data().map_values.len() != 0 {
                 receiver.map_version += 1
             }
             // spec/CONCURRENCY.md: detach the storage and publish an empty
@@ -10582,15 +10618,15 @@ class TreeInterpreter {
             // -- is the order beans_map_clear releases a native map in, without
             // publishing a half-empty container to any accessor.
             var dead: List<TreeValue> = []
-            for key: TreeValue in receiver.map_keys {
-                match receiver.map_values.get(
+            for key: TreeValue in receiver.data().map_keys {
+                match receiver.data().map_values.get(
                           tree_value_key(key)) {
                     some(entry) => { dead.push(entry) }
                     none => {}
                 }
             }
-            receiver.map_values = {}
-            receiver.map_keys = []
+            receiver.data().map_values = {}
+            receiver.data().map_keys = []
             var dying: int = dead.len()
             for dying > 0 {
                 dying -= 1
@@ -10602,14 +10638,14 @@ class TreeInterpreter {
            node.value == "clone" {
             let result: TreeValue =
                 new TreeValue("map")
-            for key: TreeValue in receiver.map_keys {
+            for key: TreeValue in receiver.data().map_keys {
                 let encoded: string =
                     tree_value_key(key)
-                match receiver.map_values.get(encoded) {
+                match receiver.data().map_values.get(encoded) {
                     some(entry) => {
-                        result.map_keys.push(
+                        result.data().map_keys.push(
                             tree_value_copy(key))
-                        result.map_values[encoded] =
+                        result.data().map_values[encoded] =
                             tree_map_entry(
                                 tree_value_copy(key),
                                 tree_value_copy(
@@ -10622,14 +10658,14 @@ class TreeInterpreter {
             return result
         }
         if receiver.kind == "atomic" &&
-           receiver.items.len() == 1 {
+           receiver.data().items.len() == 1 {
             if node.value == "load" {
                 return tree_value_copy(
-                    receiver.items[0])
+                    receiver.data().items[0])
             }
             if node.value == "store" &&
                arguments.len() >= 2 {
-                receiver.items[0] =
+                receiver.data().items[0] =
                     tree_value_copy(arguments[1])
                 return TreeValue.unit()
             }
@@ -10637,8 +10673,8 @@ class TreeInterpreter {
                arguments.len() >= 2 {
                 let previous: TreeValue =
                     tree_value_copy(
-                        receiver.items[0])
-                receiver.items[0] =
+                        receiver.data().items[0])
+                receiver.data().items[0] =
                     tree_value_copy(arguments[1])
                 return previous
             }
@@ -10646,10 +10682,10 @@ class TreeInterpreter {
                arguments.len() >= 3 {
                 let equal: bool =
                     tree_value_equal(
-                        receiver.items[0],
+                        receiver.data().items[0],
                         arguments[1])
                 if equal {
-                    receiver.items[0] =
+                    receiver.data().items[0] =
                         tree_value_copy(
                             arguments[2])
                 }
@@ -10663,7 +10699,7 @@ class TreeInterpreter {
                arguments.len() >= 2 {
                 let previous: TreeValue =
                     tree_value_copy(
-                        receiver.items[0])
+                        receiver.data().items[0])
                 let left: u64 =
                     previous.uint_data
                 let right: u64 =
@@ -10683,7 +10719,7 @@ class TreeInterpreter {
                 } else {
                     raw = left ^ right
                 }
-                receiver.items[0] =
+                receiver.data().items[0] =
                     if previous.int_unsigned {
                         TreeValue.unsigned_integer(
                             raw,
@@ -10704,7 +10740,7 @@ class TreeInterpreter {
                arguments.len() >= 2 {
                 return TreeValue.boolean(
                     !tree_value_equal(
-                        receiver.items[0],
+                        receiver.data().items[0],
                         arguments[1]))
             }
             if node.value == "notify_all" ||
@@ -10715,13 +10751,13 @@ class TreeInterpreter {
         if (receiver.kind == "box" ||
             receiver.kind == "mutex") &&
            node.value == "get" &&
-           receiver.items.len() == 1 {
-            return receiver.items[0]
+           receiver.data().items.len() == 1 {
+            return receiver.data().items[0]
         }
         if receiver.kind == "atomic" &&
            node.value == "load" &&
-           receiver.items.len() == 1 {
-            return receiver.items[0]
+           receiver.data().items.len() == 1 {
+            return receiver.data().items[0]
         }
         if receiver.kind == "shared" &&
            node.value == "get" {
@@ -10736,23 +10772,23 @@ class TreeInterpreter {
         if receiver.kind == "box" &&
            node.value == "set" &&
            arguments.len() == 2 {
-            receiver.items[0] = arguments[1]
+            receiver.data().items[0] = arguments[1]
             return TreeValue.unit()
         }
         if receiver.kind == "atomic" &&
            node.value == "store" &&
            arguments.len() == 2 {
-            receiver.items[0] = arguments[1]
+            receiver.data().items[0] = arguments[1]
             return TreeValue.unit()
         }
         if receiver.kind == "atomic" &&
            node.value == "add_and_get" &&
            arguments.len() == 2 &&
-           receiver.items.len() == 1 {
+           receiver.data().items.len() == 1 {
             let next: int =
-                receiver.items[0].int_data +
+                receiver.data().items[0].int_data +
                 arguments[1].int_data
-            receiver.items[0] =
+            receiver.data().items[0] =
                 TreeValue.integer(next)
             return TreeValue.integer(next)
         }
@@ -10803,8 +10839,8 @@ class TreeInterpreter {
         if receiver.kind == "arena" &&
            node.value == "add" &&
            arguments.len() == 2 {
-            let slot: int = receiver.items.len()
-            receiver.items.push(
+            let slot: int = receiver.data().items.len()
+            receiver.data().items.push(
                 tree_value_copy(arguments[1]))
             return TreeValue.integer(slot)
         }
@@ -10813,36 +10849,36 @@ class TreeInterpreter {
            arguments.len() == 2 {
             let slot: int = arguments[1].int_data
             if slot >= 0 &&
-               slot < receiver.items.len() {
+               slot < receiver.data().items.len() {
                 return TreeValue.option_some(
                     tree_value_copy(
-                        receiver.items[slot]))
+                        receiver.data().items[slot]))
             }
             return TreeValue.option_none()
         }
         if receiver.kind == "arena" &&
            node.value == "clear" {
-            receiver.items = []
+            receiver.data().items = []
             return TreeValue.unit()
         }
         if receiver.kind == "arena" &&
            node.value == "len" {
             return TreeValue.integer(
-                receiver.items.len())
+                receiver.data().items.len())
         }
         if receiver.kind == "arena" &&
            node.value == "at" &&
            arguments.len() == 2 {
             let slot: int = arguments[1].int_data
             if slot < 0 ||
-               slot >= receiver.items.len() {
+               slot >= receiver.data().items.len() {
                 return self.fail_at(
                     node,
                     node.col,
-                    "arena handle {slot} out of range (len {receiver.items.len()})")
+                    "arena handle {slot} out of range (len {receiver.data().items.len()})")
             }
             return tree_value_copy(
-                receiver.items[slot])
+                receiver.data().items[slot])
         }
         if receiver.kind == "channel" &&
            node.value == "try_send" &&
@@ -11348,15 +11384,15 @@ class TreeInterpreter {
                 receiver.kind == "some" ||
                 receiver.kind == "ok"
             if node.value == "recover" {
-                if active && receiver.items.len() == 1 {
+                if active && receiver.data().items.len() == 1 {
                     return tree_value_copy(
-                        receiver.items[0])
+                        receiver.data().items[0])
                 }
                 if receiver.kind == "err" &&
-                   receiver.items.len() == 1 {
+                   receiver.data().items.len() == 1 {
                     return self.invoke_closure(
                         node, arguments[1],
-                        [receiver.items[0]])
+                        [receiver.data().items[0]])
                 }
                 return TreeValue.unit()
             }
@@ -11367,7 +11403,7 @@ class TreeInterpreter {
                     receiver
                 }
             }
-            if receiver.items.len() != 1 {
+            if receiver.data().items.len() != 1 {
                 return self.fail(
                     node,
                     "{receiver.kind} has no payload")
@@ -11376,7 +11412,7 @@ class TreeInterpreter {
                 let kept: TreeValue =
                     self.invoke_closure(
                         node, arguments[1],
-                        [receiver.items[0]])
+                        [receiver.data().items[0]])
                 if self.truth(node, kept) {
                     return receiver
                 }
@@ -11385,7 +11421,7 @@ class TreeInterpreter {
             let mapped: TreeValue =
                 self.invoke_closure(
                     node, arguments[1],
-                    [receiver.items[0]])
+                    [receiver.data().items[0]])
             if node.value == "and_then" {
                 return mapped
             }
@@ -11414,11 +11450,11 @@ class TreeInterpreter {
         }
             if (receiver.kind == "some" ||
             receiver.kind == "ok") &&
-           receiver.items.len() == 1 &&
+           receiver.data().items.len() == 1 &&
            (node.value == "or" ||
             node.value == "expect") {
             return tree_value_copy(
-                receiver.items[0])
+                receiver.data().items[0])
         }
         if (receiver.kind == "none" ||
             receiver.kind == "err") &&
@@ -11953,7 +11989,7 @@ class TreeInterpreter {
                                 let flow: TreeExec =
                                     self.block(block, frame)
                                 if flow.kind == "return" {
-                                    result = flow.value
+                                    result = flow.value()
                                 }
                             }
                             none => {
@@ -12177,7 +12213,7 @@ class TreeInterpreter {
             result.text = node.type.name
             result.object_id = self.next_object_id
             self.next_object_id += 1
-            result.fields.entries["handle"] =
+            result.data().fields.entries["handle"] =
                 TreeValue.integer(handle)
             return result
         }
@@ -12626,7 +12662,7 @@ class TreeInterpreter {
             result.group_work =
                 some(new TreeTaskGroupState())
         } else if arguments.len() != 0 {
-            result.items.push(
+            result.data().items.push(
                 tree_value_copy(arguments[0]))
         }
         return some(result)
@@ -12674,7 +12710,7 @@ class TreeInterpreter {
         if receiver.kind == "propagate" {
             return receiver
         }
-        match receiver.fields.value(node.value) {
+        match receiver.field_value(node.value) {
             some(stored) => {
                 if stored.kind != "weak_ref" {
                     return TreeValue.option_none()
@@ -12688,7 +12724,7 @@ class TreeInterpreter {
                         let revived: TreeValue =
                             (new TreeObjectValue(self)) as TreeValue
                         revived.text = inner.text
-                        revived.fields = inner.fields
+                        revived.data().fields = inner.data().fields
                         revived.object_id = inner.object_id
                         self.weak_wrappers[inner.object_id] =
                             self.weak_wrappers.get(
@@ -12867,9 +12903,9 @@ class TreeInterpreter {
                     }
                 }
                 for field: HirField in declaration.fields {
-                    if !object.fields.entries.contains_key(
+                    if !object.data().fields.entries.contains_key(
                             field.name) {
-                        object.fields.entries[field.name] =
+                        object.data().fields.entries[field.name] =
                             TreeValue.unset()
                     }
                 }
@@ -12919,14 +12955,14 @@ class TreeInterpreter {
         for field: HirField in declaration.fields {
             match field.default_value {
                 some(value) => {
-                    object.fields.entries[field.name] =
+                    object.data().fields.entries[field.name] =
                         tree_value_copy(
                             self.expression(value, frame))
                 }
                 none => {
-                    if !object.fields.entries.contains_key(
+                    if !object.data().fields.entries.contains_key(
                             field.name) {
-                        object.fields.entries[field.name] =
+                        object.data().fields.entries[field.name] =
                             TreeValue.unset()
                     }
                 }
@@ -12944,7 +12980,7 @@ class TreeInterpreter {
         if receiver.kind == "propagate" {
             return receiver
         }
-        match receiver.fields.value(node.value) {
+        match receiver.field_value(node.value) {
             some(value) => {
                 return tree_value_copy(value)
             }
@@ -12981,13 +13017,13 @@ class TreeInterpreter {
             receiver.kind == "array") &&
            key.kind == "int" {
             if key.int_data < 0 ||
-               key.int_data >= receiver.items.len() {
+               key.int_data >= receiver.data().items.len() {
                 return self.fail(
                     node,
-                    "{if receiver.kind == "array" { "array" } else { "list" }} index {key.int_data} out of range (len {receiver.items.len()})")
+                    "{if receiver.kind == "array" { "array" } else { "list" }} index {key.int_data} out of range (len {receiver.data().items.len()})")
             }
             let element: TreeValue =
-                receiver.items[key.int_data]
+                receiver.data().items[key.int_data]
             return if borrowed {
                 element
             } else {
@@ -12995,7 +13031,7 @@ class TreeInterpreter {
             }
         }
         if receiver.kind == "map" {
-            match receiver.map_values.get(
+            match receiver.data().map_values.get(
                 self.map_key(receiver, key)) {
                 some(entry) => {
                     return if borrowed {
@@ -13148,11 +13184,11 @@ class TreeInterpreter {
             let binding: HirNode =
                 pattern.children[index]
             if binding.kind == "pattern_binding" &&
-               index < value.items.len() {
+               index < value.data().items.len() {
                 frame.set(
                     binding.binding_id,
                     tree_value_copy(
-                        value.items[index]))
+                        value.data().items[index]))
             }
         }
         return true
@@ -13194,8 +13230,8 @@ class TreeInterpreter {
         let subject: TreeValue =
             self.expression(node.children[0], frame)
         if subject.kind == "propagate" &&
-           subject.items.len() == 1 {
-            return TreeExec.returned(subject.items[0])
+           subject.data().items.len() == 1 {
+            return TreeExec.returned(subject.data().items[0])
         }
         for index: int in 1..node.children.len() {
             let arm: HirNode = node.children[index]
@@ -13215,9 +13251,9 @@ class TreeInterpreter {
                     self.expression(
                         arm.children[1], arm_frame)
                 if value.kind == "propagate" &&
-                   value.items.len() == 1 {
+                   value.data().items.len() == 1 {
                     return TreeExec.returned(
-                        value.items[0])
+                        value.data().items[0])
                 }
                 return TreeExec.next()
             }
@@ -13378,10 +13414,11 @@ class TreeInterpreter {
             for field: HirNode in node.children {
                 if field.kind == "field_init" &&
                    field.children.len() == 1 {
-                    result.fields.entries[field.value] =
-                        tree_value_copy(
-                            self.expression(
-                                field.children[0], frame))
+                    let value: TreeValue =
+                        self.expression(field.children[0], frame)
+                    if self.failed { return value }
+                    result.data().fields.entries[field.value] =
+                        tree_value_copy(value)
                 }
             }
             match self.declaration(node.type.name) {
@@ -13395,7 +13432,7 @@ class TreeInterpreter {
                                     node, result,
                                     declaration,
                                     field.value,
-                                    result.fields.entries[
+                                    result.data().fields.entries[
                                         field.value])
                                 break
                             }
@@ -13416,7 +13453,7 @@ class TreeInterpreter {
            node.children.len() == 1 {
             let value: TreeValue =
                 self.expression(node.children[0], frame)
-            if value.kind == "propagate" {
+            if self.failed || value.kind == "propagate" {
                 return value
             }
             if node.value == "as?" {
@@ -13424,7 +13461,7 @@ class TreeInterpreter {
                        node.children[0].type.name) ==
                        "std.reflect.Value" &&
                    node.type.args.len() == 1 {
-                    match value.fields.entries.get("handle") {
+                    match value.data().fields.entries.get("handle") {
                         some(raw_handle) => {
                             let handle: int =
                                 raw_handle.int_data
@@ -13682,9 +13719,9 @@ class TreeInterpreter {
             if result.kind == "propagate" { return result }
             if (result.kind == "ok" ||
                 result.kind == "some") &&
-               result.items.len() == 1 {
+               result.data().items.len() == 1 {
                 return tree_value_copy(
-                    result.items[0])
+                    result.data().items[0])
             }
             if result.kind == "err" ||
                result.kind == "none" {
@@ -13694,12 +13731,12 @@ class TreeInterpreter {
                 // second child answers this function's error. Same rule,
                 // same one call, as the native backend's lowering.
                 if node.children.len() == 2 &&
-                   result.items.len() == 1 {
+                   result.data().items.len() == 1 {
                     let scope: TreeFrame =
                         TreeFrame.scope(frame)
                     scope.set(
                         node.binding_id,
-                        tree_value_copy(result.items[0]))
+                        tree_value_copy(result.data().items[0]))
                     let converted: TreeValue =
                         self.expression(
                             node.children[1], scope)
@@ -13745,7 +13782,7 @@ class TreeInterpreter {
                         node.children[index], scope)
                 if flow.kind == "return" {
                     return TreeValue.propagation(
-                        flow.value)
+                        flow.value())
                 }
             }
             let tail: HirNode =
@@ -13759,9 +13796,9 @@ class TreeInterpreter {
                 self.statement(tail, scope)
             if flow.kind == "return" {
                 return TreeValue.propagation(
-                    flow.value)
+                    flow.value())
             }
-            return flow.value
+            return flow.value()
         }
         return self.fail(
             node,
@@ -13782,7 +13819,7 @@ class TreeInterpreter {
                     node.children[0], frame)
             if base.kind == "propagate" { return base }
             if self.failed { return base }
-            match base.fields.value(node.value) {
+            match base.field_value(node.value) {
                 some(value) => { return value }
                 none => {
                     return self.fail(
@@ -13815,9 +13852,9 @@ class TreeInterpreter {
     // interpreter finished a function the native backend had already left.
     fn propagated(value: TreeValue) -> Option<TreeExec> {
         if value.kind == "propagate" &&
-           value.items.len() == 1 {
+           value.data().items.len() == 1 {
             return some(
-                TreeExec.returned(value.items[0]))
+                TreeExec.returned(value.data().items[0]))
         }
         return none
     }
@@ -13837,48 +13874,51 @@ class TreeInterpreter {
         // second half of the same fault: the compound read re-evaluated the
         // whole target, so `holder().n += 1` called holder() twice here and
         // once natively.
-        var index_receiver: TreeValue = TreeValue.unit()
-        var index_key: TreeValue = TreeValue.unit()
         let index_first: bool =
             target.kind == "index" &&
             target.children.len() == 2
-        // Exactly the two target shapes whose store reads this receiver
-        // below, spelled the same way there: a shape that is not hoisted
-        // would otherwise store through a unit.
-        var field_receiver: TreeValue = TreeValue.unit()
+        // Exactly the target shapes whose store reads the hoisted receiver.
         let field_first: bool =
             (target.kind == "field" &&
              target.children.len() == 1) ||
             (target.kind == "weak_field" &&
              target.children.len() != 0)
-        if index_first {
-            index_receiver =
-                self.place_receiver(
-                    target.children[0], frame)
-            match self.propagated(index_receiver) {
-                some(exit) => { return exit }
-                none => {}
-            }
-            index_key =
-                self.expression(
-                    target.children[1], frame)
-            match self.propagated(index_key) {
-                some(exit) => { return exit }
-                none => {}
-            }
-        }
-        if field_first {
-            field_receiver =
-                self.place_receiver(
-                    target.children[0], frame)
-            match self.propagated(field_receiver) {
-                some(exit) => { return exit }
-                none => {}
-            }
-            if self.failed { return TreeExec.next() }
-        }
+        // Missing receivers are absence, not interpreted unit values. Most
+        // assignments target locals and never need any of these three values.
+        let index_receiver: Option<TreeValue> =
+            if index_first {
+                let receiver: TreeValue =
+                    self.place_receiver(target.children[0], frame)
+                match self.propagated(receiver) {
+                    some(exit) => { return exit }
+                    none => {}
+                }
+                some(receiver)
+            } else { none }
+        let index_key: Option<TreeValue> =
+            if index_first {
+                let key: TreeValue =
+                    self.expression(target.children[1], frame)
+                match self.propagated(key) {
+                    some(exit) => { return exit }
+                    none => {}
+                }
+                some(key)
+            } else { none }
+        let field_receiver: Option<TreeValue> =
+            if field_first {
+                let receiver: TreeValue =
+                    self.place_receiver(target.children[0], frame)
+                match self.propagated(receiver) {
+                    some(exit) => { return exit }
+                    none => {}
+                }
+                if self.failed { return TreeExec.next() }
+                some(receiver)
+            } else { none }
         let written: TreeValue =
             self.expression(node.children[1], frame)
+        if self.failed { return TreeExec.next() }
         match self.propagated(written) {
             some(exit) => { return exit }
             none => {}
@@ -13896,56 +13936,52 @@ class TreeInterpreter {
             // count. The slice arm reads through the hoist, the same
             // pointer_memory read the plain slice index does.
             let current: TreeValue =
-                if index_first &&
-                   (index_receiver.kind == "list" ||
-                    index_receiver.kind == "array") &&
-                   index_key.kind == "int" {
-                    if index_key.int_data < 0 ||
-                       index_key.int_data >=
-                       index_receiver.items.len() {
-                        self.fail(
-                            target,
-                            "{if index_receiver.kind == "array" { "array" } else { "list" }} index {index_key.int_data} out of range (len {index_receiver.items.len()})")
-                        return TreeExec.next()
+                if index_first {
+                    let receiver: TreeValue =
+                        index_receiver.expect("assignment receiver")
+                    let key: TreeValue = index_key.expect("assignment key")
+                    if (receiver.kind == "list" ||
+                        receiver.kind == "array") && key.kind == "int" {
+                        if key.int_data < 0 ||
+                           key.int_data >= receiver.data().items.len() {
+                            self.fail(
+                                target,
+                                "{if receiver.kind == "array" { "array" } else { "list" }} index {key.int_data} out of range (len {receiver.data().items.len()})")
+                            return TreeExec.next()
+                        }
+                        tree_value_copy(receiver.data().items[key.int_data])
+                    } else if receiver.kind == "slice" && key.kind == "int" {
+                        if key.int_data < 0 ||
+                           key.int_data >= receiver.slice_len {
+                            self.fail(
+                                target,
+                                "slice index {key.int_data} out of range (len {receiver.slice_len})")
+                            return TreeExec.next()
+                        }
+                        let element: HirType =
+                            receiver.memory_type.expect("slice element type")
+                        let piece: LayoutAnswer = self.layout(element)
+                        match self.pointer_memory(target, receiver) {
+                            some(memory) =>
+                                self.memory_read_value(
+                                    target, memory,
+                                    receiver.memory_address +
+                                        ((key.int_data *
+                                          piece.value.size) as u64),
+                                    element)
+                            none => TreeValue.unit()
+                        }
+                    } else {
+                        self.expression(target, frame)
                     }
-                    tree_value_copy(
-                        index_receiver.items[
-                            index_key.int_data])
-                } else if index_first &&
-                          index_receiver.kind == "slice" &&
-                          index_key.kind == "int" {
-                    if index_key.int_data < 0 ||
-                       index_key.int_data >=
-                       index_receiver.slice_len {
-                        self.fail(
-                            target,
-                            "slice index {index_key.int_data} out of range (len {index_receiver.slice_len})")
-                        return TreeExec.next()
+                } else if field_first {
+                    let receiver: TreeValue =
+                        field_receiver.expect("assignment receiver")
+                    // The store below writes through this same receiver.
+                    match receiver.data().fields.entries.get(target.value) {
+                        some(field) => tree_value_copy(field)
+                        none => self.expression(target, frame)
                     }
-                    let element: HirType =
-                        index_receiver.memory_type.expect(
-                            "slice element type")
-                    let piece: LayoutAnswer =
-                        self.layout(element)
-                    match self.pointer_memory(
-                            target, index_receiver) {
-                        some(memory) =>
-                            self.memory_read_value(
-                                target, memory,
-                                index_receiver.memory_address +
-                                    ((index_key.int_data *
-                                      piece.value.size) as u64),
-                                element)
-                        none => TreeValue.unit()
-                    }
-                } else if field_first &&
-                          field_receiver.fields.entries
-                              .contains_key(target.value) {
-                    // the same hoisted receiver the store below writes
-                    // through, so the receiver expression runs once
-                    tree_value_copy(
-                        field_receiver.fields.entries[
-                            target.value])
                 } else {
                     self.expression(target, frame)
                 }
@@ -13953,52 +13989,48 @@ class TreeInterpreter {
             // a decimal overflow — reports where the operator ran. The
             // native backend anchors an index-target assignment at the
             // index's own position (src/mir.b, target.line/col), so for
-            // `v[i] /= 0` the operator node has to take the index's position
-            // too, or the two backends print different columns for the same
-            // panic. A field or local target keeps the assignment position.
-            let operation: HirNode =
-                if target.kind == "index" {
-                    new HirNode(
-                        "binary",
-                        node.value.slice(
-                            0, node.value.len() - 1),
-                        target.type,
-                        target.file, target.line,
-                        target.col)
-                } else {
-                    new HirNode(
-                        "binary",
-                        node.value.slice(
-                            0, node.value.len() - 1),
-                        target.type,
-                        node.file, node.line, node.col)
-                }
-            operation.children.push(target)
-            operation.children.push(node.children[1])
+            // `v[i] /= 0` pass that original node to the numeric helper.
+            // A field or local target keeps the assignment position.
+            let at: HirNode =
+                if target.kind == "index" { target } else { node }
+            // Return constant operator spellings; slicing off '=' allocated
+            // another string at every iteration of an otherwise scalar loop.
+            let operation: string =
+                if node.value == "+=" { "+" }
+                else if node.value == "-=" { "-" }
+                else if node.value == "*=" { "*" }
+                else if node.value == "/=" { "/" }
+                else if node.value == "%=" { "%" }
+                else if node.value == "&=" { "&" }
+                else if node.value == "|=" { "|" }
+                else if node.value == "^=" { "^" }
+                else if node.value == "<<=" { "<<" }
+                else if node.value == ">>=" { ">>" }
+                else { node.value.slice(0, node.value.len() - 1) }
             if current.kind == "int" &&
                written.kind == "int" {
                 value = self.integer_binary(
-                    operation,
+                    at, operation,
                     current,
                     written)
             } else if current.kind == "float" &&
                       written.kind == "float" {
-                if operation.value == "+" {
+                if operation == "+" {
                     value = self.floating_value(
                         target.type,
                         current.float_data +
                         written.float_data)
-                } else if operation.value == "-" {
+                } else if operation == "-" {
                     value = self.floating_value(
                         target.type,
                         current.float_data -
                         written.float_data)
-                } else if operation.value == "*" {
+                } else if operation == "*" {
                     value = self.floating_value(
                         target.type,
                         current.float_data *
                         written.float_data)
-                } else if operation.value == "/" {
+                } else if operation == "/" {
                     value = self.floating_value(
                         target.type,
                         current.float_data /
@@ -14007,7 +14039,7 @@ class TreeInterpreter {
             } else if current.kind == "decimal" &&
                       written.kind == "decimal" {
                 value = self.decimal_binary_value(
-                    node, operation.value,
+                    node, operation,
                     current.decimal_data,
                     written.decimal_data)
             } else {
@@ -14016,6 +14048,9 @@ class TreeInterpreter {
                     "compound assignment is not in the Beans interpreter yet for {current.kind}")
             }
         }
+        // A failing compound read or operator must not replace the target
+        // with the unit placeholder returned by fail().
+        if self.failed { return TreeExec.next() }
         if target.kind == "local" {
             if !frame.assign(
                    target.binding_id,
@@ -14055,7 +14090,8 @@ class TreeInterpreter {
             // always walked the place instead of evaluating it. It is the
             // receiver hoisted above the right-hand side, so it is walked
             // once whatever the operator is.
-            let receiver: TreeValue = field_receiver
+            let receiver: TreeValue =
+                field_receiver.expect("assignment receiver")
             match self.declaration(receiver.text) {
                 some(declaration) => {
                     if declaration.kind == "union" {
@@ -14069,17 +14105,18 @@ class TreeInterpreter {
                 }
                 none => {}
             }
-            receiver.fields.entries[target.value] =
+            receiver.data().fields.entries[target.value] =
                 tree_value_copy(value)
             return TreeExec.next()
         }
         if target.kind == "weak_field" &&
            target.children.len() != 0 {
-            let receiver: TreeValue = field_receiver
+            let receiver: TreeValue =
+                field_receiver.expect("assignment receiver")
             let stored: TreeValue = tree_value_copy(value)
             if stored.kind == "some" &&
-               stored.items.len() == 1 {
-                let referent: TreeValue = stored.items[0]
+               stored.data().items.len() == 1 {
+                let referent: TreeValue = stored.data().items[0]
                 if !self.weak_registry.contains_key(
                        referent.object_id) {
                     // first weak reference to this object: snapshot an
@@ -14088,7 +14125,7 @@ class TreeInterpreter {
                     let inner: TreeValue =
                         new TreeValue("object")
                     inner.text = referent.text
-                    inner.fields = referent.fields
+                    inner.data().fields = referent.data().fields
                     inner.object_id = referent.object_id
                     self.weak_registry[
                         referent.object_id] = inner
@@ -14100,9 +14137,9 @@ class TreeInterpreter {
                 let marker: TreeValue =
                     new TreeValue("weak_ref")
                 marker.int_data = referent.object_id
-                receiver.fields.entries[target.value] = marker
+                receiver.data().fields.entries[target.value] = marker
             } else {
-                receiver.fields.entries[target.value] = stored
+                receiver.data().fields.entries[target.value] = stored
             }
             return TreeExec.next()
         }
@@ -14110,14 +14147,14 @@ class TreeInterpreter {
            target.children.len() == 2 {
             let receiver: TreeValue =
                 if index_first {
-                    index_receiver
+                    index_receiver.expect("assignment receiver")
                 } else {
                     self.place_receiver(
                         target.children[0], frame)
                 }
             let key: TreeValue =
                 if index_first {
-                    index_key
+                    index_key.expect("assignment key")
                 } else {
                     self.expression(
                         target.children[1], frame)
@@ -14126,17 +14163,17 @@ class TreeInterpreter {
                 receiver.kind == "array") &&
                key.kind == "int" {
                 if key.int_data < 0 ||
-                   key.int_data >= receiver.items.len() {
+                   key.int_data >= receiver.data().items.len() {
                     // The subscript is what is out of range, so the report
                     // anchors there and not on the assignment. Reading the
                     // same element would name that spot, and the native
                     // backend names it for a store too.
                     self.fail(
                         target,
-                        "{if receiver.kind == "array" { "array" } else { "list" }} index {key.int_data} out of range (len {receiver.items.len()})")
+                        "{if receiver.kind == "array" { "array" } else { "list" }} index {key.int_data} out of range (len {receiver.data().items.len()})")
                     return TreeExec.next()
                 }
-                receiver.items[key.int_data] =
+                receiver.data().items[key.int_data] =
                     tree_value_copy(value)
                 return TreeExec.next()
             }
@@ -14198,9 +14235,9 @@ class TreeInterpreter {
 
     // One turn of a `for` loop: bind the element, run the body, and say
     // whether the loop is over. `some(exec)` is what the loop must hand back
-    // — a `return` travels out through it, a `break` ends the loop cleanly —
-    // and `none` means take another turn. Every `for` driver below goes
-    // through this, so the three of them cannot drift on what `break` and
+    // — a `return` or panic travels out through it, a `break` ends the loop
+    // cleanly — and `none` means take another turn. Every element driver
+    // below goes through this, so they cannot drift on what `break` and
     // `return` mean, which is the kind of drift that put the list and the
     // native backend a rule apart in the first place.
     fn iteration_turn(node: HirNode,
@@ -14212,11 +14249,15 @@ class TreeInterpreter {
         iteration.set(binding.binding_id, value)
         let result: TreeExec =
             self.block(node.children[2], iteration)
-        if result.kind == "return" {
-            return some(result)
+        if self.failed {
+            return some(TreeExec.stopped("panic"))
         }
         if result.kind == "break" {
             return some(TreeExec.next())
+        }
+        if result.kind != "next" &&
+           result.kind != "continue" {
+            return some(result)
         }
         return none
     }
@@ -14231,7 +14272,7 @@ class TreeInterpreter {
                       binding: HirNode,
                       frame: TreeFrame) -> TreeExec {
         let version: int = iterable.list_version
-        let start_length: int = iterable.items.len()
+        let start_length: int = iterable.data().items.len()
         var index: int = 0
         for true {
             if iterable.list_version != version {
@@ -14240,13 +14281,13 @@ class TreeInterpreter {
                     tree_list_changed_message(
                         iterable.list_change,
                         start_length,
-                        iterable.items.len()))
+                        iterable.data().items.len()))
                 return TreeExec.stopped("panic")
             }
-            if index >= iterable.items.len() { break }
+            if index >= iterable.data().items.len() { break }
             match self.iteration_turn(
                     node, binding,
-                    iterable.items[index], frame) {
+                    iterable.data().items[index], frame) {
                 some(over) => { return over }
                 none => {}
             }
@@ -14314,9 +14355,9 @@ class TreeInterpreter {
                     self.expression(
                         node.children[0], frame)
                 if condition.kind == "propagate" &&
-                   condition.items.len() == 1 {
+                   condition.data().items.len() == 1 {
                     return TreeExec.returned(
-                        condition.items[0])
+                        condition.data().items[0])
                 }
                 if !self.truth(node, condition) {
                     running = false
@@ -14337,9 +14378,9 @@ class TreeInterpreter {
             let iterable: TreeValue =
                 self.expression(node.children[0], frame)
             if iterable.kind == "propagate" &&
-               iterable.items.len() == 1 {
+               iterable.data().items.len() == 1 {
                 return TreeExec.returned(
-                    iterable.items[0])
+                    iterable.data().items[0])
             }
             if iterable.kind != "map" {
                 self.fail(
@@ -14354,12 +14395,12 @@ class TreeInterpreter {
                     self.fail(node, "map changed during iteration")
                     return TreeExec.stopped("panic")
                 }
-                if index >= iterable.map_keys.len() { break }
+                if index >= iterable.data().map_keys.len() { break }
                 let key: TreeValue =
-                    tree_value_copy(iterable.map_keys[index])
+                    tree_value_copy(iterable.data().map_keys[index])
                 let encoded: string = tree_value_key(key)
                 var value: TreeValue = TreeValue.unit()
-                match iterable.map_values.get(encoded) {
+                match iterable.data().map_values.get(encoded) {
                     some(found) => {
                         value = tree_value_copy(
                             tree_map_entry_value(found))
@@ -14393,9 +14434,9 @@ class TreeInterpreter {
             let iterable: TreeValue =
                 self.expression(node.children[0], frame)
             if iterable.kind == "propagate" &&
-               iterable.items.len() == 1 {
+               iterable.data().items.len() == 1 {
                 return TreeExec.returned(
-                    iterable.items[0])
+                    iterable.data().items[0])
             }
             let binding: HirNode = node.children[1]
             if iterable.kind == "list" {
@@ -14406,53 +14447,66 @@ class TreeInterpreter {
                 return self.slice_iteration(
                     node, iterable, binding, frame)
             }
-            var values: List<TreeValue> = []
             if iterable.kind == "range" &&
-               iterable.items.len() == 2 &&
-               iterable.items[0].int_unsigned {
+               iterable.data().items.len() == 2 &&
+               iterable.data().items[0].int_unsigned {
                 // An unsigned range counts in u64 space and hands the body a
                 // value of the element's own width and signedness. Counting
                 // through `int_data` instead would sign-extend every endpoint
                 // above the signed maximum — `for v: u8 in 254..=255` would
                 // bind -2 and -1 — and a u64 endpoint near 2^64 has no signed
                 // representation to count through at all.
-                let bits: int = iterable.items[0].int_bits
-                var value: u64 = iterable.items[0].uint_data
-                let end: u64 = iterable.items[1].uint_data
+                let bits: int = iterable.data().items[0].int_bits
+                var value: u64 = iterable.data().items[0].uint_data
+                let end: u64 = iterable.data().items[1].uint_data
                 for value < end ||
                     (iterable.bool_data &&
                      value == end) {
-                    values.push(
-                        TreeValue.unsigned_integer(value, bits))
+                    match self.iteration_turn(
+                            node, binding,
+                            TreeValue.unsigned_integer(value, bits),
+                            frame) {
+                        some(over) => { return over }
+                        none => {}
+                    }
                     if iterable.bool_data &&
                        value == end {
                         break
                     }
                     value += 1
                 }
-            } else if iterable.kind == "range" &&
-               iterable.items.len() == 2 {
+                return TreeExec.next()
+            }
+            if iterable.kind == "range" &&
+               iterable.data().items.len() == 2 {
                 var value: int =
-                    iterable.items[0].int_data
+                    iterable.data().items[0].int_data
                 let end: int =
-                    iterable.items[1].int_data
+                    iterable.data().items[1].int_data
                 for value < end ||
                     (iterable.bool_data &&
                      value == end) {
-                    values.push(
-                        TreeValue.integer(value))
+                    match self.iteration_turn(
+                            node, binding,
+                            TreeValue.integer(value), frame) {
+                        some(over) => { return over }
+                        none => {}
+                    }
                     if iterable.bool_data &&
                        value == end {
                         break
                     }
                     value += 1
                 }
-            } else if iterable.kind == "array" {
+                return TreeExec.next()
+            }
+            var values: List<TreeValue> = []
+            if iterable.kind == "array" {
                 // A fixed array is a value: the loop walks the value the
                 // array had when it started, and a write to the array during
                 // the loop does not reach this copy. Both backends agree —
                 // examples/fixed_arrays.b pins it.
-                for value: TreeValue in iterable.items {
+                for value: TreeValue in iterable.data().items {
                     values.push(value)
                 }
             } else {
@@ -14504,9 +14558,9 @@ class TreeInterpreter {
                         node.children[0], frame)
                 }
             if value.kind == "propagate" &&
-               value.items.len() == 1 {
+               value.data().items.len() == 1 {
                 return TreeExec.returned(
-                    value.items[0])
+                    value.data().items[0])
             }
             frame.set(
                 node.binding_id,
@@ -14528,9 +14582,9 @@ class TreeInterpreter {
                     self.expression(
                         node.children[0], frame)
                 if value.kind == "propagate" &&
-                   value.items.len() == 1 {
+                   value.data().items.len() == 1 {
                     return TreeExec.returned(
-                        value.items[0])
+                        value.data().items[0])
                 }
             }
             return TreeExec.next()
@@ -14547,9 +14601,9 @@ class TreeInterpreter {
                         node.children[0], frame)
                 }
             if value.kind == "propagate" &&
-               value.items.len() == 1 {
+               value.data().items.len() == 1 {
                 return TreeExec.returned(
-                    value.items[0])
+                    value.data().items[0])
             }
             return TreeExec.returned(value)
         }
@@ -14558,9 +14612,9 @@ class TreeInterpreter {
                 self.expression(
                     node.children[0], frame)
             if condition_value.kind == "propagate" &&
-               condition_value.items.len() == 1 {
+               condition_value.data().items.len() == 1 {
                 return TreeExec.returned(
-                    condition_value.items[0])
+                    condition_value.data().items[0])
             }
             let condition: bool =
                 self.truth(node, condition_value)
@@ -14857,13 +14911,13 @@ class TreeInterpreter {
             let element: LayoutAnswer =
                 self.layout(type.args[0])
             for index: int in 0..type.array_length {
-                if index >= value.items.len() ||
+                if index >= value.data().items.len() ||
                    !self.ffi_memory_write_value(
                        function, memory,
                        address +
                            ((index *
                              element.value.size) as u64),
-                       type.args[0], value.items[index],
+                       type.args[0], value.data().items[index],
                        bridges) {
                     return false
                 }
@@ -14885,7 +14939,7 @@ class TreeInterpreter {
                         match record.offsets.get(
                                 field.name) {
                             some(offset) => {
-                                match value.fields.value(
+                                match value.field_value(
                                         field.name) {
                                     some(stored) => {
                                         if !self.ffi_memory_write_value(
@@ -16813,7 +16867,7 @@ class TreeInterpreter {
             let flow: TreeExec =
                 self.statement(statement, frame)
             if flow.kind == "return" {
-                result = flow.value
+                result = flow.value()
                 break
             }
             if flow.kind != "next" { break }

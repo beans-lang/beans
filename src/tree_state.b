@@ -461,21 +461,22 @@ class TreeFrame {
 
     fn assign(binding: int,
               value: TreeValue) -> bool {
-        if self.values.contains_key(binding) {
-            let current: TreeValue =
-                self.values[binding]
-            if current.kind == "reference" {
-                match current.reference_frame {
-                    some(target) => {
-                        return target.assign(
-                            current.reference_binding,
-                            value)
+        match self.values.get(binding) {
+            some(current) => {
+                if current.kind == "reference" {
+                    match current.reference_frame {
+                        some(target) => {
+                            return target.assign(
+                                current.reference_binding,
+                                value)
+                        }
+                        none => {}
                     }
-                    none => {}
                 }
+                self.values[binding] = value
+                return true
             }
-            self.values[binding] = value
-            return true
+            none => {}
         }
         match self.parent {
             some(outer) => {
@@ -518,25 +519,31 @@ class TreeFrame {
     }
 }
 
-class TreeExec {
+// Statement completion is a value, not an interpreted object. The common
+// next/break/continue paths carry no payload and must not allocate a TreeValue
+// merely to report control flow. Only a consumer asking for the expression
+// value of a completed statement needs a represented unit.
+struct TreeExec {
     kind: string
-    value: TreeValue
-
-    fn init(kind: string, value: TreeValue) {
-        self.kind = kind
-        self.value = value
-    }
+    payload: Option<TreeValue>
 
     static fn next() -> TreeExec {
-        return new TreeExec("next", TreeValue.unit())
+        return TreeExec { kind: "next", payload: none }
     }
 
     static fn returned(value: TreeValue) -> TreeExec {
-        return new TreeExec("return", value)
+        return TreeExec { kind: "return", payload: some(value) }
     }
 
     static fn stopped(kind: string) -> TreeExec {
-        return new TreeExec(kind, TreeValue.unit())
+        return TreeExec { kind: kind, payload: none }
+    }
+
+    fn value() -> TreeValue {
+        match self.payload {
+            some(value) => { return value }
+            none => { return TreeValue.unit() }
+        }
     }
 }
 
