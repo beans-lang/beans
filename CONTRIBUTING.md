@@ -101,3 +101,119 @@ missing editor feature is a missing compiler capability.
 
 Keep changes focused, include tests for behavior changes, and avoid unrelated
 formatting in the same commit.
+
+## Dependability pilot
+
+The initial audience is developers building small command-line data tools. The
+first bounded workload reads local records, validates and transforms them,
+stores the accepted records in SQLite, and emits a deterministic report. Reuse
+`std.fs`, `std.encoding.json`, collections, and the existing
+[SQLite package](https://github.com/beans-lang/sqlite); do not introduce another
+storage layer or a service framework for this pilot.
+
+Start with macOS ARM64 and Linux x86_64 (GNU), where local SQLite package checks
+passed under both interpreter and native execution. This is local evidence,
+not user acceptance; confirm these platforms fit the prospective users' tasks.
+Treat each package's own test results as separate evidence. Additional platforms
+can join after their package, native, and interpreter checks pass; an available
+compiler archive alone is insufficient.
+
+A pilot task is complete only when the developer can:
+
+1. Install a pinned compiler, run `beansc doctor`, and build from a locked
+   dependency graph after the cache has been populated.
+2. Run the same input through interpreter and native execution and compare the
+   report and persisted rows.
+3. Refuse malformed input with a useful error and preserve previously accepted
+   data on validation or write failure.
+4. Exercise duplicate records, missing files, empty input, a locked or unwritable
+   database, and repeat execution according to the application's stated rules.
+5. Reopen the database, verify its rows, and rebuild offline. No successful exit
+   may conceal a missing write or different interpreter/native result.
+
+Record the compiler and package commits, OS/CPU, commands, expected and actual
+results, workarounds, elapsed setup time, and maintainer assistance. A repository
+regression is local evidence; it is not an independent user's completed tool.
+Prioritize observed wrong results, crashes, ownership failures, diagnostics, and
+install failures before discretionary syntax changes. Fix the owning path and
+add a failing regression before calling a problem resolved.
+
+### Five prospective-user interviews
+
+Use this checklist for five actual developers; this document does not record
+recruitment or interviews as completed. Ask each person about a recent task:
+
+- What input, output, and deployment environment did the task require?
+- What language and libraries did they use, and what specific difficulty cost
+  them time? Would Beans improve that task enough to justify migration?
+- Which compiler, package, diagnostic, and compatibility guarantees would they
+  require? What failure or missing integration would make them abandon it?
+- Can they bring a small non-sensitive task and try installation and the pilot
+  without the maintainer writing the application for them?
+- After trying it, what failed, what assistance was needed, and would they use it
+  again next week?
+
+Capture refusals and abandonment as well as completed tasks. Proceed beyond the
+baseline only when at least two people have a real task to attempt; look for
+three independently maintained tools used weekly for eight weeks and surviving
+two upgrades before widening support. These are acceptance criteria, not a
+forecast or evidence of adoption.
+
+## Independent build and release rehearsal
+
+Maintenance is currently concentrated. This checklist makes a second person's
+rehearsal possible; it does not create another maintainer or transfer publishing
+authority. The release owner selects the commit and reviews the evidence. A
+volunteer reproduces the build and local package/install checks and records
+their environment, failures, and assistance without maintainer-only shortcuts.
+
+From a fresh compiler checkout, with the pinned release bootstrap installed:
+
+```sh
+make BEANSC_BOOT=/absolute/path/to/beansc
+./build/beansc --version
+./build/beansc doctor
+make test-quick
+make test
+make test-release-package
+make test-install-release
+make test-release-completeness
+```
+
+Use Clang and the host SDK as described in the README. These local package tests
+use temporary archives and installation prefixes. They do not prove another
+platform works or publish a release. Record any toolchain, TLS, sanitizer,
+container, Windows, or network test skip separately from a passing gate.
+
+On macOS, record `command -v openssl` and `openssl version` before the TLS gate.
+The local run with system LibreSSL 3.3.6 failed the orderly-close check; the same
+source passed with OpenSSL 3.6.3. If using Homebrew OpenSSL, select its executable
+for the test server explicitly:
+
+```sh
+PATH="/opt/homebrew/opt/openssl@3/bin:$PATH" make test
+```
+
+This selects the test server tool; the native macOS client still uses
+SecureTransport. Do not treat an initial aggregate failure as a passing run
+because its failing suite later passed separately.
+
+With the docs checkout beside the compiler, Node 22 or later, and the same source
+roots, validate the public baseline too:
+
+```sh
+cd ../docs
+npm ci
+BEANS_REPO=../beans REQUIRE_BEANSC=1 npm run verify
+```
+
+`VERSION` is the authority. Refresh current README/site facts and source-derived
+API summaries; retain historical changelog entries and genuine minimum-version
+requirements. The docs version check also verifies this repository's README.
+
+The existing release workflow has a `workflow_dispatch` candidate mode with
+`publish=false`. An authorized release owner can use that to rehearse all target
+packages with `skip_autobahn=false`; its artifacts and completed gates remain
+candidate evidence. Publishing, signing authority, critical-bug disposition,
+performance results, the long fuzz campaign, and beta/RC soak are separate
+release decisions. Rehearse them with evidence before broadening release claims.

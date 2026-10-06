@@ -45,33 +45,33 @@
 # two backends to the same panic line and the same message.
 set -uo pipefail
 
-cd "$(dirname "$0")/.."
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-panicpos.XXXXXX")
+cd "$(dirname "$0")/.." || exit 1
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-panicpos.XXXXXX") || exit 1
 trap 'rm -rf "$tmp"' EXIT
 
 beansc=./build/beansc
 fails=0
 checked=0
 probed="$tmp/probed"   # runtime functions a passing case actually drove
-: >"$probed"
+: >"$probed" || exit 1
+runtime_family="$tmp/runtime-family"
 
 # The authoritative surface, read before any case runs because every case is
 # now checked against it: a host op that can panic with a position takes
 # (line, col), so pulling every Bytes/List/string/fmt-pad function with that
 # signature out of the runtime gives the set, complete by construction.
-runtime_family=$(perl -0777 -ne '
+if ! perl -0777 -ne '
   while (/\b(beans_(?:bytes_|list_|str_|fmt_pad_)[a-z0-9_]*)\s*\(([^;{)]*?(?:\([^)]*\)[^;{)]*)*?)\)\s*\{/gs) {
     my ($n, $a) = ($1, $2);
     print "$n\n" if $a =~ /long long line/ && $a =~ /long long col/;
-  }' runtime/beans_rt.c | sort -u)
-if [ -z "$runtime_family" ]; then
+  }' runtime/beans_rt.c | sort -u >"$runtime_family"; then
+    echo "cannot read the runtime panic surface" >&2
+    exit 1
+fi
+if [ ! -s "$runtime_family" ]; then
     echo "the runtime scan found no (line, col) functions at all — the pattern has rotted" >&2
     exit 1
 fi
-declare -A runtime_is_family=()
-while read -r fn; do
-    [ -n "$fn" ] && runtime_is_family[$fn]=1
-done <<<"$runtime_family"
 
 # panic_line <file> — the sole "runtime panic at ..." line a run printed, or
 # empty. Both backends use the identical wording, so a byte compare of this
@@ -153,20 +153,19 @@ claims_hold() {
         sed 's/^/  /' "$tmp/$name.llerr" >&2
         fails=$((fails + 1)); return 1
     fi
-    local called
-    called=$(grep -vE '^[[:space:]]*declare\b' "$ir" |
-             grep -E '\b(call|invoke)\b' |
-             grep -oE '@beans_[a-z0-9_]+' | tr -d '@' | sort -u)
-    local -A emitted=()
-    while read -r fn; do
-        [ -n "$fn" ] && emitted[$fn]=1
-    done <<<"$called"
+    local emitted="$tmp/$name.called"
+    if ! grep -vE '^[[:space:]]*declare\b' "$ir" |
+        grep -E '\b(call|invoke)\b' |
+        grep -oE '@beans_[a-z0-9_]+' | tr -d '@' | sort -u >"$emitted"; then
+        echo "FAIL $name: cannot read emitted runtime calls" >&2
+        fails=$((fails + 1)); return 1
+    fi
     local ok=0
     for fn in ${rtfns//,/ }; do
-        if [ -z "${runtime_is_family[$fn]+x}" ]; then
+        if ! grep -Fxq -- "$fn" "$runtime_family"; then
             echo "FAIL $name: claims $fn, which is not a (line, col) runtime function" >&2
             ok=1
-        elif [ -z "${emitted[$fn]+x}" ]; then
+        elif ! grep -Fxq -- "$fn" "$emitted"; then
             echo "FAIL $name: claims $fn but the compiler emits no call to it here" >&2
             ok=1
         fi
@@ -385,8 +384,8 @@ agree guard_divide_by_zero - 'fn main() {
 
 # A panic from the compound operator on an index target must report the index
 # position on both backends. The native backend anchors an index-target
-# assignment at the index (src/mir.b), so the interpreter builds the compound
-# operator node from the index position too — otherwise `v[0] /= 0` reports the
+# assignment at the index (src/mir.b), so the interpreter passes that original
+# index node to the numeric helper too — otherwise `v[0] /= 0` reports the
 # operator column on the interpreter and the `[` column natively. Slice and
 # fixed array both, since the slice store rides the array store path.
 agree guard_slice_compound_divzero - 'fn main() {
@@ -411,56 +410,68 @@ agree guard_array_compound_divzero - 'fn main() {
 # position takes (line, col). Pull every such Bytes/List/string/fmt-pad
 # function out of the runtime and require each to be either driven by a case
 # above or named here with the reason it is not.
-declare -A EXCLUDED=(
-  [beans_bytes_filled]="new Bytes takes one argument, so no user call reaches the filled constructor"
-  [beans_bytes_from_raw]="unsafe raw-pointer constructor, not reachable from safe code"
-  [beans_bytes_slice_to_string]="not exposed as a Bytes method (the checker refuses it)"
-  [beans_bytes_slice_to_string_full]="not exposed as a Bytes method (the checker refuses it)"
-)
+excluded="$tmp/excluded"
+cat >"$excluded" <<'EXCLUDED' || exit 1
+beans_bytes_filled new Bytes takes one argument, so no user call reaches the filled constructor
+beans_bytes_from_raw unsafe raw-pointer constructor, not reachable from safe code
+beans_bytes_slice_to_string not exposed as a Bytes method (the checker refuses it)
+beans_bytes_slice_to_string_full not exposed as a Bytes method (the checker refuses it)
+EXCLUDED
+
+exclusion_reason() {
+    local name reason
+    while read -r name reason; do
+        if [ "$name" = "$1" ]; then
+            printf '%s\n' "$reason"
+            return 0
+        fi
+    done <"$excluded"
+    return 1
+}
 
 echo
 echo "coverage over Bytes/List/string/fmt-pad panic paths:"
 cover_fail=0
-# Membership is an array lookup, not `printf ... | grep -q`. That pipeline
+# Membership reads exact lines in files, supported by macOS's Bash 3.2 as
+# well as newer Bash. Associative arrays stopped that shell before any case
+# ran, even returning zero. Do not use `printf ... | grep -q`: that pipeline
 # lies under `set -o pipefail`: grep -q exits the moment it matches, printf is
 # then killed by SIGPIPE, and the pipeline's status becomes 141 — so a name
 # that WAS found reads as missing. It only bites once the haystack outgrows a
 # pipe buffer, which is to say it sits harmless until the day the surface
 # grows and then reports UNCOVERED for something demonstrably covered.
-declare -A is_probed=()
-while read -r fn; do
-    [ -n "$fn" ] && is_probed[$fn]=1
-done < <(sort -u "$probed")
+probed_set="$tmp/probed-set"
+sort -u "$probed" >"$probed_set" || exit 1
 
 while read -r fn; do
     [ -z "$fn" ] && continue
-    if [ -n "${is_probed[$fn]+x}" ]; then
+    if grep -Fxq -- "$fn" "$probed_set"; then
         continue
     fi
-    if [ -n "${EXCLUDED[$fn]+x}" ]; then
-        echo "  excluded: $fn — ${EXCLUDED[$fn]}"
+    if reason=$(exclusion_reason "$fn"); then
+        echo "  excluded: $fn — $reason"
         continue
     fi
     echo "UNCOVERED: $fn can panic with a position but no case drives it and it is not excluded" >&2
     cover_fail=1
-done <<<"$runtime_family"
+done <"$runtime_family"
 
 # A stale exclusion (a function that no longer exists) hides drift too.
-for fn in "${!EXCLUDED[@]}"; do
-    if [ -z "${runtime_is_family[$fn]+x}" ]; then
+while read -r fn reason; do
+    if ! grep -Fxq -- "$fn" "$runtime_family"; then
         echo "STALE EXCLUSION: $fn is excluded but no longer a (line,col) runtime function" >&2
         cover_fail=1
     fi
-done
+done <"$excluded"
 
 # A name that is probed but not in the surface means the two sides have drifted
 # apart in the direction the coverage loop cannot see.
-for fn in "${!is_probed[@]}"; do
-    if [ -z "${runtime_is_family[$fn]+x}" ]; then
+while read -r fn; do
+    if ! grep -Fxq -- "$fn" "$runtime_family"; then
         echo "PROBED BUT NOT IN THE SURFACE: $fn" >&2
         cover_fail=1
     fi
-done
+done <"$probed_set"
 
 echo
 if [ "$fails" -ne 0 ] || [ "$cover_fail" -ne 0 ]; then

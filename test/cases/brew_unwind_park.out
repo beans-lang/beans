@@ -15,4 +15,4 @@ sibling panics during the parked cleanup: panic
   unjoined done
   drop parent-held-3
 unjoined child at the unwind: panic
-cancelled mid-cleanup then a fresh panic: cancelled / panic
+cancelled mid-cleanup then a fresh panic: panic / panic

@@ -2,6 +2,78 @@
 
 This file records user-facing changes in each Beans release.
 
+## [0.1.51] - 2026-10-06
+
+Release contract: language=1.0, runtime_abi=22.
+
+- Reduced `beansc run` overhead by omitting unused collection storage from
+  scalar values, keeping statement completion inline, caching decoded literals,
+  and avoiding synthetic expression nodes and redundant binding lookups in
+  compound assignments. `run` remains the reference interpreter.
+- Numeric range loops execute incrementally instead of constructing every
+  element before the loop starts. An early `break`, return, or panic stops
+  iteration without allocating the remaining range; signed and unsigned widths,
+  inclusive bounds, captures, and cleanup keep their existing semantics.
+- Failed typed expressions preserve their original panic and deferred cleanup.
+  A failed compound operation leaves its destination value intact.
+- Panic-position coverage and encoding sanitizer checks run on macOS Bash 3.2
+  instead of silently skipping or stopping before their checks finish.
+
+- Cancelled fiber parks use the existing cleanup paths on ELF/Mach-O x86_64
+  and ARM64 targets. Defers, owned values, and child scope joins finish before
+  the join reports cancellation. Cleanup ignores later cancellation requests;
+  `contained` still catches panic alone. Targets without unwind support retain
+  frame abandonment on both backends.
+- Interrupted Brew and thread joins leave their handles available for cleanup
+  or a later join. Cancelling scope cleanup requests cancellation of all owned
+  children before joining any, including compiler-generated scope joins.
+- Network waits release runtime-owned receive buffers, pending connection
+  sockets, and resolver lists during cancellation. Interpreter cancellation
+  stops further address attempts before cleanup resumes.
+- Hosted runtime entries for fiber readiness and poller availability let Linux
+  interpreted database packages call the same readiness owner as native code.
+- Runtime ABI advances to 22 for the internal cancellation handoff and cleanup
+  mask; the language contract remains 1.0.
+
+## [0.1.50] - 2026-10-05
+
+Release contract: language=1.0, runtime_abi=21.
+
+- Added unsafe `intrinsic.with_collection_deferred(fn() -> unit)` for short,
+  non-parking multi-write regions. Nested regions and contained panic restore
+  the existing collector gates on both backends, including nested interpreted
+  execution. It does not provide synchronization, rollback, or protection from
+  immediate ARC destruction. Runtime ABI advances to 21; language remains 1.0.
+- Fixed Windows logging shutdown ordering by selecting the matching C++ runtime
+  and preserving TLS teardown order.
+- Strengthened collection observation tests and the sanitizer gate so hand-linked
+  test programs are checked against the IR producer's sanitizer settings.
+- The release passed all 26 target package/install gates. Detailed evidence and
+  local environment limitations are in [docs/BUGFIX_TODO.md](docs/BUGFIX_TODO.md).
+  This does not close the performance, long fuzz, or beta/RC soak gates.
+
+## [0.1.49] - 2026-09-20
+
+- Shared-library builds export the idempotent `beans_module_start` entry for
+  reflection registration, static initializers, and singleton startup. Hosts
+  must call it after loading or instantiating the library; ordinary programs
+  call it from `main`.
+- Freestanding runtime profiles refuse unsupported concurrency operations
+  reached through reflection instead of failing to link an unused registry.
+
+## [0.1.48] - 2026-09-19
+
+- Windows install and upgrade use the built-in .NET SHA-256 and ZIP APIs instead
+  of requiring newer `Get-FileHash` and `Expand-Archive` cmdlets.
+- `beansc upgrade --force` reaches the installer through the Unix launcher,
+  Windows launcher, and compiler command path, allowing a same-version reinstall.
+
+## [0.1.47] - 2026-09-19
+
+- Package manifests are ingested once per normalized package root. A dependency
+  reached through both a Git import and a nested local `require path` no longer
+  duplicates C source and link rows or fails with duplicate symbols.
+
 ## [0.1.46] - 2026-09-17
 
 One fix, for a regression 0.1.45 shipped.

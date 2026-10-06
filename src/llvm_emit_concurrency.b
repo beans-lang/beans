@@ -694,6 +694,9 @@ partial class LlvmTextEmitter {
         self.require_declare(
             "beans_contained_caught",
             "ptr @beans_contained_caught()")
+        self.require_declare(
+            "beans_fiber_cancelling",
+            "i32 @beans_fiber_cancelling()")
         let llvm: string = self.type_text(payload)
         // One line per instruction, never a continuation: the debug pass
         // appends `!dbg` to every line it does not recognise as a label, and
@@ -708,11 +711,11 @@ partial class LlvmTextEmitter {
             output =
                 "{output}  %cc.oktag{id} = insertvalue {rtype} zeroinitializer, i1 false, 0\n  %cc.okr{id} = insertvalue {rtype} %cc.oktag{id}, {llvm} %cc.v{id}, 1\n"
             output =
-                "{output}  br label %cc.done{id}\ncc.eh{id}:\n  %cc.lp{id} = landingpad \{ ptr, i32 \} cleanup\n  %cc.msg{id} = call ptr @beans_contained_caught()\n"
+                "{output}  br label %cc.done{id}\n{self.contained_catch_pad(id)}"
             output =
                 "{output}{self.contained_error_build(instruction, id, "%cc.errobj{id}")}"
             output =
-                "{output}  %cc.errtag{id} = insertvalue {rtype} zeroinitializer, i1 true, 0\n  %cc.errr{id} = insertvalue {rtype} %cc.errtag{id}, ptr %cc.errobj{id}, 2\n  br label %cc.done{id}\ncc.done{id}:\n  %cc.res{id} = phi {rtype} [ %cc.okr{id}, %cc.ok{id} ], [ %cc.errr{id}, %cc.eh{id} ]\n"
+                "{output}  %cc.errtag{id} = insertvalue {rtype} zeroinitializer, i1 true, 0\n  %cc.errr{id} = insertvalue {rtype} %cc.errtag{id}, ptr %cc.errobj{id}, 2\n  br label %cc.done{id}\ncc.done{id}:\n  %cc.res{id} = phi {rtype} [ %cc.okr{id}, %cc.ok{id} ], [ %cc.errr{id}, %cc.catch{id} ]\n"
             values[instruction.result] = "%cc.res{id}"
             return output
         }
@@ -742,19 +745,34 @@ partial class LlvmTextEmitter {
         output =
             "{output}{conversion.setup}  %cc.okr{id} = call ptr @beans_alloc(i64 16, i64 {1 | (mask << 3)})\n  store i64 0, ptr %cc.okr{id}\n  %cc.okslot{id} = getelementptr i8, ptr %cc.okr{id}, i64 8\n  store i64 {conversion.value}, ptr %cc.okslot{id}\n"
         output =
-            "{output}  br label %cc.done{id}\ncc.eh{id}:\n  %cc.lp{id} = landingpad \{ ptr, i32 \} cleanup\n  %cc.msg{id} = call ptr @beans_contained_caught()\n  %cc.errr{id} = call ptr @beans_alloc(i64 16, i64 {self.result_ref_meta()})\n  store i64 1, ptr %cc.errr{id}\n"
+            "{output}  br label %cc.done{id}\n{self.contained_catch_pad(id)}  %cc.errr{id} = call ptr @beans_alloc(i64 16, i64 {self.result_ref_meta()})\n  store i64 1, ptr %cc.errr{id}\n"
         output =
             "{output}{self.contained_error_build(instruction, id, "%cc.errobj{id}")}"
         output =
-            "{output}  %cc.errslot{id} = getelementptr i8, ptr %cc.errr{id}, i64 8\n  %cc.erri{id} = ptrtoint ptr %cc.errobj{id} to i64\n  store i64 %cc.erri{id}, ptr %cc.errslot{id}\n  br label %cc.done{id}\ncc.done{id}:\n  %cc.res{id} = phi ptr [ %cc.okr{id}, %cc.ok{id} ], [ %cc.errr{id}, %cc.eh{id} ]\n"
+            "{output}  %cc.errslot{id} = getelementptr i8, ptr %cc.errr{id}, i64 8\n  %cc.erri{id} = ptrtoint ptr %cc.errobj{id} to i64\n  store i64 %cc.erri{id}, ptr %cc.errslot{id}\n  br label %cc.done{id}\ncc.done{id}:\n  %cc.res{id} = phi ptr [ %cc.okr{id}, %cc.ok{id} ], [ %cc.errr{id}, %cc.catch{id} ]\n"
         values[instruction.result] = "%cc.res{id}"
         return output
     }
 
+    // `contained` catches panic alone. A cancellation token passes into the
+    // enclosing frame's existing cleanup body, or resumes immediately when
+    // that frame has nothing to clean. No second unwind or cleanup owner.
+    fn contained_catch_pad(id: int) -> string {
+        var pass: string =
+            "  resume \{ ptr, i32 \} %cc.lp{id}\n"
+        if self.unwind_pad != "" {
+            self.unwind_cancel_edges.push(
+                "[ %cc.lp{id}, %cc.cancel{id} ]")
+            self.unwind_used = true
+            pass = "  br label %{self.unwind_pad}.cleanup\n"
+        }
+        return "cc.eh{id}:\n  %cc.lp{id} = landingpad \{ ptr, i32 \} cleanup\n  %cc.cancelled{id} = call i32 @beans_fiber_cancelling()\n  %cc.iscancel{id} = icmp ne i32 %cc.cancelled{id}, 0\n  br i1 %cc.iscancel{id}, label %cc.cancel{id}, label %cc.catch{id}\ncc.cancel{id}:\n  call void @beans_contained_leave()\n{pass}cc.catch{id}:\n  %cc.msg{id} = call ptr @beans_contained_caught()\n"
+    }
+
     // The caught arm's Error: the report the unwind was carrying moves into a
     // fresh Error of kind `panic`. There is only one kind here — a cancel
-    // does not unwind (beans_fiber_exit_cancelled) and so never reaches a
-    // catch frame, and there is no handle to close twice — which is the
+    // passes through the catch pad to the frame's cleanup, and there is no
+    // handle to close twice — which is the
     // whole difference from brew_error_build's three-way select.
     fn contained_error_build(
         instruction: MirInstruction,
@@ -1463,12 +1481,22 @@ partial class LlvmTextEmitter {
                 self.defer_sites[count - 1 - step]
             var cleanup_name: string = ""
             var capture_count: int = 0
+            var scope_join: bool = false
             match self.cleanup_functions.get(
                       site.cleanup_id) {
                 some(cleanup) => {
                     cleanup_name = cleanup.name
                     capture_count =
                         cleanup.captures.len()
+                    for block: MirBlock in cleanup.blocks {
+                        for action: MirInstruction in block.instructions {
+                            if action.op == "builtin_method" &&
+                               (action.text == "brew_scope_join" ||
+                                action.text == "taskgroup_scope_join") {
+                                scope_join = true
+                            }
+                        }
+                    }
                 }
                 none => {}
             }
@@ -1524,8 +1552,18 @@ partial class LlvmTextEmitter {
             // during the unwind, reported as a double panic. The interpreter
             // likewise moves past a defer that panicked and runs the older
             // ones (issue #44).
+            // An automatic join is resumable: cancellation may interrupt its
+            // park before it consumed the child. Keep it armed until it
+            // returns, so the owning frame's cleanup can cancel all children
+            // and retry this join. Joined handles already no-op on retry.
+            let before: string =
+                if scope_join { "" }
+                else { "  store i1 0, ptr %defer.flag{site.cleanup_id}\n" }
+            let after: string =
+                if scope_join { "  store i1 0, ptr %defer.flag{site.cleanup_id}\n" }
+                else { "" }
             output =
-                "{output}  %defer.armed{id} = load i1, ptr %defer.flag{site.cleanup_id}\n  br i1 %defer.armed{id}, label %defer.run{id}, label %defer.next{id}\ndefer.run{id}:\n  store i1 0, ptr %defer.flag{site.cleanup_id}\n{body}  call void {self.function_symbols[cleanup_name]}({arguments.join(", ")})\n  br label %defer.next{id}\ndefer.next{id}:\n"
+                "{output}  %defer.armed{id} = load i1, ptr %defer.flag{site.cleanup_id}\n  br i1 %defer.armed{id}, label %defer.run{id}, label %defer.next{id}\ndefer.run{id}:\n{before}{body}  call void {self.function_symbols[cleanup_name]}({arguments.join(", ")})\n{after}  br label %defer.next{id}\ndefer.next{id}:\n"
         }
         return move output
     }

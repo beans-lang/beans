@@ -77,12 +77,17 @@ class TreeMutexCell {
 // One interpreted channel: the buffered values plus the parked senders and
 // receivers, all behind one Mutex. Waiters park on their own one-slot signal
 // channel, so the try halves can answer without ever joining the queue.
+class TreeChannelWaiter {
+    signal: Channel<int>
+    fn init() { self.signal = new Channel<int>(1) }
+}
+
 class TreeChannelState {
     values: List<TreeValue>
     capacity: int
     closed: bool
-    send_waiters: List<Channel<int>>
-    receive_waiters: List<Channel<int>>
+    send_waiters: List<TreeChannelWaiter>
+    receive_waiters: List<TreeChannelWaiter>
 
     fn init(capacity: int) {
         self.values = []
@@ -190,8 +195,7 @@ class TreeBrewState {
     entry_context: u64
     done: bool
     panicked: bool
-    // The child observed a cancel at a park and left through it, so its
-    // frame never returned: no result, no panic message, just the ending.
+    // The child's tree walk observed cancellation and cleaned its frames.
     cancelled: bool
     panic_message: string
     result: Option<TreeValue>
@@ -221,25 +225,30 @@ class TreeBrewState {
     }
 
     fn run() {
-        // This runs on the child's own fiber, so the walker's per-fiber
-        // unwind entry it reads and writes is this fiber's alone: an outer
-        // fiber parked mid-unwind inside a defer or a deinit keeps its own
-        // entry untouched, however many siblings finish or panic while it
-        // waits — the same thing the native runtime's per-fiber
-        // unwind_status gives it.
-        //
-        // Fiber records are pooled. A fiber cancelled while parked inside
-        // its own cleanup exits through the runtime and never reaches the
-        // end_unwind below, and a later fiber can start life at the same
-        // address; whatever entry sits under this address describes that
-        // dead fiber. Drop it before the body runs — the same zeroing
-        // native's spawn gives a reused record's unwind_status — or an
-        // ordinary catchable panic here becomes a bogus process-wide
-        // double panic naming the dead fiber's message. The catch-frame
-        // count of a `contained` call is left behind by the same death, and
-        // is dropped here beside it — see contained_reset for why no program
-        // can currently see the difference and why the two are reset
-        // together anyway.
+        // Cancellation keeps the same target capability boundary on both
+        // executors. Unsupported targets retain their prior frame abandonment.
+        if !self.owner.program.target.supports_unwind() {
+            self.run_body()
+            return
+        }
+        let cancellation: LocalStoredCallback<fn(RawPtr<u8>)> =
+            LocalStoredCallback.create(0, fn() {
+                self.owner.begin_cancel_unwind()
+            })
+        unsafe {
+            beans_fiber_set_cancel_handler(
+                cancellation.function(), cancellation.context())
+        }
+        self.run_body()
+        unsafe {
+            beans_fiber_set_cancel_handler(
+                cancellation.function(), RawPtr.null())
+        }
+        cancellation.close()
+    }
+
+    fn run_body() {
+        // Pooled fiber identities cannot retain either per-fiber fact.
         self.owner.end_unwind()
         self.owner.contained_reset()
         let value: TreeValue =
@@ -250,8 +259,11 @@ class TreeBrewState {
             // the fiber entry, where a contained unwind ends: defers ran and
             // owned locals dropped on the way up. Deliver the failure to the
             // join and put the interpreter back to a running state.
-            self.panicked = true
-            self.panic_message = self.owner.panic_text
+            self.cancelled = self.owner.fiber_cancelling()
+            if !self.cancelled {
+                self.panicked = true
+                self.panic_message = self.owner.panic_text
+            }
             self.owner.failed = false
             self.owner.panic_text = ""
         } else {
@@ -449,21 +461,22 @@ class TreeFrame {
 
     fn assign(binding: int,
               value: TreeValue) -> bool {
-        if self.values.contains_key(binding) {
-            let current: TreeValue =
-                self.values[binding]
-            if current.kind == "reference" {
-                match current.reference_frame {
-                    some(target) => {
-                        return target.assign(
-                            current.reference_binding,
-                            value)
+        match self.values.get(binding) {
+            some(current) => {
+                if current.kind == "reference" {
+                    match current.reference_frame {
+                        some(target) => {
+                            return target.assign(
+                                current.reference_binding,
+                                value)
+                        }
+                        none => {}
                     }
-                    none => {}
                 }
+                self.values[binding] = value
+                return true
             }
-            self.values[binding] = value
-            return true
+            none => {}
         }
         match self.parent {
             some(outer) => {
@@ -506,25 +519,31 @@ class TreeFrame {
     }
 }
 
-class TreeExec {
+// Statement completion is a value, not an interpreted object. The common
+// next/break/continue paths carry no payload and must not allocate a TreeValue
+// merely to report control flow. Only a consumer asking for the expression
+// value of a completed statement needs a represented unit.
+struct TreeExec {
     kind: string
-    value: TreeValue
-
-    fn init(kind: string, value: TreeValue) {
-        self.kind = kind
-        self.value = value
-    }
+    payload: Option<TreeValue>
 
     static fn next() -> TreeExec {
-        return new TreeExec("next", TreeValue.unit())
+        return TreeExec { kind: "next", payload: none }
     }
 
     static fn returned(value: TreeValue) -> TreeExec {
-        return new TreeExec("return", value)
+        return TreeExec { kind: "return", payload: some(value) }
     }
 
     static fn stopped(kind: string) -> TreeExec {
-        return new TreeExec(kind, TreeValue.unit())
+        return TreeExec { kind: kind, payload: none }
+    }
+
+    fn value() -> TreeValue {
+        match self.payload {
+            some(value) => { return value }
+            none => { return TreeValue.unit() }
+        }
     }
 }
 

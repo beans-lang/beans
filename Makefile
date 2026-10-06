@@ -161,6 +161,9 @@ test-semantics: $(BIN)
 	./test/differential.sh
 	./test/panic.sh
 	./test/numerics.sh
+	bash ./test/interpreter_ranges.sh
+	bash ./test/interpreter_values.sh
+	bash ./test/interpreter_execution.sh
 	bash ./test/decimal_conformance.sh
 	./test/moves.sh
 	bash ./test/ownership_fuzz.sh smoke
@@ -310,6 +313,9 @@ test-core: $(BIN)
 	./test/version.sh
 	./test/deterministic_build.sh
 	./test/numerics.sh
+	bash ./test/interpreter_ranges.sh
+	bash ./test/interpreter_values.sh
+	bash ./test/interpreter_execution.sh
 	bash ./test/decimal_conformance.sh
 	./test/moves.sh
 	bash ./test/borrowed_iteration.sh

@@ -1,0 +1,114 @@
+inner newer 0
+inner older 0
+drop inner-0
+middle defer 0
+drop middle-0
+outer defer 0
+drop outer-0
+joined 0: cancelled
+inner newer 1
+inner older 1
+drop inner-1
+middle defer 1
+drop middle-1
+outer defer 1
+drop outer-1
+joined 1: cancelled
+inner newer 2
+inner older 2
+drop inner-2
+middle defer 2
+drop middle-2
+outer defer 2
+drop outer-2
+joined 2: cancelled
+inner newer 3
+inner older 3
+drop inner-3
+middle defer 3
+drop middle-3
+outer defer 3
+drop outer-3
+joined 3: cancelled
+child defer
+drop child
+inner newer 4
+inner older 4
+drop inner-4
+middle defer 4
+drop middle-4
+outer defer 4
+drop outer-4
+joined 4: cancelled
+child defer
+drop child
+inner newer 5
+inner older 5
+drop inner-5
+middle defer 5
+drop middle-5
+outer defer 5
+drop outer-5
+joined 5: cancelled
+child defer
+drop child
+inner newer 6
+inner older 6
+drop inner-6
+middle defer 6
+drop middle-6
+outer defer 6
+drop outer-6
+joined 6: cancelled
+thread waiter defer
+drop thread-waiter
+thread waiter: cancelled
+thread result 42
+thread waiter defer
+drop thread-waiter
+second thread join: panic
+reserved thread detach: panic
+thread waiter defer
+drop thread-waiter
+first thread result 42
+wide waiter defer
+wide waiter: cancelled
+wide thread result 42
+implicit cancellation 0
+newer cleanup waits
+drop older-child
+newer cleanup finished
+drop newer-child
+implicit parent defer
+drop implicit-parent
+drop discarded-return
+implicit parent: cancelled
+implicit cancellation 1
+newer cleanup waits
+drop older-child
+newer cleanup finished
+drop newer-child
+implicit parent defer
+drop implicit-parent
+drop discarded-return
+implicit parent: cancelled
+implicit group cancellation
+newer cleanup waits
+drop older-child
+newer cleanup finished
+drop newer-child
+implicit parent defer
+drop implicit-parent
+drop discarded-return
+implicit group parent: cancelled
+race defer 0
+drop race-0
+signal won 0: 7
+race defer 1
+drop race-1
+signal won 1: 7
+race defer 2
+drop race-2
+signal won 2: 8
+committed send 8
+done

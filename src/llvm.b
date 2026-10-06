@@ -189,6 +189,9 @@ partial class LlvmTextEmitter {
     unwind_block: string
     unwind_alias_from: List<string>
     unwind_alias_to: List<string>
+    // Cancelled contained calls pass their exception to this frame's same
+    // cleanup body; their incoming token and predecessor are recorded here.
+    unwind_cancel_edges: List<string>
     // In-flight owned temporaries (src/llvm_unwind.b): MIR values that hold
     // an owned reference while an instruction that can panic runs. The scan
     // before the body names the candidates and the ones a `return` consumes;
@@ -239,6 +242,7 @@ partial class LlvmTextEmitter {
         self.unwind_block = ""
         self.unwind_alias_from = []
         self.unwind_alias_to = []
+        self.unwind_cancel_edges = []
         self.unwind_temp_candidate = {}
         self.unwind_temp_return = {}
         self.unwind_temp_slot = {}

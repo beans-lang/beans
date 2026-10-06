@@ -143,6 +143,16 @@ partial class LlvmTextEmitter {
         // — every brewing program, since the pads landed.
         var output: string =
             "{self.unwind_pad}:\n  {token} = landingpad \{ ptr, i32 \} cleanup\n"
+        if self.unwind_cancel_edges.len() != 0 {
+            let arrival: string = "%eh.arrival{id}"
+            output =
+                "{self.unwind_pad}:\n  {arrival} = landingpad \{ ptr, i32 \} cleanup\n  br label %{self.unwind_pad}.cleanup\n{self.unwind_pad}.cleanup:\n"
+            let incoming: string =
+                "[ {arrival}, %{self.unwind_pad} ], {self.unwind_cancel_edges.join(", ")}"
+            output =
+                "{output}{self.unwind_phi("  {token} = phi \{ ptr, i32 \} {incoming}")}\n"
+        }
+        output = "{output}{self.unwind_cancel_children(function)}"
         output =
             "{output}{self.unwind_pad_inner_units(function)}"
         let position: MirInstruction =
@@ -176,6 +186,43 @@ partial class LlvmTextEmitter {
         output =
             "{output}{self.release_function_cells(function)}"
         return "{output}  resume \{ ptr, i32 \} {token}\n"
+    }
+
+    // Request every child's cancellation before any defer can park joining
+    // one of them. The local live flags are already the ownership source of
+    // truth; joined handles and drained groups make these requests no-ops.
+    fn unwind_cancel_children(function: MirFunction) -> string {
+        var body: string = ""
+        var index: int = function.locals.len()
+        for index > 0 {
+            index -= 1
+            let local: MirLocal = function.locals[index]
+            let name: string = canonical_hir_name(local.type.name)
+            if (name != "Brew" && name != "TaskGroup") ||
+               !self.unwind_drops_local(function, local) {
+                continue
+            }
+            let entry: string =
+                if name == "Brew" { "beans_brew_cancel" }
+                else { "beans_taskgroup_request_cancel" }
+            self.require_declare(entry, "void @{entry}(ptr)")
+            let id: int = self.fresh()
+            let guard: string =
+                if self.cell_local(local) {
+                    "  %cancel.cell{id} = load ptr, ptr %l{local.id}\n  %cancel.live{id} = icmp ne ptr %cancel.cell{id}, null\n"
+                } else {
+                    "  %cancel.live{id} = load i1, ptr %l{local.id}.live\n"
+                }
+            let slot: string =
+                if self.cell_local(local) { "%cancel.cell{id}" }
+                else { "%l{local.id}" }
+            body = "{body}{guard}  br i1 %cancel.live{id}, label %cancel.child{id}, label %cancel.next{id}\ncancel.child{id}:\n  %cancel.handle{id} = load ptr, ptr {slot}\n  call void @{entry}(ptr %cancel.handle{id})\n  br label %cancel.next{id}\ncancel.next{id}:\n"
+        }
+        if body == "" { return "" }
+        self.require_declare(
+            "beans_fiber_cancelling", "i32 @beans_fiber_cancelling()")
+        let id: int = self.fresh()
+        return "  %cancel.status{id} = call i32 @beans_fiber_cancelling()\n  %cancel.active{id} = icmp ne i32 %cancel.status{id}, 0\n  br i1 %cancel.active{id}, label %cancel.children{id}, label %cancel.done{id}\ncancel.children{id}:\n{body}  br label %cancel.done{id}\ncancel.done{id}:\n"
     }
 
     // A local's drop as the pad emits it: 2 is "the flag's value is not
@@ -945,6 +992,7 @@ partial class LlvmTextEmitter {
         self.unwind_block = ""
         self.unwind_alias_from = []
         self.unwind_alias_to = []
+        self.unwind_cancel_edges = []
         self.unwind_temp_candidate = {}
         self.unwind_temp_return = {}
         self.unwind_temp_slot = {}

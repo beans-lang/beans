@@ -168,6 +168,9 @@ struct BeansFiber {
     int forgotten;         // nobody will join; reclaim on finish
     int joined;            // join already delivered (a second join aborts)
     int is_root;           // the promoted thread itself; never finishes
+    void (*cancel_handler)(void*);
+    void* cancel_argument;
+    int cancel_mask;
 
     // Completion hook: fires in settle() when the fiber ends — return,
     // panic, or cancel alike — on the owner worker, before any joiner is
@@ -808,11 +811,10 @@ void beans_fiber_sleep(long long nanos) {
     while (fiber_now() < deadline) {
         if (beans_fiber_park() == BEANS_FIBER_PARK_CANCELLED) {
             // The cancel is the answer to this park: drop the timer entry so
-            // nothing fires at a retired fiber, and end here. Until the frame
-            // unwind lands the frame is abandoned, the same as a contained
-            // panic — a cancel that returns beats one that never does.
+            // nothing fires at a retired fiber, then begin its cleanup.
             sleeper_remove(worker, worker->current);
             beans_fiber_exit_cancelled();
+            return;
         }
     }
 }
@@ -1115,6 +1117,7 @@ long long beans_fiber_wait_io(long long fd, long long write,
             poller_disarm(worker, fiber);
             if (deadline >= 0) sleeper_remove(worker, fiber);
             beans_fiber_exit_cancelled();
+            return -1;
         }
     }
     if (deadline >= 0) sleeper_remove(worker, fiber);
@@ -1350,6 +1353,8 @@ int beans_fiber_unwinding(BeansFiber* fiber) {
 }
 
 const char* beans_fiber_message(BeansFiber* fiber) {
+    if (fiber && fiber->unwind_status == BEANS_FIBER_CANCELLED)
+        return "cancelled";
     return fiber ? fiber->message : "";
 }
 
@@ -1491,19 +1496,35 @@ void beans_fiber_panic(const char* message) {
 }
 
 void beans_fiber_exit_cancelled(void) {
-    // Cancel abandons the fiber's frames rather than unwinding them, on every
-    // build. The panic unwind above runs frames the compiler emitted cleanup
-    // pads for, but a cancel is delivered here by a runtime park primitive
-    // (Gate/channel/join), and in the tree interpreter that primitive is
-    // hosting a tree walk whose defers and deinits are tree-level data, not
-    // pads this unwinder could run. Unwinding a cancel natively while the
-    // interpreter abandons it would make the two backends disagree on the same
-    // program — the invariant this project holds above the feature. So both
-    // abandon, and the cancellation unwind (spec/CONCURRENCY.md) waits until
-    // the interpreter's park sites can hand a cancel back to the walker for a
-    // tree-level unwind, the same way a contained panic already is (#44).
-    fiber_finish(BEANS_FIBER_CANCELLED);
+    BeansFiber* fiber = tls_worker->current;
+    if (fiber->cancel_handler) {
+        fiber->cancel_mask = 1;
+        fiber->cancel_handler(fiber->cancel_argument);
+        return;
+    }
+    beans_fiber_begin_unwind(BEANS_FIBER_CANCELLED);
     __builtin_unreachable();
+}
+
+void beans_fiber_set_cancel_handler(void (*handler)(void*), void* argument) {
+    BeansFiber* fiber = tls_worker->current;
+    fiber->cancel_handler = argument ? handler : NULL;
+    fiber->cancel_argument = argument;
+}
+
+void beans_fiber_mask_cancel(int masked) {
+    if (tls_worker && tls_worker->current)
+        tls_worker->current->cancel_mask = masked;
+}
+
+int beans_fiber_cancelling(void) {
+    return tls_worker && tls_worker->current &&
+           tls_worker->current->unwind_status == BEANS_FIBER_CANCELLED;
+}
+
+static int fiber_cancel_observable(BeansFiber* fiber) {
+    return !fiber->cancel_mask && !fiber->unwind_status &&
+           atomic_load(&fiber->cancel_flag);
 }
 
 // Wakes may be spurious: a racer that latches while the scheduler is
@@ -1511,22 +1532,22 @@ void beans_fiber_exit_cancelled(void) {
 // on its condition, the same discipline a condvar wait demands.
 int beans_fiber_park(void) {
     BeansFiber* fiber = tls_worker->current;
-    if (atomic_load(&fiber->cancel_flag)) return BEANS_FIBER_PARK_CANCELLED;
+    if (fiber_cancel_observable(fiber)) return BEANS_FIBER_PARK_CANCELLED;
     if (atomic_exchange(&fiber->pending_wake, 0)) return BEANS_FIBER_WOKEN;
     atomic_store(&fiber->state, FIBER_PARKING);
     fiber_to_scheduler(DISPOSE_PARK);
     // Resumed. A cancel that raced the wake still reads as cancelled — the
     // contract is "observed at the next park", and this is that park.
-    if (atomic_load(&fiber->cancel_flag)) return BEANS_FIBER_PARK_CANCELLED;
+    if (fiber_cancel_observable(fiber)) return BEANS_FIBER_PARK_CANCELLED;
     return BEANS_FIBER_WOKEN;
 }
 
 int beans_fiber_yield(void) {
     BeansFiber* fiber = tls_worker->current;
-    if (atomic_load(&fiber->cancel_flag)) return BEANS_FIBER_PARK_CANCELLED;
+    if (fiber_cancel_observable(fiber)) return BEANS_FIBER_PARK_CANCELLED;
     atomic_store(&fiber->state, FIBER_PARKING);
     fiber_to_scheduler(DISPOSE_YIELD);
-    if (atomic_load(&fiber->cancel_flag)) return BEANS_FIBER_PARK_CANCELLED;
+    if (fiber_cancel_observable(fiber)) return BEANS_FIBER_PARK_CANCELLED;
     return BEANS_FIBER_WOKEN;
 }
 
@@ -1585,12 +1606,12 @@ int beans_fiber_join(BeansFiber* fiber, char* message_out,
         fiber->joiner = worker->current;
         int outcome = beans_fiber_park();
         fiber->joiner = NULL;
-        // A joiner cancelled mid-wait stops waiting. The child keeps running
-        // and nobody reaps it — abandoned, like every other frame a cancel
-        // leaves behind until the unwind lands.
+        // Leave the child available for the owning scope's cleanup join.
         if (outcome == BEANS_FIBER_PARK_CANCELLED &&
-            atomic_load(&fiber->state) != FIBER_DONE)
+            atomic_load(&fiber->state) != FIBER_DONE) {
             beans_fiber_exit_cancelled();
+            return -1; // interpreter handoff; no outcome was consumed
+        }
     }
     fiber->joined = 1;
     int status = fiber->status;

@@ -493,25 +493,24 @@ clang "${san_flags[@]}" "${cxx_flags[@]}" -c "$enc_root/beans_enc_xml.cpp" \
     -o "$tmp/san_xml.o"
 clang "${san_flags[@]}" "${cxx_flags[@]}" -c "$enc_root/beans_enc_base64.cpp" \
     -o "$tmp/san_b64.o"
-declare -A bridge_object=(
-    [encoding_json]="$tmp/san_json.o"
-    [encoding_xml]="$tmp/san_xml.o"
-    [encoding_base64]="$tmp/san_b64.o"
-    [encoding_binary]=""
-    # the malformed-input corpus exercises all three bridges at once
-    [encoding_fuzz]="$tmp/san_json.o $tmp/san_xml.o $tmp/san_b64.o"
-    [encoding_json_typed_scalar]="$tmp/san_json.o"
-    [encoding_json_typed_nested]="$tmp/san_json.o"
-    [encoding_json_typed_encode]="$tmp/san_json.o"
-    [encoding_json_typed_options]="$tmp/san_json.o"
-    [encoding_xml_typed_scalar]="$tmp/san_xml.o"
-    [encoding_xml_typed_nested]="$tmp/san_xml.o"
-)
 for case_name in encoding_json encoding_xml encoding_base64 encoding_binary \
     encoding_fuzz encoding_json_typed_scalar encoding_json_typed_nested \
     encoding_json_typed_encode encoding_json_typed_options \
     encoding_xml_typed_scalar encoding_xml_typed_nested; do
-    extra=${bridge_object[$case_name]}
+    # macOS ships Bash 3.2, so keep this mapping free of associative arrays.
+    # Every existing fixture still links the same instrumented bridge objects.
+    case "$case_name" in
+        encoding_json|encoding_json_typed_scalar|encoding_json_typed_nested|\
+        encoding_json_typed_encode|encoding_json_typed_options)
+            extra="$tmp/san_json.o" ;;
+        encoding_xml|encoding_xml_typed_scalar|encoding_xml_typed_nested)
+            extra="$tmp/san_xml.o" ;;
+        encoding_base64) extra="$tmp/san_b64.o" ;;
+        encoding_binary) extra="" ;;
+        # The malformed-input corpus exercises all three bridges at once.
+        encoding_fuzz) extra="$tmp/san_json.o $tmp/san_xml.o $tmp/san_b64.o" ;;
+        *) echo "missing sanitizer bridge mapping: $case_name" >&2; exit 1 ;;
+    esac
     # extern "C" calls ride the generated FFI sidecar the driver compiles
     # beside the program; the instrumented link needs it too.
     ffi_side="build/${case_name}_ffi.c"
