@@ -2,10 +2,22 @@
 
 This file records user-facing changes in each Beans release.
 
-## [0.1.51] - Unreleased
+## [0.1.51] - 2026-10-06
 
-The working tree is under validation. No release packages or production
-acceptance are claimed for this version.
+Release contract: language=1.0, runtime_abi=22.
+
+- Reduced `beansc run` overhead by omitting unused collection storage from
+  scalar values, keeping statement completion inline, caching decoded literals,
+  and avoiding synthetic expression nodes and redundant binding lookups in
+  compound assignments. `run` remains the reference interpreter.
+- Numeric range loops execute incrementally instead of constructing every
+  element before the loop starts. An early `break`, return, or panic stops
+  iteration without allocating the remaining range; signed and unsigned widths,
+  inclusive bounds, captures, and cleanup keep their existing semantics.
+- Failed typed expressions preserve their original panic and deferred cleanup.
+  A failed compound operation leaves its destination value intact.
+- Panic-position coverage and encoding sanitizer checks run on macOS Bash 3.2
+  instead of silently skipping or stopping before their checks finish.
 
 - Cancelled fiber parks use the existing cleanup paths on ELF/Mach-O x86_64
   and ARM64 targets. Defers, owned values, and child scope joins finish before

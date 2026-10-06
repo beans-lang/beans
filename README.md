@@ -15,13 +15,14 @@ A small OOP language designed for predictable ownership, native systems access, 
 
 ## Status
 
-The latest release is **v0.1.50**. It carries language contract `1.0` and runtime
-ABI `21` while the project finishes the evidence needed for a production 1.0
+The latest release is **v0.1.51**. It carries language contract `1.0` and runtime
+ABI `22` while the project finishes the evidence needed for a production 1.0
 claim.
 
-This checkout reports compiler `0.1.51` and runtime ABI `22`; it is unreleased.
-The installers below select the published release. Working-tree fixes need their
-own test and release evidence before the release claims above apply to them.
+This checkout reports compiler `0.1.51` and runtime ABI `22`. The release includes
+faster reference interpretation, incremental range loops, and owned cleanup on
+supported cancellation targets. The installers upgrade compiler and runtime
+together; see [CHANGELOG.md](CHANGELOG.md) for the release contract and changes.
 
 | piece | current state |
 |---|---|
@@ -97,7 +98,7 @@ The layout inside is stable: `bin/`, `lib/`, `toolchain/` and `VERSION`.
 Pick a version, a location, or a target:
 
 ```bash
-curl -fsSL .../beans-install.sh | sh -s -- --version 0.1.50 --prefix /opt/beans
+curl -fsSL .../beans-install.sh | sh -s -- --version 0.1.51 --prefix /opt/beans
 BEANS_TARGET=x86_64-unknown-linux-musl curl -fsSL .../beans-install.sh | sh
 ```
 
