@@ -1860,10 +1860,15 @@ class TreeInterpreter {
                 index += 1
             } else {
                 var need: int = 0
-                if byte >= 194 && byte <= 223 { need = 2 }
-                else if byte >= 224 && byte <= 239 { need = 3 }
-                else if byte >= 240 && byte <= 244 { need = 4 }
-                else { return none }
+                if byte >= 194 && byte <= 223 {
+                    need = 2
+                } else if byte >= 224 && byte <= 239 {
+                    need = 3
+                } else if byte >= 240 && byte <= 244 {
+                    need = 4
+                } else {
+                    return none
+                }
                 if index + need > length { return none }
                 let c1: int = source.get(index + 1)
                 if (c1 & 192) != 128 { return none }
@@ -2602,9 +2607,13 @@ class TreeInterpreter {
             }
         }
         let wanted_kind: int =
-            if name == "method_call_handle" { 0 }
-            else if name == "initializer_call_handle" { 1 }
-            else { 2 }
+            if name == "method_call_handle" {
+                0
+            } else if name == "initializer_call_handle" {
+                1
+            } else {
+                2
+            }
         let handle: int = arguments[0].int_data
         if handle <= 0 || handle > self.reflect_handle_kinds.len() ||
            self.reflect_handle_kinds[handle - 1] != wanted_kind {
@@ -2625,8 +2634,7 @@ class TreeInterpreter {
             TreeValue.string(owner), arguments[1], arguments[2]]
         return self.reflection_builtin_named(
             node,
-            if wanted_kind == 1 { "initializer_call" }
-            else { "function_call" },
+            if wanted_kind == 1 { "initializer_call" } else { "function_call" },
             rewritten)
     }
 
@@ -14018,17 +14026,29 @@ class TreeInterpreter {
             // Return constant operator spellings; slicing off '=' allocated
             // another string at every iteration of an otherwise scalar loop.
             let operation: string =
-                if node.value == "+=" { "+" }
-                else if node.value == "-=" { "-" }
-                else if node.value == "*=" { "*" }
-                else if node.value == "/=" { "/" }
-                else if node.value == "%=" { "%" }
-                else if node.value == "&=" { "&" }
-                else if node.value == "|=" { "|" }
-                else if node.value == "^=" { "^" }
-                else if node.value == "<<=" { "<<" }
-                else if node.value == ">>=" { ">>" }
-                else { node.value.slice(0, node.value.len() - 1) }
+                if node.value == "+=" {
+                    "+"
+                } else if node.value == "-=" {
+                    "-"
+                } else if node.value == "*=" {
+                    "*"
+                } else if node.value == "/=" {
+                    "/"
+                } else if node.value == "%=" {
+                    "%"
+                } else if node.value == "&=" {
+                    "&"
+                } else if node.value == "|=" {
+                    "|"
+                } else if node.value == "^=" {
+                    "^"
+                } else if node.value == "<<=" {
+                    "<<"
+                } else if node.value == ">>=" {
+                    ">>"
+                } else {
+                    node.value.slice(0, node.value.len() - 1)
+                }
             if current.kind == "int" &&
                written.kind == "int" {
                 value = self.integer_binary(

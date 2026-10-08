@@ -1557,11 +1557,17 @@ partial class LlvmTextEmitter {
             // returns, so the owning frame's cleanup can cancel all children
             // and retry this join. Joined handles already no-op on retry.
             let before: string =
-                if scope_join { "" }
-                else { "  store i1 0, ptr %defer.flag{site.cleanup_id}\n" }
+                if scope_join {
+                    ""
+                } else {
+                    "  store i1 0, ptr %defer.flag{site.cleanup_id}\n"
+                }
             let after: string =
-                if scope_join { "  store i1 0, ptr %defer.flag{site.cleanup_id}\n" }
-                else { "" }
+                if scope_join {
+                    "  store i1 0, ptr %defer.flag{site.cleanup_id}\n"
+                } else {
+                    ""
+                }
             output =
                 "{output}  %defer.armed{id} = load i1, ptr %defer.flag{site.cleanup_id}\n  br i1 %defer.armed{id}, label %defer.run{id}, label %defer.next{id}\ndefer.run{id}:\n{before}{body}  call void {self.function_symbols[cleanup_name]}({arguments.join(", ")})\n{after}  br label %defer.next{id}\ndefer.next{id}:\n"
         }

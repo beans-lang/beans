@@ -85,10 +85,15 @@ fn sized_string(size: int) -> string {
         let marked: Bytes = new Bytes(0)
         marked.reserve(size)
         for index: int in 0..size {
-            if index == size / 2 { marked.push(34) }
-            else if index == size - 3 { marked.push(195) }
-            else if index == size - 2 { marked.push(169) }
-            else { marked.push(97) }
+            if index == size / 2 {
+                marked.push(34)
+            } else if index == size - 3 {
+                marked.push(195)
+            } else if index == size - 2 {
+                marked.push(169)
+            } else {
+                marked.push(97)
+            }
         }
         return marked.to_string()
     }
@@ -116,16 +121,18 @@ fn control_string() -> string {
 fn invalid_string(which: int) -> string {
     let bytes: Bytes = new Bytes(0)
     bytes.push(111)
-    if which == 0 { bytes.push(255) }
-    else if which == 1 {
+    if which == 0 {
+        bytes.push(255)
+    } else if which == 1 {
         bytes.push(192)
         bytes.push(128)
     } else if which == 2 {
         bytes.push(237)
         bytes.push(160)
         bytes.push(128)
-    } else if which == 3 { bytes.push(128) }
-    else if which == 4 {
+    } else if which == 3 {
+        bytes.push(128)
+    } else if which == 4 {
         bytes.push(226)
     } else if which == 5 {
         bytes.push(224)
@@ -141,8 +148,9 @@ fn invalid_string(which: int) -> string {
         bytes.push(144)
         bytes.push(128)
         bytes.push(128)
-    } else if which == 8 { bytes.push(245) }
-    else {
+    } else if which == 8 {
+        bytes.push(245)
+    } else {
         // The lead byte is the last byte in the string: the scan runs off the
         // end instead of meeting a byte that is not a continuation.
         bytes.push(195)

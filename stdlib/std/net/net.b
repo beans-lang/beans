@@ -51,13 +51,21 @@ fn sockx_error(operation: string, status: int, os_error: int) -> Result<int> {
         return err("{operation}: not supported on this platform", "unsupported")
     }
     let kind: string =
-        if status == 110 { "timeout" }
-        else if status == 111 { "reset" }
-        else if status == 112 { "closed" }
-        else if status == 113 { "in_use" }
-        else if status == 114 { "permission" }
-        else if status == 115 { "not_found" }
-        else { "io" }
+        if status == 110 {
+            "timeout"
+        } else if status == 111 {
+            "reset"
+        } else if status == 112 {
+            "closed"
+        } else if status == 113 {
+            "in_use"
+        } else if status == 114 {
+            "permission"
+        } else if status == 115 {
+            "not_found"
+        } else {
+            "io"
+        }
     return err("{operation}: os error {os_error}", kind)
 }
 

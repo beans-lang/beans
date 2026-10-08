@@ -135,10 +135,15 @@ fn judge(name: string, cls: string, shape: string, accepted: bool,
 }
 
 fn count_file(cls: string, stats: Stats) {
-    if cls == "y" { stats.y_files += 1 }
-    else if cls == "n" { stats.n_files += 1 }
-    else if cls == "i" { stats.i_files += 1 }
-    else { stats.other_files += 1 }
+    if cls == "y" {
+        stats.y_files += 1
+    } else if cls == "n" {
+        stats.n_files += 1
+    } else if cls == "i" {
+        stats.i_files += 1
+    } else {
+        stats.other_files += 1
+    }
 }
 
 fn main() {

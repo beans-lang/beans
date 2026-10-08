@@ -168,7 +168,7 @@ steps:
 | Step | Result |
 | --- | --- |
 | IR emitted to its own path: 2 540 definitions, all carry `sanitize_address` | passed |
-| Fault compiler (chunked default backend) reports the injected heap overflow | **failed** (CD-16, #207) |
+| Fault compiler (chunked default backend) reports the injected heap overflow | **failed** on 0.1.51 (CD-16, #207); passed once fixed, see [Local fixes follow-up](#local-fixes-follow-up--2026-10-07) |
 | Fault compiler (`BEANS_BUILD_JOBS=1`) reports `heap-buffer-overflow` | passed |
 | Instrumented single-module compiler checks plain and 256-deep source | passed |
 
@@ -275,8 +275,32 @@ before this follow-up records its completed local gates.
 | [#204](https://github.com/beans-lang/beans/issues/204) | CD-5 to CD-9 | Lexer/parser recovery and expression checking | Preserve following declarations, issue one primary per defect, keep independent errors, and locate interpolation diagnostics at the expression bytes. Combined implementation and regression validation pending. |
 | [#205](https://github.com/beans-lang/beans/issues/205) | CD-11 | Existing `Diagnostic`, CLI formatting, source snapshots, module loading and LSP diagnostics | Extend the same diagnostic with end positions and ordered related notes; render excerpts from retained sources and carry notes over LSP, including unsaved files. Every authored context-chain snapshot must pass without derivative errors. **Verified locally (macOS ARM64):** all five `diagnostic_*` snapshots and five `delimiter_missing_*` cases pass exactly with the baseline ignored; `test/diagnostic_context.sh` and `test/lsp_navigation.sh` (with and without `BEANS_DISCOVERY_CONTEXT=1`) pass; CD-11 baseline entries removed. Excerpts use a per-file line index and a per-file function index, so many diagnostics in one large file render in linear time; a clean `check` is unchanged within noise. |
 | [#206](https://github.com/beans-lang/beans/issues/206) | CD-12 and probe table | `spec/SYNTAX.md` and the existing syntax corpus/parser | Settle the probe contracts and same-line `} else {` behavior, then promote settled cases from crash-only probes to exact expectations. Final contract and regression validation pending. |
-| [#207](https://github.com/beans-lang/beans/issues/207) | CD-16 | `NativeBuildDriver.chunk_compile_flags`, shared sanitizer flags, chunk cache and `test/sanitize.sh` | Feed the existing sanitizer flag list into each chunk compilation and therefore its cache key. Cross the actual 4 MiB threshold, report injected load/store/UAF faults on fresh and cached builds, and separate unsanitized objects. |
-| [#208](https://github.com/beans-lang/beans/issues/208) | CD-18 | Existing Beans TLS server, truncation fixture and `test/tls.sh` | Use the server's real `close_notify` exchange for the honest control; retain raw proxy cuts against `s_server`. Pin the PKCS12 fixture encoding supported by both local toolchains and retain the two-connection Windows fixture contract. |
+| [#207](https://github.com/beans-lang/beans/issues/207) | CD-16 | `NativeBuildDriver.chunk_compile_flags`, shared sanitizer flags, chunk cache and `test/sanitize.sh` | Feed the existing sanitizer flag list into each chunk compilation and therefore its cache key. Cross the actual 4 MiB threshold, report injected load/store/UAF faults on fresh and cached builds, and separate unsanitized objects. **Verified locally**, see [#207 and #208](#207-and-208-verified-locally--2026-10-08). |
+| [#208](https://github.com/beans-lang/beans/issues/208) | CD-18 | Existing Beans TLS server, truncation fixture and `test/tls.sh` | Use the server's real `close_notify` exchange for the honest control; retain raw proxy cuts against `s_server`. Pin the PKCS12 fixture encoding supported by both local toolchains and retain the two-connection Windows fixture contract. **Verified locally**, see [#207 and #208](#207-and-208-verified-locally--2026-10-08). |
+
+### #207 and #208 verified locally — 2026-10-08
+
+Compiler: `build/beansc` sha256 `2b9f9cd4fdf328d9…`, built from 76a7b29 plus
+one formatting commit. The WIP's sources did not follow #206's new `} else`
+rule, so they could not build themselves; that commit joins each `else` to its
+`}`. Bootstrapped from the v0.1.51 release, then built by itself. macOS ARM64,
+Apple clang, system bash 3.2.
+
+| Run | Result |
+| --- | --- |
+| `compiler_campaign.py --sanitize-only` | **passed**, 9 of 9 steps in 4 min. IR 29 MB, 2 578 definitions, all marked. `compiler-asan-fault-reach` (chunked) reports the heap overflow. |
+| `make test-sanitize`, OpenSSL 3 first on `PATH` | **passed** in 18 min; one explicit skip (`-fsanitize=function`) |
+| #207 leg with the driver change reverted | fails: the chunk compiles carry no `-fsanitize=`, and the binary runs read, write and use-after-free silently |
+| #207 leg with a chunk cache key that ignores the flags | fails in the UBSan-only lane: 0 chunks compiled, 8 linked |
+| `test/tls.sh`, LibreSSL 3.3.6 / OpenSSL 3.6.3 first on `PATH` | **passed**, 17 s / 16 s |
+| `test/tls.sh`, `http2.sh`, `websocket.sh` with LibreSSL, `BEANS_AUTOBAHN_SKIP=1` | **passed**, 21 s, 111 s, 43 s |
+| Ubuntu 24.04 arm64 container (OpenSSL 3.0.13, clang 18): `test/tls.sh`, then `test/sanitize.sh` through the #207 leg | **passed** in 20 s; the leg reports itself skipped, because no Linux build is chunked (CD-22) |
+| `make test-quick`, `make test-fixpoint` | **passed**, 219 s and 20 s |
+| `make test-self-host` | **passed** in 35 min |
+| The 182 commands of `make -n test-core`, one by one, OpenSSL 3 first on `PATH`, `BEANS_AUTOBAHN_SKIP=1` | 179 passed in 38 min. 3 failed, none from #207 or #208. `docs.sh` (bash 3.2 array expansion in `test/issue204.sh:21`) and `language_gaps.sh` (14 of 16 string `+` shapes refused) fail the same way on pristine 76a7b29. `fiber_stacks.sh`: the interpreter's resident set fell 81 MB against a 120 MB floor; it passed on rerun (166 MB). |
+
+Not run: the Autobahn suite, Linux x86-64, the Windows TLS staging (unchanged
+two-connection contract), and any candidate soak.
 
 ### Evidence required before a release verdict changes
 

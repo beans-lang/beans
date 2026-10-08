@@ -148,10 +148,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends clang lld llvm ripgrep
       - name: Install macOS test tools
         if: runner.os == 'macOS'
-        # The final gates run every core test. test/tls.sh's honest-close
-        # control needs an `openssl s_server` that sends close_notify, which
-        # the system LibreSSL does not (BUGFIX_TODO.md CD-18); bash 3.2 is
-        # the system shell, and ripgrep is used by the core tests.
+        # The final gates run every core test. openssl@3's libssl is
+        # test/tls.sh's second (OpenSSL) backend lane, and ripgrep is used by
+        # the core tests. Neither bash 5 nor OpenSSL 3 first on PATH is
+        # required any more: test/sanitize.sh runs under the system bash 3.2
+        # (CD-17), and tls.sh's honest-close control talks to the Beans TLS
+        # server rather than LibreSSL's s_server (CD-18, #208). Keeping them
+        # first on PATH matches the Linux leg's tools.
         run: |
           brew install bash openssl@3 ripgrep
           echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"

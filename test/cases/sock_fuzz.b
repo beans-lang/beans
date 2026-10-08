@@ -195,8 +195,11 @@ fn run_fuzz(seed: int, ops: int) -> bool {
                             match read_matches(servers[index], model.c2s_received, want) {
                                 ok(got) => { model.c2s_received += got }
                                 err(e) => {
-                                    if e.kind == "corrupt" { integrity = false }
-                                    else if !documented_kind(e.kind) { kinds_ok = false }
+                                    if e.kind == "corrupt" {
+                                        integrity = false
+                                    } else if !documented_kind(e.kind) {
+                                        kinds_ok = false
+                                    }
                                 }
                             }
                         }
@@ -207,8 +210,11 @@ fn run_fuzz(seed: int, ops: int) -> bool {
                             match read_matches(clients[index], model.s2c_received, want) {
                                 ok(got) => { model.s2c_received += got }
                                 err(e) => {
-                                    if e.kind == "corrupt" { integrity = false }
-                                    else if !documented_kind(e.kind) { kinds_ok = false }
+                                    if e.kind == "corrupt" {
+                                        integrity = false
+                                    } else if !documented_kind(e.kind) {
+                                        kinds_ok = false
+                                    }
                                 }
                             }
                         }

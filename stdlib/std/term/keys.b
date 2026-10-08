@@ -297,16 +297,27 @@ pub class KeyDecoder {
         }
         let c: int = self.buffer.get(2)
         var result: Key = Key.unknown(c)
-        if c == 65 { result = Key.up(0) }
-        else if c == 66 { result = Key.down(0) }
-        else if c == 67 { result = Key.right(0) }
-        else if c == 68 { result = Key.left(0) }
-        else if c == 72 { result = Key.home(0) }
-        else if c == 70 { result = Key.end(0) }
-        else if c == 80 { result = Key.function(1, 0) }
-        else if c == 81 { result = Key.function(2, 0) }
-        else if c == 82 { result = Key.function(3, 0) }
-        else if c == 83 { result = Key.function(4, 0) }
+        if c == 65 {
+            result = Key.up(0)
+        } else if c == 66 {
+            result = Key.down(0)
+        } else if c == 67 {
+            result = Key.right(0)
+        } else if c == 68 {
+            result = Key.left(0)
+        } else if c == 72 {
+            result = Key.home(0)
+        } else if c == 70 {
+            result = Key.end(0)
+        } else if c == 80 {
+            result = Key.function(1, 0)
+        } else if c == 81 {
+            result = Key.function(2, 0)
+        } else if c == 82 {
+            result = Key.function(3, 0)
+        } else if c == 83 {
+            result = Key.function(4, 0)
+        }
         self.consume(3)
         return some(result)
     }
