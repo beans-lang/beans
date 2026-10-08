@@ -32,8 +32,12 @@ class Parser {
     nesting_depth: int
     limit_exceeded: bool
     in_string_piece: bool
+    // Brackets opened and not yet closed, innermost last: `(`, `[`, `{`
+    // and a generic `<`. A diagnostic names the innermost as context.
     delimiters: List<Token>
-    functions: List<DiagnosticNote>
+    // The name token of each enclosing named function, innermost last.
+    // Kept as tokens so a clean parse formats no note text.
+    functions: List<Token>
     statement_failed: bool
     source_ended_in_error: bool
     statement_delimiter_depth: int
@@ -81,14 +85,19 @@ class Parser {
 
     fn advance() -> Token {
         let token: Token = self.current()
-        if token.kind == "(" || token.kind == "[" || token.kind == "\{" {
-            self.delimiters.push(token)
-        } else if token.kind == ")" {
-            self.close_delimiter("(")
-        } else if token.kind == "]" {
-            self.close_delimiter("[")
-        } else if token.kind == "\}" {
-            self.close_delimiter("\{")
+        // Every consumed token passes here, so test one byte, and only for
+        // the one-byte kinds a bracket can be.
+        if token.kind.len() == 1 {
+            let byte: int = token.kind.byte_at(0)
+            if byte == 40 || byte == 91 || byte == 123 {
+                self.delimiters.push(token)
+            } else if byte == 41 {
+                self.close_delimiter("(")
+            } else if byte == 93 {
+                self.close_delimiter("[")
+            } else if byte == 125 {
+                self.close_delimiter("\{")
+            }
         }
         if self.pending_type_closes > 0 {
             self.pending_type_closes -= 1
@@ -148,16 +157,31 @@ class Parser {
         if self.statement_failed { return }
         self.statement_failed = true
         let related: DiagnosticNotes = new DiagnosticNotes()
+        // The innermost open bracket explains an error inside it. A `{`
+        // explains only its own missing `}`: every statement sits inside
+        // one, and the function note below already places it.
         if self.delimiters.len() != 0 {
             let opened: Token = self.delimiters[self.delimiters.len() - 1]
-            related.items.push(DiagnosticNote {
-                file: "", line: opened.line, col: opened.col,
-                end_line: opened.line, end_col: opened.col + 1,
-                message: "'{opened.text}' opened",
-            })
+            if opened.kind != "\{" ||
+               message.starts_with("expected '\}'") {
+                related.items.push(DiagnosticNote {
+                    file: "", line: opened.line, col: opened.col,
+                    end_line: opened.line, end_col: opened.col + 1,
+                    message: "'{opened.text}' opened",
+                })
+            }
         }
-        for index: int in 0..self.functions.len() {
-            related.items.push(self.functions[self.functions.len() - index - 1])
+        var enclosing: int = self.functions.len()
+        for enclosing > 0 {
+            enclosing -= 1
+            let name: Token = self.functions[enclosing]
+            // A function whose name is missing has nothing to name.
+            if name.kind != "ident" { continue }
+            related.items.push(DiagnosticNote {
+                file: "", line: name.line, col: name.col,
+                end_line: name.line, end_col: name.col + name.text.len(),
+                message: "in function {name.text}, declared",
+            })
         }
         self.errors.push(Diagnostic {
             severity: Severity.error,
@@ -400,6 +424,9 @@ class Parser {
         let annotations: List<AstNode> = self.parse_annotations()
         let declaration: AstNode = self.parse_declaration_body()
         declaration.annotations = move annotations
+        // A damaged declaration can leave a bracket open; it must not be
+        // named as the context of the next declaration's error.
+        self.delimiters.clear()
         return declaration
     }
 
@@ -811,11 +838,7 @@ class Parser {
         let delimiter_depth: int = self.delimiters.len()
         let start: Token = self.expect("fn", "expected fn")
         let name: Token = self.expect("ident", "expected function name")
-        self.functions.push(DiagnosticNote {
-            file: "", line: name.line, col: name.col,
-            end_line: name.line, end_col: name.col + name.text.len(),
-            message: "in function {name.text}, declared",
-        })
+        self.functions.push(name)
         let function: AstNode =
             self.named(self.node("fn", name.text, start), name)
         self.parse_generic_parameters(function)
@@ -1283,6 +1306,11 @@ class Parser {
         if self.pos == start_pos && !self.at_end() {
             self.advance()
             self.finish_statement()
+        }
+        // A statement owns the brackets it opened. One a damaged statement
+        // left open must not be named as the next statement's context.
+        for self.delimiters.len() > self.statement_delimiter_depth {
+            self.delimiters.pop()
         }
         if annotations.len() != 0 &&
            statement.kind != "let" && statement.kind != "var" {

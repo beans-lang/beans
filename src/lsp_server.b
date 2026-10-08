@@ -356,16 +356,27 @@ class BeansLspServer {
     // Diagnostics
     // -----------------------------------------------------------------
 
+    // One zero-based line of `file` as the snapshot read it, which for an
+    // open document is the editor's unsaved text. `fallback` is that
+    // document's text, for a diagnostic whose file the loader did not
+    // retain under exactly this path.
+    fn diagnostic_line(snapshot: SemanticSnapshot, file: string,
+                       fallback: string, line: int) -> string {
+        match snapshot.sources.line_text(file, line) {
+            some(text) => { return text }
+            none => { return lsp_line(fallback, line) }
+        }
+    }
+
+    // A diagnostic's or a related note's range, in UTF-16 columns. A
+    // producer that recorded only a point gets the identifier there.
     fn diagnostic_range(snapshot: SemanticSnapshot, file: string,
+                        fallback: string,
                         line: int, col: int,
                         end_line: int, end_col: int) -> string {
-        var text: string = ""
-        match snapshot.sources.find(file) {
-            some(source) => { text = source.text }
-            none => {}
-        }
         let start_line: int = if line > 0 { line - 1 } else { 0 }
-        let source_line: string = lsp_line(text, start_line)
+        let source_line: string =
+            self.diagnostic_line(snapshot, file, fallback, start_line)
         let start: int = if col > 0 { col - 1 } else { 0 }
         var finish_line: int = start_line
         var finish: int = start
@@ -377,14 +388,21 @@ class BeansLspServer {
                 lsp_ident_byte(source_line.byte_at(finish)) {
                 finish += 1
             }
-            if finish == start { finish += 1 }
         }
+        if finish_line == start_line && finish <= start {
+            finish = start + 1
+        }
+        let finish_text: string =
+            if finish_line == start_line {
+                source_line
+            } else {
+                self.diagnostic_line(snapshot, file, fallback, finish_line)
+            }
         return lsp_object([
             lsp_member("start", lsp_position(
                 start_line, lsp_utf16_index(source_line, start))),
             lsp_member("end", lsp_position(
-                finish_line, lsp_utf16_index(
-                    lsp_line(text, finish_line), finish)))])
+                finish_line, lsp_utf16_index(finish_text, finish)))])
     }
 
     fn publish(uri: string) {
@@ -392,6 +410,7 @@ class BeansLspServer {
         let file_path: string = self.document_path(uri)
         let snapshot: SemanticSnapshot =
             self.workspace.snapshot(file_path)
+        let text: string = self.workspace.text_of(uri)
         var items: List<string> = []
         var seen: Map<string, bool> = {}
         for diagnostic: Diagnostic in snapshot.diagnostics {
@@ -406,7 +425,7 @@ class BeansLspServer {
                     lsp_member(
                         "range",
                         self.diagnostic_range(
-                            snapshot, diagnostic.file,
+                            snapshot, diagnostic.file, text,
                             diagnostic.line, diagnostic.col,
                             diagnostic.end_line, diagnostic.end_col)),
                     lsp_member("severity", "1"),
@@ -416,11 +435,14 @@ class BeansLspServer {
                         lsp_quote(diagnostic.message))]
             var related: List<string> = []
             for note: DiagnosticNote in diagnostic.related.items {
+                let note_fallback: string =
+                    if lsp_belongs(note.file, file_path) { text } else { "" }
                 related.push(lsp_object([
                     lsp_member("location", lsp_object([
                         lsp_member("uri", lsp_quote(lsp_file_uri(note.file))),
                         lsp_member("range", self.diagnostic_range(
-                            snapshot, note.file, note.line, note.col,
+                            snapshot, note.file, note_fallback,
+                            note.line, note.col,
                             note.end_line, note.end_col))])),
                     lsp_member("message", lsp_quote(note.message))]))
             }

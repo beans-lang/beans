@@ -82,6 +82,88 @@ fn ast_open_end() -> int {
     return 1000000000
 }
 
+// The named functions of one parsed file, top-level and type members, with
+// their body blocks. Answers which function's body holds a source position;
+// a closure belongs to the function it is written in. Only declarations and
+// their direct members are visited, never bodies, and a diagnostic consumer
+// builds one per file, so thousands of diagnostics in one file do not each
+// walk every declaration.
+class AstFunctionIndex {
+    functions: List<AstNode>
+    bodies: List<AstNode>
+    // Bodies arrive in source order, which makes the lookup a binary
+    // search. Anything that ever appends a declaration out of order only
+    // costs the linear scan, never a wrong answer.
+    ordered: bool
+
+    fn init(module: AstNode) {
+        self.functions = []
+        self.bodies = []
+        self.ordered = true
+        for declaration: AstNode in module.children {
+            if declaration.kind == "fn" {
+                self.add(declaration)
+                continue
+            }
+            for member: AstNode in declaration.children {
+                if member.kind == "fn" { self.add(member) }
+            }
+        }
+    }
+
+    fn add(function: AstNode) {
+        for child: AstNode in function.children {
+            if child.kind != "block" { continue }
+            if self.bodies.len() != 0 {
+                let last: AstNode = self.bodies[self.bodies.len() - 1]
+                if !ast_position_before(last.line, last.col,
+                                        child.line, child.col) {
+                    self.ordered = false
+                }
+            }
+            self.functions.push(function)
+            self.bodies.push(child)
+            return
+        }
+    }
+
+    fn holds(index: int, line: int, col: int) -> bool {
+        let body: AstNode = self.bodies[index]
+        return !ast_position_before(line, col, body.line, body.col) &&
+               !ast_position_before(body.end_line, body.end_col, line, col)
+    }
+
+    fn enclosing(line: int, col: int) -> Option<AstNode> {
+        if !self.ordered {
+            for index: int in 0..self.bodies.len() {
+                if self.holds(index, line, col) {
+                    return some(self.functions[index])
+                }
+            }
+            return none
+        }
+        // The last body that starts at or before the position.
+        var low: int = 0
+        var high: int = self.bodies.len()
+        for low < high {
+            let middle: int = (low + high) / 2
+            let body: AstNode = self.bodies[middle]
+            if ast_position_before(line, col, body.line, body.col) {
+                high = middle
+            } else {
+                low = middle + 1
+            }
+        }
+        if low == 0 || !self.holds(low - 1, line, col) { return none }
+        return some(self.functions[low - 1])
+    }
+}
+
+fn ast_position_before(line: int, col: int,
+                       other_line: int, other_col: int) -> bool {
+    return line < other_line || (line == other_line && col < other_col)
+}
+
 // The `array_length` child an `array_type` carries when its length was
 // written as a name. Absent when the length was written as a literal. The
 // node holds the name as source spelled it and sits on the identifier, so

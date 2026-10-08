@@ -102,6 +102,7 @@ test-quick: $(BIN)
 	bash ./test/issue206.sh
 	./test/parse_recovery.sh
 	bash ./test/diagnostics.sh
+	bash ./test/diagnostic_context.sh
 	bash ./test/package_semantics.sh
 	bash ./test/package_identity.sh
 	bash ./test/builtin_names.sh
@@ -128,6 +129,7 @@ test-frontend: $(BIN)
 	bash ./test/issue204.sh
 	bash ./test/issue206.sh
 	bash ./test/diagnostics.sh
+	bash ./test/diagnostic_context.sh
 	./test/docs.sh
 	./test/version.sh
 	bash ./test/syntax_v07.sh
@@ -322,6 +324,7 @@ test-core: $(BIN)
 	bash ./test/issue204.sh
 	bash ./test/issue206.sh
 	bash ./test/diagnostics.sh
+	bash ./test/diagnostic_context.sh
 	./test/differential.sh
 	./test/panic.sh
 	./test/freestanding.sh

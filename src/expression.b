@@ -255,6 +255,23 @@ class ExpressionChecker {
         }
     }
 
+    // The function a diagnostic's body belongs to, as a note. The checker
+    // also runs constant initializers, field defaults and annotation
+    // arguments inside synthesized `$` functions that no one declared;
+    // those get no note rather than one naming `$defaults` at 1:1.
+    fn enclosing_function_note() -> Option<DiagnosticNote> {
+        let name: string = self.current.name
+        if name == "" || name.starts_with("$") { return none }
+        return some(DiagnosticNote {
+            file: self.current.file,
+            line: self.current.syntax.name_line,
+            col: self.current.syntax.name_col,
+            end_line: self.current.syntax.name_line,
+            end_col: self.current.syntax.name_col + name.len(),
+            message: "in function {name}, declared",
+        })
+    }
+
     fn fail(node: AstNode, message: string,
             context: Option<DiagnosticNote> = none) {
         let related: DiagnosticNotes = new DiagnosticNotes()
@@ -262,16 +279,9 @@ class ExpressionChecker {
             some(note) => { related.items.push(note) }
             none => {}
         }
-        if self.current.name != "" {
-            related.items.push(DiagnosticNote {
-                file: self.current.file,
-                line: self.current.syntax.name_line,
-                col: self.current.syntax.name_col,
-                end_line: self.current.syntax.name_line,
-                end_col: self.current.syntax.name_col +
-                         self.current.name.len(),
-                message: "in function {self.current.name}, declared",
-            })
+        match self.enclosing_function_note() {
+            some(note) => { related.items.push(note) }
+            none => {}
         }
         self.errors.push(Diagnostic {
             severity: Severity.error,
@@ -6384,15 +6394,9 @@ class ExpressionChecker {
             end_col: literal.col + 1,
             message: "in string piece \{{piece}\}",
         })
-        if self.current.name != "" {
-            notes.items.push(DiagnosticNote {
-                file: self.current.file,
-                line: self.current.syntax.name_line,
-                col: self.current.syntax.name_col,
-                end_line: self.current.syntax.name_line,
-                end_col: self.current.syntax.name_col + self.current.name.len(),
-                message: "in function {self.current.name}, declared",
-            })
+        match self.enclosing_function_note() {
+            some(note) => { notes.items.push(note) }
+            none => {}
         }
         located.related = notes
         self.errors.push(located)

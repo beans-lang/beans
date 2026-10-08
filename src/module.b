@@ -541,6 +541,9 @@ class ModuleLoader {
     // that pushed each one (stack_edges[i] led to stack[i]).
     stack: List<string>
     stack_edges: List<ImportEdge>
+    // Function body spans per parsed source id, built the first time a
+    // diagnostic in that file needs its enclosing function.
+    function_indexes: Map<int, AstFunctionIndex>
 
     fn init(sources: SourceManager, locked: bool, offline: bool,
             lock_mode: string, update_module: string) {
@@ -574,6 +577,7 @@ class ModuleLoader {
         self.editor_file = ""
         self.stack = []
         self.stack_edges = []
+        self.function_indexes = {}
     }
 
     fn set_overlay(file_path: string, text: string) {
@@ -1030,14 +1034,54 @@ class ModuleLoader {
         return parsed
     }
 
-    // Follow the already-loaded import graph from the diagnosed file back
-    // towards the entry. Notes describe real import sites, nearest first;
-    // a second import of the same package does not duplicate the chain.
+    // Complete a diagnostic's context from what the loader retained. A
+    // phase that reports from inside a function body without tracking the
+    // function (the resolver, signature checks, lowering) gets the same
+    // enclosing-function note the parser and the expression checker attach
+    // themselves. Then follow the already-loaded import graph from the
+    // diagnosed file back towards the entry. Notes describe real import
+    // sites, nearest first; a second import of the same package does not
+    // duplicate the chain.
     fn contextual_diagnostic(value: Diagnostic) -> Diagnostic {
         var result: Diagnostic = value
         let notes: DiagnosticNotes = new DiagnosticNotes()
+        var has_function: bool = false
         for note: DiagnosticNote in value.related.items {
             notes.items.push(note)
+            if note.message.starts_with("in function ") {
+                has_function = true
+            }
+        }
+        if !has_function && value.line > 0 {
+            for package: LoadedPackage in self.packages {
+                var found: bool = false
+                for file: ParsedModuleFile in package.files {
+                    if file.path != value.file { continue }
+                    found = true
+                    if !self.function_indexes.contains_key(file.source_id) {
+                        self.function_indexes[file.source_id] =
+                            new AstFunctionIndex(file.ast)
+                    }
+                    let index: AstFunctionIndex =
+                        self.function_indexes[file.source_id]
+                    match index.enclosing(value.line, value.col) {
+                        some(function) => {
+                            notes.items.push(DiagnosticNote {
+                                file: file.path,
+                                line: function.name_line,
+                                col: function.name_col,
+                                end_line: function.name_line,
+                                end_col: function.name_col +
+                                         function.value.len(),
+                                message: "in function {function.value}, declared",
+                            })
+                        }
+                        none => {}
+                    }
+                    break
+                }
+                if found { break }
+            }
         }
         var current_file: string = value.file
         var seen: Map<string, bool> = {}

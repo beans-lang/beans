@@ -722,6 +722,17 @@ systems report. C++ has no cycle collector, so the cycle baselines explicitly
 break their test cycles; the report keeps that difference visible.
 
 Errors print as `file:line:col: error: message`; the parser recovers and keeps going so you see many errors at once.
+Under that line come the source line, a caret under the column, and `note:` lines that give the context with their own locations: the bracket a missing delimiter was opened at, the function an error sits in, the generic parameter a conflicting binding belongs to, and the imports that reached a file in another package:
+
+```text
+main.b:2:30: error: expected ')'
+    let x: int = (1 + (2 * 3)
+                             ^
+note: '(' opened at main.b:2:18
+note: in function main, declared at main.b:1:4
+```
+
+The first line and the exit status are what they always were, so a tool that reads `file:line:col: error:` lines keeps working. `beansc lsp` sends the same notes as `relatedInformation`, located in the editor's unsaved text.
 
 ## License
 
