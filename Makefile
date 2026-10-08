@@ -98,6 +98,7 @@ test-quick: $(BIN)
 	bash ./test/issue202.sh
 	bash ./test/issue202_lsp.sh
 	bash ./test/issue203.sh
+	bash ./test/checker_width.sh
 	bash ./test/issue204.sh
 	bash ./test/issue206.sh
 	./test/parse_recovery.sh
@@ -127,6 +128,7 @@ test-frontend: $(BIN)
 	bash ./test/issue202.sh
 	bash ./test/issue202_lsp.sh
 	bash ./test/issue203.sh
+	bash ./test/checker_width.sh
 	bash ./test/issue204.sh
 	bash ./test/issue206.sh
 	bash ./test/diagnostics.sh
@@ -323,6 +325,7 @@ test-core: $(BIN)
 	bash ./test/issue202.sh
 	bash ./test/issue202_lsp.sh
 	bash ./test/issue203.sh
+	bash ./test/checker_width.sh
 	bash ./test/issue204.sh
 	bash ./test/issue206.sh
 	bash ./test/diagnostics.sh

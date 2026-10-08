@@ -68,6 +68,11 @@ class LocalBinding {
     // map read sets it: `m.get(k)` hands back the map's own value, and two
     // of those alive at once would be two mutating names for one value.
     borrows_owner: int
+    // The index of the scope that holds this binding, and the branch epoch
+    // this object belongs to. The checker reads both to keep a branch's
+    // move state without copying every scope (see scope_epoch there).
+    depth: int
+    epoch: int
 
     fn init(id: int, name: string, type: HirType, mutable: bool,
             borrowed: bool, inout_parameter: bool) {
@@ -79,6 +84,8 @@ class LocalBinding {
         self.inout_parameter = inout_parameter
         self.move_state = "available"
         self.borrows_owner = -1
+        self.depth = 0
+        self.epoch = 0
     }
 }
 
@@ -87,6 +94,40 @@ class LocalScope {
 
     fn init() {
         self.bindings = {}
+    }
+}
+
+// One write to the checker's scopes, kept so a branch can be undone: the
+// binding's slot, and either the state it held before the write or, for a
+// declaration, nothing to restore because undoing removes the binding.
+class ScopeUndo {
+    depth: int
+    name: string
+    declared: bool
+    move_state: string
+    borrowed: bool
+    borrows_owner: int
+
+    fn init(binding: LocalBinding, declared: bool) {
+        self.depth = binding.depth
+        self.name = binding.name
+        self.declared = declared
+        self.move_state = binding.move_state
+        self.borrowed = binding.borrowed
+        self.borrows_owner = binding.borrows_owner
+    }
+}
+
+// A binding as one branch left it. `declared` says the branch made the
+// binding; otherwise it was there before the branch and only its state
+// changed.
+class ScopeChange {
+    binding: LocalBinding
+    declared: bool
+
+    fn init(binding: LocalBinding, declared: bool) {
+        self.binding = binding
+        self.declared = declared
     }
 }
 
