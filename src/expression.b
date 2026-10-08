@@ -73,6 +73,21 @@ class ExpressionChecker {
     named_imports: Map<string, string>
     errors: List<Diagnostic>
     scopes: List<LocalScope>
+    // Branches keep move and borrow state by undoing writes, not by
+    // copying scopes. Copying every visible binding several times per
+    // `if`, `match` and loop made checking quadratic in the bindings a
+    // function holds (#203, CD-15). Every declaration and every write to a
+    // binding's state is logged here; a branch notes the log's length,
+    // reads back what it changed and undoes to that length, so a branch
+    // costs what it changed.
+    scope_log: List<ScopeUndo>
+    // Counts the points where the old checker replaced every binding with
+    // a copy. A LocalBinding from an older epoch is one it would have left
+    // behind, still held by a caller that looked it up before a branch.
+    // Such a binding is copied into its slot before the slot changes, so
+    // the caller's object keeps the state it had and its writes stay its
+    // own, exactly as with the copies (see write_binding_state).
+    scope_epoch: int
     current: HirFunction
     current_constraints: List<HirGeneric>
     // check_field_defaults resolves each declaration's
@@ -169,6 +184,8 @@ class ExpressionChecker {
         self.named_imports = {}
         self.errors = []
         self.scopes = []
+        self.scope_log = []
+        self.scope_epoch = 0
         self.current = new HirFunction(
             "", "", "", false, false, "", 0, 0)
         self.current_constraints = []
@@ -530,10 +547,14 @@ class ExpressionChecker {
         let id: int = self.next_binding_id
         self.next_binding_id += 1
         if discard { return id }
-        self.scopes[at].bindings[node.value] =
+        let binding: LocalBinding =
             new LocalBinding(
                 id, node.value, type, mutable,
                 borrowed, inout_parameter)
+        binding.depth = at
+        binding.epoch = self.scope_epoch
+        self.scopes[at].bindings[node.value] = binding
+        self.scope_log.push(new ScopeUndo(binding, true))
         return id
     }
 
@@ -549,14 +570,8 @@ class ExpressionChecker {
     }
 
     fn find_local(name: string) -> Option<LocalBinding> {
-        var found: Option<LocalBinding> = none
-        for scope: LocalScope in self.scopes {
-            match scope.bindings.get(name) {
-                some(binding) => { found = some(binding) }
-                none => {}
-            }
-        }
-        return found
+        return self.live_binding(
+            self.local_scope_index(name), name)
     }
 
     fn local_names() -> List<string> {
@@ -722,62 +737,201 @@ class ExpressionChecker {
         return found
     }
 
-    fn copy_scopes(source: List<LocalScope>) -> List<LocalScope> {
-        var result: List<LocalScope> = []
-        for scope: LocalScope in source {
-            let copied: LocalScope = new LocalScope()
-            for name: string in scope.bindings.keys() {
-                let binding: LocalBinding =
-                    scope.bindings[name]
-                let item: LocalBinding =
-                    new LocalBinding(
-                        binding.id, binding.name, binding.type,
-                        binding.mutable, binding.borrowed,
-                        binding.inout_parameter)
-                item.move_state = binding.move_state
-                item.borrows_owner = binding.borrows_owner
-                copied.bindings[name] = item
-            }
-            result.push(copied)
-        }
-        return move result
+    fn binding_copy(binding: LocalBinding) -> LocalBinding {
+        let item: LocalBinding =
+            new LocalBinding(
+                binding.id, binding.name, binding.type,
+                binding.mutable, binding.borrowed,
+                binding.inout_parameter)
+        item.move_state = binding.move_state
+        item.borrows_owner = binding.borrows_owner
+        item.depth = binding.depth
+        item.epoch = self.scope_epoch
+        return item
     }
 
-    fn merge_move_states(left: List<LocalScope>,
-                         right: List<LocalScope>) {
-        for scope_index: int in 0..self.scopes.len() {
-            if scope_index >= left.len() ||
-               scope_index >= right.len() {
+    // The binding in a slot, as an object of the current epoch. An older
+    // one may still be held by a caller that looked it up before a branch,
+    // and the old checker had given the slot a copy by then, so the slot
+    // gets its own copy here before anyone can change it.
+    fn live_binding(depth: int, name: string) -> Option<LocalBinding> {
+        if depth < 0 || depth >= self.scopes.len() { return none }
+        match self.scopes[depth].bindings.get(name) {
+            some(binding) => {
+                if binding.epoch == self.scope_epoch {
+                    return some(binding)
+                }
+                let fresh: LocalBinding = self.binding_copy(binding)
+                self.scopes[depth].bindings[name] = fresh
+                return some(fresh)
+            }
+            none => { return none }
+        }
+    }
+
+    // Every write to a binding's state goes through here. A binding of the
+    // current epoch is the one in its slot: log what it held, then write.
+    // An older one was looked up before a branch, and by then the old
+    // checker had put a copy of every binding in the scopes, so the write
+    // reached only the caller's object. That stays so: the slot keeps the
+    // state it had. CD-24's wrong answers depend on it: a `move(...)`
+    // closure whose body branches, and an assignment from a branching
+    // value.
+    fn write_binding_state(binding: LocalBinding, move_state: string,
+                           borrowed: bool, borrows_owner: int) {
+        if binding.epoch == self.scope_epoch {
+            self.scope_log.push(new ScopeUndo(binding, false))
+        } else {
+            self.live_binding(binding.depth, binding.name)
+        }
+        binding.move_state = move_state
+        binding.borrowed = borrowed
+        binding.borrows_owner = borrows_owner
+    }
+
+    // Where the old checker set the scopes to a copy taken when the log
+    // was `mark` long: every binding object changes epoch, and every write
+    // since then is undone, newest first.
+    fn rewind_scopes(mark: int) {
+        self.scope_epoch += 1
+        for self.scope_log.len() > mark {
+            let entry: ScopeUndo =
+                self.scope_log[self.scope_log.len() - 1]
+            self.scope_log.pop()
+            // a scope opened and closed since the mark is already gone
+            if entry.depth >= self.scopes.len() { continue }
+            if entry.declared {
+                self.scopes[entry.depth].bindings.remove(entry.name)
                 continue
             }
-            for name: string in
-                self.scopes[scope_index].bindings.keys() {
-                match left[scope_index].bindings.get(name) {
-                    some(left_binding) => {
-                        match right[scope_index].bindings.get(name) {
-                            some(right_binding) => {
-                                let merged_scope: LocalScope =
-                                    self.scopes[scope_index]
-                                let merged: LocalBinding =
-                                    merged_scope.bindings[name]
-                                merged.move_state =
-                                    if left_binding.move_state ==
-                                       right_binding.move_state {
-                                        left_binding.move_state
-                                    } else {
-                                        "maybe_moved"
-                                    }
-                                merged.borrowed =
-                                    left_binding.borrowed ||
-                                    right_binding.borrowed
-                            }
-                            none => {}
-                        }
-                    }
-                    none => {}
+            match self.live_binding(entry.depth, entry.name) {
+                some(binding) => {
+                    binding.move_state = entry.move_state
+                    binding.borrowed = entry.borrowed
+                    binding.borrows_owner = entry.borrows_owner
                 }
+                none => {}
             }
         }
+    }
+
+    // What the branch since `mark` left in the scopes that outlive it: a
+    // copy of each binding it changed or declared, in the order first
+    // touched.
+    fn branch_changes(mark: int) -> List<ScopeChange> {
+        var changes: List<ScopeChange> = []
+        var seen: Map<string, bool> = {}
+        for index: int in mark..self.scope_log.len() {
+            let entry: ScopeUndo = self.scope_log[index]
+            if entry.depth >= self.scopes.len() { continue }
+            let key: string = "{entry.depth} {entry.name}"
+            if seen.contains_key(key) { continue }
+            seen[key] = true
+            match self.scopes[entry.depth].bindings.get(entry.name) {
+                some(binding) => {
+                    changes.push(
+                        new ScopeChange(
+                            self.binding_copy(binding),
+                            entry.declared))
+                }
+                none => {}
+            }
+        }
+        return move changes
+    }
+
+    // Make the scopes hold what one branch left: its states, and the
+    // bindings it declared in scopes that outlive it.
+    fn apply_changes(changes: List<ScopeChange>) {
+        for change: ScopeChange in changes {
+            let source: LocalBinding = change.binding
+            if change.declared {
+                if source.depth < self.scopes.len() {
+                    let binding: LocalBinding =
+                        self.binding_copy(source)
+                    self.scopes[source.depth].bindings[source.name] =
+                        binding
+                    self.scope_log.push(
+                        new ScopeUndo(binding, true))
+                }
+                continue
+            }
+            match self.live_binding(source.depth, source.name) {
+                some(binding) => {
+                    self.scope_log.push(
+                        new ScopeUndo(binding, false))
+                    binding.move_state = source.move_state
+                    binding.borrowed = source.borrowed
+                    binding.borrows_owner = source.borrows_owner
+                }
+                none => {}
+            }
+        }
+    }
+
+    // Two branches that both continue, joined while the scopes hold the
+    // state from before them. A value moved on one path only may have been
+    // moved, and one borrowed on either path stays borrowed; the rest keeps
+    // the earlier state, and a binding a branch declared does not outlive
+    // the join. Only what a branch changed can differ, so only that is
+    // visited.
+    fn merge_changes(left: List<ScopeChange>,
+                     right: List<ScopeChange>) -> List<ScopeChange> {
+        var lefts: Map<string, LocalBinding> = {}
+        var rights: Map<string, LocalBinding> = {}
+        var keys: List<string> = []
+        var slots: List<LocalBinding> = []
+        for change: ScopeChange in left {
+            if change.declared { continue }
+            let key: string =
+                "{change.binding.depth} {change.binding.name}"
+            lefts[key] = change.binding
+            keys.push(key)
+            slots.push(change.binding)
+        }
+        for change: ScopeChange in right {
+            if change.declared { continue }
+            let key: string =
+                "{change.binding.depth} {change.binding.name}"
+            rights[key] = change.binding
+            if !lefts.contains_key(key) {
+                keys.push(key)
+                slots.push(change.binding)
+            }
+        }
+        var merged: List<ScopeChange> = []
+        for index: int in 0..keys.len() {
+            let slot: LocalBinding = slots[index]
+            if slot.depth >= self.scopes.len() { continue }
+            match self.scopes[slot.depth].bindings.get(slot.name) {
+                some(base) => {
+                    var left_binding: LocalBinding = base
+                    var right_binding: LocalBinding = base
+                    match lefts.get(keys[index]) {
+                        some(binding) => { left_binding = binding }
+                        none => {}
+                    }
+                    match rights.get(keys[index]) {
+                        some(binding) => { right_binding = binding }
+                        none => {}
+                    }
+                    let result: LocalBinding = self.binding_copy(base)
+                    result.move_state =
+                        if left_binding.move_state ==
+                           right_binding.move_state {
+                            left_binding.move_state
+                        } else {
+                            "maybe_moved"
+                        }
+                    result.borrowed =
+                        left_binding.borrowed ||
+                        right_binding.borrowed
+                    merged.push(new ScopeChange(result, false))
+                }
+                none => {}
+            }
+        }
+        return move merged
     }
 
     fn function_type(function: HirFunction) -> HirType {
@@ -6804,7 +6958,9 @@ class ExpressionChecker {
             self.local_scope_index(binding.name) <
                 self.capture_floor_depth
         if !captured { return }
-        binding.borrowed = true
+        self.write_binding_state(
+            binding, binding.move_state, true,
+            binding.borrows_owner)
         let capture_key: string = "{binding.id}"
         if binding.inout_parameter &&
            !self.bad_inout_captures.contains_key(capture_key) {
@@ -7167,7 +7323,9 @@ class ExpressionChecker {
                         node,
                         "move is not allowed inside defer")
                 } else {
-                    binding.move_state = "moved"
+                    self.write_binding_state(
+                        binding, "moved", binding.borrowed,
+                        binding.borrows_owner)
                 }
                 self.expect_type(
                     node, binding.type, expected)
@@ -10594,8 +10752,10 @@ class ExpressionChecker {
                                             callee.children[0],
                                             "cannot close borrowed {receiver.type.name} '{callee.children[0].value}'")
                                     } else {
-                                        binding.move_state =
-                                            "moved"
+                                        self.write_binding_state(
+                                            binding, "moved",
+                                            binding.borrowed,
+                                            binding.borrows_owner)
                                     }
                                 }
                                 none => {}
@@ -12316,7 +12476,9 @@ class ExpressionChecker {
         // bindings are spent, exactly as if each was passed to a move
         // parameter
         for binding: LocalBinding in moved_captures {
-            binding.move_state = "moved"
+            self.write_binding_state(
+                binding, "moved", binding.borrowed,
+                binding.borrows_owner)
         }
         return result
     }
@@ -12423,13 +12585,12 @@ class ExpressionChecker {
         let guard_mark: int =
             self.feature_guards.len()
         self.collect_feature_guards(node.children[0])
-        let base: List<LocalScope> =
-            self.copy_scopes(self.scopes)
+        let scope_mark: int = self.scope_log.len()
         let then_branch: HirNode =
             self.check_expression_block(
                 node.children[1], expected)
-        let yes: List<LocalScope> =
-            self.copy_scopes(self.scopes)
+        let yes: List<ScopeChange> =
+            self.branch_changes(scope_mark)
         result.children.push(then_branch)
         for self.feature_guards.len() > guard_mark {
             self.feature_guards.pop()
@@ -12440,7 +12601,7 @@ class ExpressionChecker {
             } else {
                 expected
             }
-        self.scopes = self.copy_scopes(base)
+        self.rewind_scopes(scope_mark)
         let else_branch: HirNode =
             if node.children[2].kind == "block" {
                 self.check_expression_block(
@@ -12449,10 +12610,10 @@ class ExpressionChecker {
                 self.check_if_expression(
                     node.children[2], branch_expected)
             }
-        let no: List<LocalScope> =
-            self.copy_scopes(self.scopes)
-        self.scopes = self.copy_scopes(base)
-        self.merge_move_states(yes, no)
+        let no: List<ScopeChange> =
+            self.branch_changes(scope_mark)
+        self.rewind_scopes(scope_mark)
+        self.apply_changes(self.merge_changes(yes, no))
         result.children.push(else_branch)
         if !hir_types_equal(
             then_branch.type, else_branch.type) {
@@ -12725,8 +12886,10 @@ class ExpressionChecker {
             if self.pattern_borrow_owner >= 0 {
                 match self.find_local(binding.value) {
                     some(declared) => {
-                        declared.borrows_owner =
-                            self.pattern_borrow_owner
+                        self.write_binding_state(
+                            declared, declared.move_state,
+                            declared.borrowed,
+                            self.pattern_borrow_owner)
                     }
                     none => {}
                 }
@@ -12881,10 +13044,8 @@ class ExpressionChecker {
         result.children.push(subject)
         let borrow_owner: int =
             self.map_borrow_owner(subject)
-        let move_base: List<LocalScope> =
-            self.copy_scopes(self.scopes)
-        var merged: List<LocalScope> =
-            self.copy_scopes(move_base)
+        let scope_mark: int = self.scope_log.len()
+        var merged: List<ScopeChange> = []
         var has_continuing_arm: bool = false
         var covered: Map<string, bool> = {}
         var has_wildcard: bool = false
@@ -12898,7 +13059,7 @@ class ExpressionChecker {
             }
         for index: int in 1..node.children.len() {
             let arm: AstNode = node.children[index]
-            self.scopes = self.copy_scopes(move_base)
+            self.rewind_scopes(scope_mark)
             let lowered: HirNode =
                 self.make_node(
                     arm, "arm", "", new HirType("unit"))
@@ -12945,17 +13106,15 @@ class ExpressionChecker {
                 self.block_always_returns(
                     arm.children[1])
             if !arm_returns {
-                let arm_state: List<LocalScope> =
-                    self.copy_scopes(self.scopes)
+                let arm_state: List<ScopeChange> =
+                    self.branch_changes(scope_mark)
                 if !has_continuing_arm {
                     merged = move arm_state
                     has_continuing_arm = true
                 } else {
-                    self.scopes =
-                        self.copy_scopes(move_base)
-                    self.merge_move_states(
+                    self.rewind_scopes(scope_mark)
+                    merged = self.merge_changes(
                         merged, arm_state)
-                    merged = self.copy_scopes(self.scopes)
                 }
             }
             if !discard {
@@ -12974,12 +13133,10 @@ class ExpressionChecker {
             lowered.type = value.type
             result.children.push(lowered)
         }
-        self.scopes =
-            if has_continuing_arm {
-                move merged
-            } else {
-                move move_base
-            }
+        self.rewind_scopes(scope_mark)
+        if has_continuing_arm {
+            self.apply_changes(merged)
+        }
         self.check_match_exhaustive(
             node, subject.type, covered,
             has_wildcard, saw_true, saw_false)
@@ -13740,7 +13897,10 @@ class ExpressionChecker {
                         node.children[1], value.type,
                         "assignment")
                     if binding.mutable {
-                        binding.move_state = "available"
+                        self.write_binding_state(
+                            binding, "available",
+                            binding.borrowed,
+                            binding.borrows_owner)
                     }
                 } else if binding.move_state == "moved" {
                     self.fail(
@@ -13826,15 +13986,14 @@ class ExpressionChecker {
         self.loop_depth += 1
         if node.children.len() == 1 &&
            node.children[0].kind == "block" {
-            let base: List<LocalScope> =
-                self.copy_scopes(self.scopes)
+            let scope_mark: int = self.scope_log.len()
             let saved_floor: int =
                 self.take_floor_depth
             self.take_floor_depth = self.scopes.len()
             result.children.push(
                 self.check_nested_block(node.children[0]))
             self.take_floor_depth = saved_floor
-            self.scopes = move base
+            self.rewind_scopes(scope_mark)
             self.loop_depth -= 1
             return result
         }
@@ -13924,8 +14083,7 @@ class ExpressionChecker {
                 lowered_value_binding = some(lowered)
             }
             let block: AstNode = node.children[block_index]
-            let base: List<LocalScope> =
-                self.copy_scopes(self.scopes)
+            let scope_mark: int = self.scope_log.len()
             let saved_floor: int =
                 self.take_floor_depth
             self.take_floor_depth = self.scopes.len()
@@ -13955,14 +14113,13 @@ class ExpressionChecker {
             }
             self.pop_scope()
             self.take_floor_depth = saved_floor
-            self.scopes = move base
+            self.rewind_scopes(scope_mark)
             result.children.push(body)
             self.loop_depth -= 1
             return result
         }
         if node.children.len() >= 2 {
-            let base: List<LocalScope> =
-                self.copy_scopes(self.scopes)
+            let scope_mark: int = self.scope_log.len()
             let saved_floor: int =
                 self.take_floor_depth
             self.take_floor_depth = self.scopes.len()
@@ -13971,7 +14128,7 @@ class ExpressionChecker {
             result.children.push(
                 self.check_nested_block(node.children[1]))
             self.take_floor_depth = saved_floor
-            self.scopes = move base
+            self.rewind_scopes(scope_mark)
         } else {
             self.fail(node, "invalid for statement")
         }
@@ -14568,16 +14725,15 @@ class ExpressionChecker {
                 self.feature_guards.len()
             self.collect_feature_guards(
                 node.children[0])
-            let base: List<LocalScope> =
-                self.copy_scopes(self.scopes)
+            let scope_mark: int = self.scope_log.len()
             result.children.push(self.check_nested_block(
                 node.children[1]))
-            let yes: List<LocalScope> =
-                self.copy_scopes(self.scopes)
+            let yes: List<ScopeChange> =
+                self.branch_changes(scope_mark)
             for self.feature_guards.len() > guard_mark {
                 self.feature_guards.pop()
             }
-            self.scopes = self.copy_scopes(base)
+            self.rewind_scopes(scope_mark)
             if node.children.len() > 2 {
                 if node.children[2].kind == "block" {
                     result.children.push(self.check_nested_block(
@@ -14587,9 +14743,9 @@ class ExpressionChecker {
                         self.check_statement(node.children[2]))
                 }
             }
-            let no: List<LocalScope> =
-                self.copy_scopes(self.scopes)
-            self.scopes = self.copy_scopes(base)
+            let no: List<ScopeChange> =
+                self.branch_changes(scope_mark)
+            self.rewind_scopes(scope_mark)
             let yes_returns: bool =
                 self.block_always_returns(
                     node.children[1])
@@ -14602,12 +14758,17 @@ class ExpressionChecker {
                     self.statement_always_returns(
                         node.children[2])
                 }
+            // the old checker replaced the scopes once more here, with a
+            // copy of the branch that continues
             if yes_returns && !no_returns {
-                self.scopes = move no
+                self.scope_epoch += 1
+                self.apply_changes(no)
             } else if !yes_returns && no_returns {
-                self.scopes = move yes
+                self.scope_epoch += 1
+                self.apply_changes(yes)
             } else if !yes_returns && !no_returns {
-                self.merge_move_states(yes, no)
+                self.apply_changes(
+                    self.merge_changes(yes, no))
             }
             return result
         }
@@ -14911,6 +15072,7 @@ class ExpressionChecker {
             }
         }
         self.scopes = []
+        self.scope_log = []
         self.push_scope()
         function.annotations =
             self.check_hir_annotations(function.annotations)
@@ -15081,10 +15243,23 @@ class ExpressionChecker {
         for scope: LocalScope in self.scopes {
             saved_scopes.push(scope)
         }
+        let saved_log: int = self.scope_log.len()
+        let saved_epoch: int = self.scope_epoch
         self.fold_one_const(constant)
         self.current = saved_current
         self.current_constraints = move saved_constraints
         self.scopes = move saved_scopes
+        self.restore_scope_log(saved_log, saved_epoch)
+    }
+
+    // After checking something else in the middle of a function: its log
+    // entries name its own scopes, and its branches never touched the
+    // function's bindings, so neither may count against them.
+    fn restore_scope_log(length: int, epoch: int) {
+        for self.scope_log.len() > length {
+            self.scope_log.pop()
+        }
+        self.scope_epoch = epoch
     }
 
     fn fold_one_const(constant: HirConst) {
@@ -15600,12 +15775,15 @@ class ExpressionChecker {
         for scope: LocalScope in self.scopes {
             saved_scopes.push(scope)
         }
+        let saved_log: int = self.scope_log.len()
+        let saved_epoch: int = self.scope_epoch
         self.check_one_declaration_defaults(
             declaration)
         self.current = saved_current
         self.current_constraints =
             move saved_constraints
         self.scopes = move saved_scopes
+        self.restore_scope_log(saved_log, saved_epoch)
     }
 
     fn check_one_declaration_defaults(

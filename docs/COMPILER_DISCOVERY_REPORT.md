@@ -22,6 +22,8 @@ bug-free.
 | CD-3 | crash | Deep nesting or a long flat chain ends `beansc` and `beansc lsp` with SIGSEGV instead of a diagnostic. | #202 |
 | CD-14 | hang | Checking a 6 150-deep generic type exceeds 20 s; 8 192 takes 70 s. | #203 |
 | CD-16 | sanitizer coverage | A `--release` build with IR ≥ 4 MiB is compiled by the chunked backend without `-fsanitize=`, so ASan never reaches it, the compiler itself included. | #207 |
+| CD-24 | invalid acceptance | A `move(...)` closure whose body branches leaves its captures usable, so two names own one value. Found later, while fixing CD-15. | none |
+| CD-25 | invalid acceptance | A closure that reads an outer binding only inside a loop or a returning branch does not borrow it, so the binding can be moved away; a native reproduction segfaults. Found later, while fixing CD-15. | none |
 
 Decisions needed from owners before the remaining red gates can turn green:
 CD-4 (adopt the 256-level nesting contract, #202), CD-11 (diagnostic context
@@ -274,7 +276,7 @@ branch; the combined run above is the evidence for the merged compiler.
 | --- | --- | --- | --- |
 | [#201](https://github.com/beans-lang/beans/issues/201) | CD-1, CD-2, CD-10 | Lexer number/punctuation scanners and parser generic-close handling | Require a real digit after a radix prefix, reject unknown bytes in the lexer, and report a stray generic close where its type ends (a `>>` is split only while an enclosing type list is open). Verified 2026-10-08, macOS ARM64: `test/issue201.sh`, `syntax_v07.sh`, `generic_calls.sh`, `generic_interfaces.sh`, `string_literals.sh` pass; nested generics and shifts keep their output on both backends. |
 | [#202](https://github.com/beans-lang/beans/issues/202) | CD-3, CD-4 | Parser nesting counter and AST path depth, string-piece parsing, the checker's statement entry and the LSP's JSON reader | Done and verified locally (macOS ARM64, 8 MiB stack). The parser counts a level at every grammar opener (an `else if` chain is one level) and refuses level 257; it also refuses a declaration whose syntax tree is deeper than 4 096 nodes, which bounds flat chains (sums, member chains, casts, `else if` branches). Each refusal is one located error, exit 1, before any recursive stage runs, and the language server publishes the same single diagnostic. Without the limits the first fault was at 17 536 member calls (`check`) and 18 176 casts (`run`), so the 4 096 limit keeps a margin above four. 22 constructs check and run at 256 and are refused once from 257 to 32 768; 76 deep or long unsaved documents leave `beansc lsp` answering (12 s for all, 180 s before the JSON reader stopped growing strings a byte at a time). The repository's own sources peak at 12 levels and 139 nodes (`src/llvm.b`'s 152-branch `else if`). Not run: Linux, Windows (whose main-thread stack the executable sets). |
-| [#203](https://github.com/beans-lang/beans/issues/203) | CD-14, CD-15 | Type structural keys/equality and generic validation; CLI and raw AST renderers | Done and verified locally (macOS ARM64, CPU time against a 0.1.51 build). `check`: `Option<` × n in 0.008 s / 0.027 s at n = 1 024 / 8 192 with the parser limit lifted (was 0.18 s / 96 s); a 16 384-layer type built by generic substitution in 0.48 s (47 s at 4 096). `parse`: 4 096 nested blocks in 0.40 s (48 s), a class of 16 000 methods in 0.19 s (0.98 s). `ast`: 2 048 nested blocks in 0.07 s (27 s), a 64 000-statement function in 0.73 s (40 s). Output bytes match 0.1.51 on all 884 files of `examples/`, `test/cases/`, `src/` and `stdlib/` and on 13 generated deep and wide shapes; `ast` indentation stops at depth 2 048, which only an operator chain reaches. `test/issue203.sh` checks exact deep output past the parser limit and 8x-work scaling, and fails with the fix reverted. Still open: move-state snapshots in the checker, quadratic in visible bindings (4 000 `let`/`if` pairs: 26 s). |
+| [#203](https://github.com/beans-lang/beans/issues/203) | CD-14, CD-15 | Type structural keys/equality and generic validation; CLI and raw AST renderers; the checker's branch state | Done and verified locally (macOS ARM64, CPU time against a 0.1.51 build). `check`: `Option<` × n in 0.008 s / 0.027 s at n = 1 024 / 8 192 with the parser limit lifted (was 0.18 s / 96 s); a 16 384-layer type built by generic substitution in 0.48 s (47 s at 4 096). `parse`: 4 096 nested blocks in 0.40 s (48 s), a class of 16 000 methods in 0.19 s (0.98 s). `ast`: 2 048 nested blocks in 0.07 s (27 s), a 64 000-statement function in 0.73 s (40 s). Output bytes match 0.1.51 on all 884 files of `examples/`, `test/cases/`, `src/` and `stdlib/` and on 13 generated deep and wide shapes; `ast` indentation stops at depth 2 048, which only an operator chain reaches. `test/issue203.sh` checks exact deep output past the parser limit and 8x-work scaling, and fails with the fix reverted. The checker's move-state snapshots, quadratic in visible bindings, are now an undo log: 8 000 `let`/`if` pairs check in 0.110 s (25.1 s), with `check` output unchanged; see [CD-15's checker part](#cd-15-checker-part-verified-locally--2026-10-08). |
 | [#204](https://github.com/beans-lang/beans/issues/204) | CD-5 to CD-9 | Lexer/parser recovery and expression checking | Preserve following declarations, issue one primary per defect, keep independent errors, and locate interpolation diagnostics at the expression bytes. An ordinary string ends with its line; the first pass's next-line keyword guess is gone. Verified 2026-10-08: `test/issue204.sh`, `parse_recovery.sh`, `diagnostics.sh`, `language_gaps.sh`, `crema_findings.sh` pass; a 1 218-input grid of awkward tokens in 30 grammar contexts parses without a hang. |
 | [#205](https://github.com/beans-lang/beans/issues/205) | CD-11 | Existing `Diagnostic`, CLI formatting, source snapshots, module loading and LSP diagnostics | Extend the same diagnostic with end positions and ordered related notes; render excerpts from retained sources and carry notes over LSP, including unsaved files. Every authored context-chain snapshot must pass without derivative errors. **Verified locally (macOS ARM64):** all five `diagnostic_*` snapshots and five `delimiter_missing_*` cases pass exactly with the baseline ignored; `test/diagnostic_context.sh` and `test/lsp_navigation.sh` (with and without `BEANS_DISCOVERY_CONTEXT=1`) pass; CD-11 baseline entries removed. Excerpts use a per-file line index and a per-file function index, so many diagnostics in one large file render in linear time; a clean `check` is unchanged within noise. |
 | [#206](https://github.com/beans-lang/beans/issues/206) | CD-12 and probe table | `spec/SYNTAX.md` and the existing syntax corpus/parser | Settle the probe contracts and the `}` newline `else` layout, then promote settled cases from crash-only probes to exact expectations. Settled 2026-10-08: the rule is dropped and `else` may begin the next line (sibling packages and user code rely on it); `test/issue206.sh` passes; `beansc check` of every repository and sibling-package source gives the same exit status as 0.1.51. |
@@ -353,6 +355,70 @@ macOS ARM64, Apple clang, the same change built by itself:
 Not run: Linux x86-64 (only arm64 in a container), macOS `make test-self-host`,
 `make test-core` on either host, Windows, and any candidate soak. The macOS
 and container runs shared the machine, so their times are not benchmarks.
+
+### CD-15 checker part verified locally — 2026-10-08
+
+The checker kept move and borrow state across `if`, `match` and loops by
+copying every visible binding at each branch (`copy_scopes`, several copies
+per `if`), so checking was quadratic in the bindings a function holds. The 256
+nesting limit bounds depth, not width. Now each declaration and each
+move-state write goes into an undo log. A branch reads back the bindings it
+changed and undoes to where it started, so it costs what it changed. Branch
+`fix/checker-scope-copies`, on `94a46a8`. macOS ARM64, Apple clang. "Before"
+is `94a46a8` built by itself; "after" is the change built by that compiler and
+then by itself.
+
+CPU seconds, best of three (one run for 4 000 and 8 000 pairs and for 8 000
+locals, best of five for the compiler's sources):
+
+| Shape | Before | After |
+| --- | --- | --- |
+| n `let`/`if` pairs in one function, n = 1 000 / 2 000 | 0.29 / 1.19 | 0.015 / 0.025 |
+| n = 4 000 / 8 000 | 5.1 / 25.1 | 0.054 / 0.110 |
+| 256 nested `if` blocks, after 2 000 / 8 000 locals | 0.33 / 1.33 | 0.016 / 0.044 |
+| `check src/main.b`, the whole compiler | 1.08 | 1.00 |
+| `check src/expression.b` / `src/interpreter.b` (each loads the whole compiler package) | 1.06 / 1.06 | 1.00 / 0.99 |
+
+A pair is `let vI: int = I` then `if vI > 0 { }`. In the nested shape each
+`if` declares one more local.
+
+Checking semantics are unchanged. The old copies also left behind binding
+objects that two callers still held across a branch, and CD-24's three wrong
+answers follow from that. The log keeps that behaviour on purpose,
+by copying such a binding into its slot before the slot changes, so the
+comparison below could be exact. `check` stdout, stderr and exit status,
+unfixed against fixed:
+
+| Corpus | Files | Result |
+| --- | --- | --- |
+| `examples/`, `test/cases/`, `test/fuzz/corpus/`, `stdlib/`, `src/` | 890 | byte-identical (657 accepted, 233 refused) |
+| `tools/ownership_fuzz.py` programs, seed 7, 300 cases | 900 | byte-identical (615 accepted, 285 refused) |
+| Generated programs that move, borrow, reassign and read move-only locals in nested `if`/`else if`/`else`, `match`, loops, `move(...)` closures and map reads, two seeds | 8 000 | byte-identical; 173 465 error lines, every move and borrow message among them |
+| Hand-written edge cases: `brew` in branch conditions, constant and field-default checks reached from inside a branch, compound assignment from a branching value, closures whose bodies branch | 3 | byte-identical |
+
+`tools/ownership_fuzz.py --cases 300 --lanes interp` passes on both compilers
+with the same counts.
+
+| Run | Result |
+| --- | --- |
+| `test/checker_width.sh` (new): exact move diagnostics in a function 4 096 bindings wide, and 512 to 4 096 pairs of four shapes (`if`, `if` value, `match`, loop) | **passed**, 6.8x to 7.6x CPU for 8x work; on the unfixed compiler **fails**: 45x to 68x |
+| `make test-fixpoint` | **passed** in 15 s |
+| `make test-quick` | **passed** in 216 s |
+| `make test-frontend` | **passed** in 339 s |
+| `make test-self-host` | **passed** in 1 354 s, 80 examples compiled and matched |
+| `make test-core`, system LibreSSL 3.3.6, `BEANS_AUTOBAHN_SKIP=1` | **passed** in 1 538 s; skipped by the scripts themselves: Autobahn, `nghttpd`, the sqlite3 system package, wasmtime, the Android NDK, the iOS simulator and five cross targets the host clang cannot build |
+| `make test-compiler-discovery` | **passed** in 26 s |
+| `tools/syntax_fuzz.py --self-test`, `test/issue202.sh`, `test/issue203.sh`, `test/ci_coverage.sh`, `test/moves.sh`, `test/borrowed_iteration.sh`, `test/downcast_borrow.sh`, `test/closure_captures.sh` | **passed** |
+
+Found while proving the parity, recorded and not fixed: CD-24 (a `move(...)`
+closure whose body branches does not spend its captures; an assignment from a
+branching value does not make a moved local usable again) and CD-25 (a
+closure's read of an outer binding inside a loop or a returning branch is not
+counted as a borrow, so the binding can be moved away; the native build of one
+reproduction segfaults). The code involved is unchanged since 0.1.51.
+
+Not run: Linux, Windows, `make test-sanitize`, the Autobahn suite and any
+candidate soak.
 
 ### Evidence required before a release verdict changes
 
