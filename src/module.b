@@ -987,14 +987,12 @@ class ModuleLoader {
         let lexer: Lexer = new Lexer(text)
         let tokens: List<Token> = lexer.scan()
         for diagnostic: Diagnostic in lexer.errors {
-            self.fail(file_path, diagnostic.line, diagnostic.col,
-                      diagnostic.message)
+            self.errors.push(diagnostic_in_file(diagnostic, file_path))
         }
-        let parser: Parser = new Parser(move tokens)
+        let parser: Parser = new Parser(move tokens, lexer.source_ended_in_error)
         let ast: AstNode = parser.parse_module()
         for diagnostic: Diagnostic in parser.errors {
-            self.fail(file_path, diagnostic.line, diagnostic.col,
-                      diagnostic.message)
+            self.errors.push(diagnostic_in_file(diagnostic, file_path))
         }
         let parsed: ParsedModuleFile =
             new ParsedModuleFile(source_id, file_path, ast)
@@ -1030,6 +1028,59 @@ class ModuleLoader {
             parsed.imports.push(entry)
         }
         return parsed
+    }
+
+    // Follow the already-loaded import graph from the diagnosed file back
+    // towards the entry. Notes describe real import sites, nearest first;
+    // a second import of the same package does not duplicate the chain.
+    fn contextual_diagnostic(value: Diagnostic) -> Diagnostic {
+        var result: Diagnostic = value
+        let notes: DiagnosticNotes = new DiagnosticNotes()
+        for note: DiagnosticNote in value.related.items {
+            notes.items.push(note)
+        }
+        var current_file: string = value.file
+        var seen: Map<string, bool> = {}
+        for current_file != "" {
+            var current_package: string = ""
+            for package: LoadedPackage in self.packages {
+                for file: ParsedModuleFile in package.files {
+                    if file.path == current_file {
+                        current_package = package.import_path
+                        break
+                    }
+                }
+                if current_package != "" { break }
+            }
+            if current_package == "" ||
+               current_package == self.entry_package ||
+               seen.contains_key(current_package) { break }
+            seen[current_package] = true
+            var parent_file: string = ""
+            for package: LoadedPackage in self.packages {
+                if package.import_path == current_package { continue }
+                for file: ParsedModuleFile in package.files {
+                    for imported: ModuleImport in file.imports {
+                        if imported.resolved != current_package { continue }
+                        notes.items.push(DiagnosticNote {
+                            file: file.path,
+                            line: imported.line,
+                            col: imported.col,
+                            end_line: imported.line,
+                            end_col: imported.col + 6,
+                            message: "imported",
+                        })
+                        parent_file = file.path
+                        break
+                    }
+                    if parent_file != "" { break }
+                }
+                if parent_file != "" { break }
+            }
+            current_file = parent_file
+        }
+        result.related = notes
+        return result
     }
 
     // Import positions read best relative to the module root; an absolute

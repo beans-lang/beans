@@ -368,17 +368,46 @@ fn main() {
 
 ## Lexical
 
+- Within a declaration or named function body, the parser accepts at most
+  **256 nested grammar constructs**. Parentheses, prefix operators, argument
+  and index lists, list/map/record literals, generic/array/function types, and
+  control-flow or closure forms count along the active path. A control-flow
+  or closure form and its own body count as one level; the outer body of a
+  named function and a string piece's interpolation braces do not count.
+  An interpolated expression inherits the surrounding nesting budget, and
+  an ordinary string nested inside a piece adds a level. Level 257 produces
+  one located `nesting deeper than 256 levels` error and normal exit status 1.
+- Shallow expression and block paths also have a **24,576-unit complexity
+  limit**: each binary AST node costs one unit and each other AST node costs
+  sixteen units, taking the longest child path rather than summing siblings.
+  Parentheses add no AST node. This accepts a flat 20,000-term arithmetic
+  expression while refusing unsafe member/call chains and combinations of
+  chains with nesting before recursive compiler or editor walks. Exceeding
+  the limit produces one located complexity error and normal exit status 1.
+  The limit does not restrict a file's total statement or list-element count.
 - No semicolons. Newline ends a statement (Go-style: only after a token that can end one).
+  This rule also applies inside parentheses: `(1` followed by a newline and
+  `+ 2)` is refused, while `(1 +` followed by a newline and `2)` continues.
 - A member chain may break at a `.` on either side: a line ending in `.`
   continues (the dot can never end a statement), and a newline is not a
   terminator when the next line begins with `.name` — so fluent chains write
   trailing-dot or leading-dot style. `..` stays a range operator and never
   continues a line. `...` is one token and means only the C variadic tail in
   an `extern "C" fn` signature.
-- Style consequence, same as Go: `} else {` must be on one line.
+- An `else` must follow the preceding branch's `}` on the same source line,
+  as in `} else {`. This applies to statement and value forms, including
+  `} else if ...` chains; a newline inside an intervening comment also breaks
+  the rule.
 - Comments: `//` line, `/* */` block (nesting allowed).
 - Number literals can use `_` separators: `1_000_000`. Hex `0xFF`, binary `0b1010`.
-- No parens around conditions: `if x > 3 { }`. Braces always required.
+  Separators in digit sequences are ignored, including doubled, trailing, and
+  prefix-adjacent separators: `1__0`, `1_`, and `0x_F` mean 10, 1, and 15.
+  A hex or binary prefix still requires at least one actual digit; `0x`,
+  `0b`, `0x_`, and `0b_` are errors.
+- Conditions do not need parentheses: `if x > 3 { }` is the preferred style,
+  and `if (x > 3) { }` is also accepted. Braces are always required.
+- A leading UTF-8 byte-order mark is not skipped. Its bytes are refused as
+  unexpected source bytes, beginning with `unexpected byte 239` at 1:1.
 
 ## Strings
 
@@ -387,6 +416,7 @@ fn main() {
 - Format specs ride after a `:` in the braces: `{x:8}` pads to width 8 (right-aligned),
   `{x:-8}` left-aligns, `{pi:.2}` fixes decimals (float/decimal only), `{pi:8.2}` both.
   Width pads anything printable — `{xs:12}` pads a whole list. Same rendering as `std.fmt`.
+  An empty format spec, `{x:}`, renders exactly as `{x}`.
 - **Width is measured in display columns, not bytes.** `{s:12}` fills until the
   rendered value occupies twelve terminal columns, so `"café 東京 🍜"` (17 bytes,
   9 characters, 12 columns) is already full and `"ok"` gets ten spaces. Byte
@@ -1310,6 +1340,11 @@ Primitives (all unboxed in codegen):
 
 ### Number rules
 
+- Binary operators group from highest precedence to lowest as `* / %`,
+  `+ -`, `<< >>`, `&`, `^`, `|`, `< <= > >=`, `== !=`, `&&`, then
+  `|| .. ..=`. Operators at the same precedence associate to the left.
+  Thus `6 & 3 == 2` means `(6 & 3) == 2`, and `1 == 1 == true` means
+  `(1 == 1) == true`; comparisons do not form a special chained operation.
 - A number literal takes the type the spot demands: `let p: decimal = 19.99` makes a decimal, `let f: f64 = 19.99` makes a float. No suffix zoo.
 - With no demand, an integer literal is `int` and a decimal-point literal is `f64`.
 - **A cast is a demand when its operand is a number literal.** A number written
@@ -2511,6 +2546,9 @@ No `return` in there — and that's on purpose, not an inconsistency. `return` a
 
 `match` works the same way: `pattern => expression` in value position, and arms can pattern-match on values, variants, ranges, `_`:
 
+A comma may be omitted after an arm that ends at a newline. A trailing arm
+comma before `}` is also allowed.
+
 ```
 match code {
     200        => "ok",
@@ -2558,6 +2596,10 @@ struct Pair<T> {
 fn largest<T implements Order>(xs: List<T>) -> Option<T> { ... }
 fn index<K implements Eq & Hash, V>(key: K, value: V) -> Map<K, V> { ... }
 ```
+
+Type-argument lists allow a trailing comma, as in `Map<int, int,>` or
+`id<int,>(value)`. An empty type-parameter list is allowed and declares no
+type parameters: `fn f<>() {}` has the same generic arity as `fn f() {}`.
 
 A `static fn` on a generic type has no receiver to read the owner's arguments
 off, so the owner parameters its signature names become type parameters of the

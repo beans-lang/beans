@@ -1,0 +1,42 @@
+{
+  "name": "diagnostic_generic_binding",
+  "feature": "diagnostic-generic-context",
+  "spec": "spec/SYNTAX.md#functions",
+  "disposition": "reject",
+  "modes": [
+    "check"
+  ],
+  "source_files": {
+    "main.b": "generic_binding.b"
+  },
+  "snapshot_files": {
+    "stdout": "generic_binding.stdout",
+    "stderr": "generic_binding.stderr"
+  },
+  "rejection": {
+    "file": "main.b",
+    "line": 3,
+    "col": 26,
+    "message": "generic T was int, then string",
+    "count": 1
+  },
+  "context": [
+    {
+      "file": "main.b",
+      "line": 1,
+      "col": 9,
+      "message": "(?:generic|parameter|declared)"
+    },
+    {
+      "file": "main.b",
+      "line": 2,
+      "col": 4,
+      "message": "in function"
+    }
+  ],
+  "caret": true,
+  "repair": {
+    "main.b": "fn same<T>(a: T, b: T) -> T { return a }\nfn main() {\n    let x: int = same(1, 2)\n}\n"
+  },
+  "snapshot_contract": "authored context-chain target; current output is retained in evidence, not blessed"
+}

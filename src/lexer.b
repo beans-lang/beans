@@ -26,6 +26,7 @@ class Lexer {
     last_kind: string
     have_token: bool
     errors: List<Diagnostic>
+    source_ended_in_error: bool
 
     fn init(source: string) {
         self.source = source
@@ -35,6 +36,7 @@ class Lexer {
         self.last_kind = ""
         self.have_token = false
         self.errors = []
+        self.source_ended_in_error = false
     }
 
     fn at_end() -> bool {
@@ -137,7 +139,17 @@ class Lexer {
            (self.peek_next() == 120 || self.peek_next() == 88) {
             self.advance()
             self.advance()
-            for is_hex(self.peek()) || self.peek() == 95 { self.advance() }
+            var have_digit: bool = false
+            for is_hex(self.peek()) || self.peek() == 95 {
+                if is_hex(self.peek()) { have_digit = true }
+                self.advance()
+            }
+            if !have_digit {
+                self.error_at(line, col, "hex literal needs at least one digit")
+                for is_ident_byte(self.peek()) { self.advance() }
+                self.add(inout out, "lex_error", from, line, col)
+                return
+            }
             self.add(inout out, "int", from, line, col)
             return
         }
@@ -145,8 +157,16 @@ class Lexer {
            (self.peek_next() == 98 || self.peek_next() == 66) {
             self.advance()
             self.advance()
+            var have_digit: bool = false
             for self.peek() == 48 || self.peek() == 49 || self.peek() == 95 {
+                if self.peek() != 95 { have_digit = true }
                 self.advance()
+            }
+            if !have_digit {
+                self.error_at(line, col, "binary literal needs at least one digit")
+                for is_ident_byte(self.peek()) { self.advance() }
+                self.add(inout out, "lex_error", from, line, col)
+                return
             }
             self.add(inout out, "int", from, line, col)
             return
@@ -242,6 +262,24 @@ class Lexer {
                     line, col,
                     "string not closed before end of line")
                 ended_at_line = true
+                // A continuation such as `cd"` on the next line belongs to
+                // this broken token, not to a second unterminated string.
+                // Keep a following declaration intact when no closer exists.
+                var tail: int = self.pos + 1
+                for tail < self.source.len() &&
+                    self.source.byte_at(tail) != 10 &&
+                    self.source.byte_at(tail) != 34 {
+                    tail += 1
+                }
+                if tail < self.source.len() && self.source.byte_at(tail) == 34 {
+                    let next_line: string = self.source.slice(self.pos + 1, tail).trim()
+                    if !next_line.starts_with("let ") &&
+                       !next_line.starts_with("var ") &&
+                       !next_line.starts_with("return ") &&
+                       !next_line.starts_with("fn ") {
+                        for self.pos <= tail { self.advance() }
+                    }
+                }
                 break
             }
             // A raw literal nested in an interpolation is bytes: its braces
@@ -289,6 +327,7 @@ class Lexer {
         }
         if !closed && !ended_at_line {
             self.error_at(line, col, "string never closed")
+            self.source_ended_in_error = true
         }
         self.add(inout out, "string", from, line, col)
     }
@@ -346,6 +385,7 @@ class Lexer {
         let hashes: int =
             raw_hashes_at(self.source, from, self.source.len())
         if !self.consume_raw_literal() {
+            self.source_ended_in_error = true
             var closer: string = "\""
             var index: int = 0
             for index < hashes {
@@ -360,6 +400,8 @@ class Lexer {
     }
 
     fn skip_block_comment() {
+        let line: int = self.line
+        let col: int = self.col
         self.advance()
         self.advance()
         var depth: int = 1
@@ -376,11 +418,33 @@ class Lexer {
                 self.advance()
             }
         }
+        if depth > 0 {
+            self.error_at(line, col, "block comment opened here is never closed")
+            self.source_ended_in_error = true
+        }
     }
 
     fn punctuation(inout out: List<Token>, from: int, line: int, col: int) {
-        self.advance()
+        let value: int = self.advance()
         var kind: string = self.source.slice(from, self.pos)
+        if !"()[]\{\}:;,.@+-*/%=!<>?&|^~".contains(kind) {
+            if value < 32 || value >= 127 {
+                self.error_at(line, col, "unexpected byte {value}")
+                // Identifiers are ASCII. An unsupported UTF-8 character is
+                // one offending source character, not one error per byte.
+                if value >= 194 && value <= 244 {
+                    var remaining: int = if value < 224 { 1 } else if value < 240 { 2 } else { 3 }
+                    for remaining > 0 && self.peek() >= 128 && self.peek() <= 191 {
+                        self.advance()
+                        remaining -= 1
+                    }
+                }
+            } else {
+                self.error_at(line, col, "unexpected character '{kind}'")
+            }
+            self.add(inout out, "lex_error", from, line, col)
+            return
+        }
         if !self.at_end() {
             let pair: string = self.source.slice(from, self.pos + 1)
             if pair == ".." || pair == "->" || pair == "=>" ||

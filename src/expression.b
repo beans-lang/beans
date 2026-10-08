@@ -255,13 +255,35 @@ class ExpressionChecker {
         }
     }
 
-    fn fail(node: AstNode, message: string) {
+    fn fail(node: AstNode, message: string,
+            context: Option<DiagnosticNote> = none) {
+        let related: DiagnosticNotes = new DiagnosticNotes()
+        match context {
+            some(note) => { related.items.push(note) }
+            none => {}
+        }
+        if self.current.name != "" {
+            related.items.push(DiagnosticNote {
+                file: self.current.file,
+                line: self.current.syntax.name_line,
+                col: self.current.syntax.name_col,
+                end_line: self.current.syntax.name_line,
+                end_col: self.current.syntax.name_col +
+                         self.current.name.len(),
+                message: "in function {self.current.name}, declared",
+            })
+        }
         self.errors.push(Diagnostic {
             severity: Severity.error,
             file: self.current.file,
             line: node.line,
             col: node.col,
+            end_line: node.line,
+            end_col: node.col + if node.kind == "name" {
+                node.value.len()
+            } else { 1 },
             message: message,
+            related: related,
         })
     }
 
@@ -865,14 +887,40 @@ class ExpressionChecker {
         pattern: HirType, actual: HirType,
         generics: List<string>,
         inout inference: Map<string, HirType>,
-        at: AstNode) {
+        at: AstNode, inference_owner: Option<HirFunction> = none) {
+        if hir_already_refused(actual) { return }
         if self.generic_name_in(pattern.name, generics) {
             match inference.get(pattern.name) {
                 some(previous) => {
-                    if !hir_types_equal(previous, actual) {
+                    if !hir_already_refused(previous) &&
+                       !hir_types_equal(previous, actual) {
+                        var context: Option<DiagnosticNote> = none
+                        match inference_owner {
+                            some(function) => {
+                                for generic: AstNode in function.syntax.children {
+                                    if generic.kind != "generic" { continue }
+                                    if generic.value != pattern.name &&
+                                       !generic.value.starts_with("{pattern.name} ") {
+                                        continue
+                                    }
+                                    context = some(DiagnosticNote {
+                                        file: function.file,
+                                        line: generic.name_line,
+                                        col: generic.name_col,
+                                        end_line: generic.name_line,
+                                        end_col: generic.name_col + pattern.name.len(),
+                                        message: "generic parameter {pattern.name} declared",
+                                    })
+                                    break
+                                }
+                            }
+                            none => {}
+                        }
                         self.fail(
                             at,
-                            "generic {pattern.name} was {render_hir_type(previous)}, then {render_hir_type(actual)}")
+                            "generic {pattern.name} was {render_hir_type(previous)}, then {render_hir_type(actual)}; expected {render_hir_type(previous)}, got {render_hir_type(actual)}",
+                            context)
+                        inference[pattern.name] = poison_hir_type()
                     }
                 }
                 none => {
@@ -901,12 +949,12 @@ class ExpressionChecker {
                 self.infer_generic_type(
                     pattern.args[index],
                     actual.args[index],
-                    generics, inout inference, at)
+                    generics, inout inference, at, inference_owner)
             }
             self.infer_generic_type(
                 hir_fn_result(pattern),
                 hir_fn_result(actual),
-                generics, inout inference, at)
+                generics, inout inference, at, inference_owner)
             return
         }
         if pattern.args.len() != actual.args.len() {
@@ -915,7 +963,7 @@ class ExpressionChecker {
         for index: int in 0..pattern.args.len() {
             self.infer_generic_type(
                 pattern.args[index], actual.args[index],
-                generics, inout inference, at)
+                generics, inout inference, at, inference_owner)
         }
     }
 
@@ -2351,9 +2399,6 @@ class ExpressionChecker {
     fn is_move_only_seen(
         type: HirType,
         inout seen: Map<string, bool>) -> bool {
-        let key: string = hir_type_key(type)
-        if seen.contains_key(key) { return false }
-        seen[key] = true
         if type.name == "array" &&
            type.args.len() == 1 {
             return self.is_move_only_seen(
@@ -2370,7 +2415,14 @@ class ExpressionChecker {
                     return true
                 }
             }
+            return false
         }
+        // Builtin containers are an acyclic type tree. Only declaration
+        // edges can revisit a type through fields or inheritance; key those
+        // edges, rather than rendering every suffix of a nested Option.
+        let key: string = hir_type_key(type)
+        if seen.contains_key(key) { return false }
+        seen[key] = true
         match self.declaration_for(type) {
             some(declaration) => {
                 if declaration.is_unique { return true }
@@ -6103,6 +6155,12 @@ class ExpressionChecker {
         // type with a refused part carries the marker into that rendering,
         // and the part's real problem was already reported (#175).
         if hir_already_refused(type) { return }
+        self.validate_accepted_target_type(node, type)
+    }
+
+    // The wrapper established that the whole tree has no refused part.
+    // Repeating that recursive scan at each child would walk every suffix.
+    fn validate_accepted_target_type(node: AstNode, type: HirType) {
         if (type.name == "StoredCallback" ||
             type.name == "LocalStoredCallback") &&
            type.args.len() == 1 &&
@@ -6267,7 +6325,7 @@ class ExpressionChecker {
             none => {}
         }
         for argument: HirType in type.args {
-            self.validate_target_type(node, argument)
+            self.validate_accepted_target_type(node, argument)
         }
     }
 
@@ -6292,12 +6350,61 @@ class ExpressionChecker {
         return ". A Beans string keeps every byte, NULs included, so key by string and convert with Bytes.to_string()"
     }
 
+    fn report_interpolation_diagnostic(value: Diagnostic, literal: AstNode,
+                                      column_offset: int, piece: string) {
+        var located: Diagnostic = value
+        located.file = self.current.file
+        if located.line == 1 {
+            located.line = literal.line
+            located.col += column_offset
+        }
+        if located.end_line == 1 {
+            located.end_line = literal.line
+            located.end_col += column_offset
+        }
+        let notes: DiagnosticNotes = new DiagnosticNotes()
+        for note: DiagnosticNote in value.related.items {
+            var related: DiagnosticNote = note
+            if related.file == "" { related.file = self.current.file }
+            if related.line == 1 {
+                related.line = literal.line
+                related.col += column_offset
+            }
+            if related.end_line == 1 {
+                related.end_line = literal.line
+                related.end_col += column_offset
+            }
+            notes.items.push(related)
+        }
+        notes.items.push(DiagnosticNote {
+            file: self.current.file,
+            line: literal.line,
+            col: literal.col,
+            end_line: literal.line,
+            end_col: literal.col + 1,
+            message: "in string piece \{{piece}\}",
+        })
+        if self.current.name != "" {
+            notes.items.push(DiagnosticNote {
+                file: self.current.file,
+                line: self.current.syntax.name_line,
+                col: self.current.syntax.name_col,
+                end_line: self.current.syntax.name_line,
+                end_col: self.current.syntax.name_col + self.current.name.len(),
+                message: "in function {self.current.name}, declared",
+            })
+        }
+        located.related = notes
+        self.errors.push(located)
+    }
+
     fn check_interpolations(node: AstNode) -> List<HirNode> {
         var lowered: List<HirNode> = []
         let raw: string = node.value
         if raw.len() < 2 { return move lowered }
         // A raw literal is bytes: `{` in it is a brace, not a slot.
         if string_literal_is_raw(raw) { return move lowered }
+        var piece_index: int = 0
         var index: int = string_literal_body_start(raw)
         let end: int = string_literal_body_end(raw)
         for index < end {
@@ -6311,41 +6418,8 @@ class ExpressionChecker {
                 continue
             }
             let start: int = index + 1
-            var cursor: int = start
-            var depth: int = 1
-            var in_string: bool = false
-            for cursor < end && depth > 0 {
-                let current: int = raw.byte_at(cursor)
-                if current == 92 {
-                    cursor += string_escape_length(
-                        raw, cursor, end)
-                    continue
-                }
-                // A raw literal nested in the slot is bytes: its braces do
-                // not nest the slot and its quotes do not open a string.
-                // Step over it whole, the way the lexer did, so the slot
-                // ends at its own `}` and not at a brace inside a route
-                // template or a hashed raw body.
-                if !in_string &&
-                   raw_open_at(raw, cursor, end) {
-                    cursor = raw_literal_end(
-                        raw, cursor, end)
-                    continue
-                }
-                if in_string {
-                    if current == 34 {
-                        in_string = false
-                    }
-                } else if current == 34 {
-                    in_string = true
-                } else if current == 123 {
-                    depth += 1
-                } else if current == 125 {
-                    depth -= 1
-                }
-                cursor += 1
-            }
-            if depth != 0 { break }
+            let cursor: int = string_interpolation_end(raw, start, end)
+            if cursor < 0 { break }
             let segment: string =
                 raw.slice(start, cursor - 1)
             index = cursor
@@ -6363,13 +6437,17 @@ class ExpressionChecker {
             let errors_before: int = self.errors.len()
             let expression_source: string =
                 interpolation_expression_source(segment)
-            let lexer: Lexer =
-                new Lexer(expression_source)
-            let tokens: List<Token> = lexer.scan()
-            let parser: Parser =
-                new Parser(move tokens)
-            let expression: AstNode =
+            let lexer: Lexer = new Lexer(expression_source)
+            var tokens: List<Token> = []
+            if !node.interpolation_syntax_ready { tokens = lexer.scan() }
+            let parser: Parser = new Parser(move tokens, lexer.source_ended_in_error)
+            let cached: bool = node.interpolation_syntax_ready
+            let expression: AstNode = if cached {
+                node.interpolations[piece_index]
+            } else {
                 parser.parse_standalone_expression()
+            }
+            piece_index += 1
             // Every parse error inside a piece that opens with '{' is
             // downstream of the same mistake, and each one points between
             // the braces rather than at them. Burying the one line that
@@ -6383,24 +6461,22 @@ class ExpressionChecker {
                 continue
             }
             for diagnostic: Diagnostic in lexer.errors {
-                self.fail(
-                    node,
-                    "in string piece \{{segment}\}: {diagnostic.message}")
+                self.report_interpolation_diagnostic(diagnostic, node, node.col + start - 1, segment)
             }
             for diagnostic: Diagnostic in parser.errors {
-                self.fail(
-                    node,
-                    "in string piece \{{segment}\}: {diagnostic.message}")
+                self.report_interpolation_diagnostic(diagnostic, node, node.col + start - 1, segment)
             }
             if lexer.errors.len() == 0 &&
                parser.errors.len() == 0 {
                 // The piece was parsed as a tiny source starting at 1:1.
                 // Move it onto the literal before checking so semantic
                 // errors point at the bytes the user wrote.
-                ast_place_interpolation(
-                    expression, node.line, node.col + start - 1)
+                if !cached {
+                    ast_place_interpolation(
+                        expression, node.line, node.col + start - 1)
+                    node.interpolations.push(expression)
+                }
                 self.qualify_unresolved_types(expression)
-                node.interpolations.push(expression)
                 let piece_errors: int = self.errors.len()
                 let piece: HirNode = self.check_expression(
                     expression, no_hir_type())
@@ -6452,6 +6528,7 @@ class ExpressionChecker {
             }
             if brace_opened &&
                self.errors.len() > errors_before {
+                for self.errors.len() > errors_before { self.errors.pop() }
                 self.fail(
                     node,
                     "'\{\{' is not an escape — it starts an interpolation whose expression begins with '\{'; for a literal brace write \\\{ or \\\}")
@@ -7179,10 +7256,15 @@ class ExpressionChecker {
         if signed_literal {
             self.literal_sign = -self.literal_sign
         }
+        let errors_before: int = self.errors.len()
         let operand: HirNode =
-            self.check_expression(node.children[0], expected)
+            self.check_expression(node.children[0],
+                if node.value == "!" { no_hir_type() } else { expected })
         if signed_literal {
             self.literal_sign = -self.literal_sign
+        }
+        if self.errors.len() > errors_before || hir_already_refused(operand.type) {
+            return self.make_node(node, "error", node.value, poison_hir_type())
         }
         let result: HirNode =
             self.make_node(node, "unary", node.value, operand.type)
@@ -7214,6 +7296,7 @@ class ExpressionChecker {
                   node.value != "inout" {
             self.fail(node, "unknown unary operator '{node.value}'")
         }
+        if self.errors.len() > errors_before { result.type = poison_hir_type() }
         self.expect_type(node, result.type, expected)
         return result
     }
@@ -7248,6 +7331,7 @@ class ExpressionChecker {
 
     fn check_binary(node: AstNode,
                     expected: HirType) -> HirNode {
+        let errors_before: int = self.errors.len()
         let operation: string = node.value
         var operand_expected: HirType = no_hir_type()
         if operation == "&&" || operation == "||" {
@@ -7263,7 +7347,12 @@ class ExpressionChecker {
             self.check_expression(
                 node.children[0], operand_expected)
         let right: HirNode =
-            self.check_expression(node.children[1], left.type)
+            self.check_expression(node.children[1],
+                if hir_already_refused(left.type) { no_hir_type() } else { left.type })
+        if self.errors.len() > errors_before ||
+           hir_already_refused(left.type) || hir_already_refused(right.type) {
+            return self.make_node(node, "error", node.value, poison_hir_type())
+        }
         var type: HirType = left.type
         if simd_description(left.type.name).is_some() ||
            simd_description(right.type.name).is_some() {
@@ -7371,6 +7460,7 @@ class ExpressionChecker {
         } else {
             self.fail(node, "operator '{operation}' is not checked yet")
         }
+        if self.errors.len() > errors_before { type = poison_hir_type() }
         self.expect_type(node, type, expected)
         let result: HirNode =
             self.make_node(node, "binary", operation, type)
@@ -8113,7 +8203,7 @@ class ExpressionChecker {
             }
             self.infer_generic_type(
                 result_pattern, expected,
-                function.generics, inout inference, node)
+                function.generics, inout inference, node, some(function))
         }
         let count: int = node.children.len() - first
         let required: int =
@@ -8192,6 +8282,7 @@ class ExpressionChecker {
                 self.substitute_generic_type(
                     pattern, function.generics,
                     inference)
+            let argument_errors: int = self.errors.len()
             let actual: HirNode =
                 self.check_argument(
                     node.children[index + first],
@@ -8205,11 +8296,25 @@ class ExpressionChecker {
                     function.parameters[index].passing,
                     "'{function.name}'", index,
                     inout inout_names)
+            // A bound generic's expectation is useful to contextual literals,
+            // but the inference owner must explain a conflicting binding.
+            // Replace that one provisional mismatch with its causal report.
+            if self.errors.len() == argument_errors + 1 &&
+               self.errors[argument_errors].message.starts_with("expected ") {
+                var generic_pattern: bool = false
+                for generic: string in function.generics {
+                    if self.type_mentions_generic(pattern, generic) {
+                        generic_pattern = true
+                        break
+                    }
+                }
+                if generic_pattern { self.errors.pop() }
+            }
             self.infer_generic_type(
                 pattern, actual.type,
                 function.generics,
                 inout inference,
-                node.children[index + first])
+                node.children[index + first], some(function))
             let wanted: HirType =
                 self.substitute_generic_type(
                     pattern, function.generics,
@@ -8225,9 +8330,10 @@ class ExpressionChecker {
                    node.children[index + first], wanted, false) {
                 unit_refused = true
             }
-            self.expect_type(
-                node.children[index + first],
-                actual.type, wanted)
+            if self.errors.len() == argument_errors {
+                self.expect_type(
+                    node.children[index + first], actual.type, wanted)
+            }
             result.children.push(actual)
             result.argument_passing.push(
                 function.parameters[index].passing)
@@ -12797,6 +12903,7 @@ class ExpressionChecker {
             // a statement match discards arm values, and its block arms
             // must keep discarding: a trailing call or nested match in
             // the block is a statement, never the arm's value
+            let arm_errors: int = self.errors.len()
             let value: HirNode =
                 if arm.children[1].kind == "block" {
                     self.check_expression_block(
@@ -12834,7 +12941,10 @@ class ExpressionChecker {
                 if arm_type.name == "" {
                     arm_type = value.type
                 }
-                if !hir_types_equal(value.type, arm_type) {
+                if self.errors.len() == arm_errors &&
+                   !hir_already_refused(value.type) &&
+                   !hir_already_refused(arm_type) &&
+                   !hir_types_equal(value.type, arm_type) {
                     self.fail(
                         arm,
                         "match arms have different types: {render_hir_type(arm_type)} and {render_hir_type(value.type)}")
@@ -12868,7 +12978,8 @@ class ExpressionChecker {
                         expected: HirType) -> HirNode {
         // The declaration that supplied this expected type already failed.
         // Do not turn its initializer into a second, misleading error.
-        if expected.name == "poison" {
+        if expected.name == "poison" || node.kind == "error" ||
+           node.note == "parse_error" {
             return self.make_node(
                 node, "error", node.value, poison_hir_type())
         }
@@ -14546,6 +14657,8 @@ class ExpressionChecker {
         copy.resolved = source.resolved
         copy.note = source.note
         copy.parenthesized = source.parenthesized
+        copy.parse_path_cost = source.parse_path_cost
+        copy.interpolation_syntax_ready = source.interpolation_syntax_ready
         copy.name_line = source.name_line
         copy.name_col = source.name_col
         copy.end_line = source.end_line

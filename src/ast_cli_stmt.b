@@ -1,125 +1,183 @@
 package main
 
-fn cli_ast_block(node: AstNode, depth: int) -> string {
-    var output: string = "\{\n"
-    for child: AstNode in node.children {
-        output =
-            "{output}{cli_ast_statement(child, depth + 1)}"
+// One rendering owns its fragments and indentation. A child writes into the
+// same buffer instead of returning a copy of everything beneath it.
+partial class CliAstPrinter {
+    pieces: List<string>
+    indents: List<string>
+
+    fn init() {
+        self.pieces = []
+        self.indents = [""]
     }
-    return "{output}{cli_ast_indent(depth)}\}"
+
+    fn indent(depth: int) -> string {
+        for self.indents.len() <= depth {
+            self.indents.push("{self.indents[self.indents.len() - 1]}  ")
+        }
+        return self.indents[depth]
+    }
+
+    fn block(node: AstNode, depth: int) {
+        self.pieces.push("\{\n")
+        for child: AstNode in node.children {
+            self.statement(child, depth + 1, true)
+        }
+        self.pieces.push("{self.indent(depth)}\}")
+    }
+
+    fn statement(node: AstNode, depth: int, indented: bool) {
+        if indented { self.pieces.push(self.indent(depth)) }
+        for annotation: AstNode in node.annotations {
+            self.pieces.push("{cli_ast_annotation(annotation)} ")
+        }
+        if node.kind == "let" || node.kind == "var" {
+            var type: string = "?"
+            var value: Option<AstNode> = none
+            for child: AstNode in node.children {
+                if child.kind == "type" ||
+                   child.kind == "array_type" ||
+                   child.kind == "fn_type" {
+                    type = cli_ast_type(child)
+                } else {
+                    value = some(child)
+                }
+            }
+            self.pieces.push("{node.kind} {node.value}: {type}")
+            match value {
+                some(expression) => {
+                    self.pieces.push(" = ")
+                    self.expression(expression, depth)
+                }
+                none => {}
+            }
+            self.pieces.push("\n")
+            return
+        }
+        if node.kind == "assign" {
+            if node.children.len() < 2 {
+                self.pieces.push("assign ? {node.value} ?\n")
+                return
+            }
+            self.pieces.push("assign ")
+            self.expression(node.children[0], depth)
+            self.pieces.push(" {node.value} ")
+            self.expression(node.children[1], depth)
+            self.pieces.push("\n")
+            return
+        }
+        if node.kind == "expression" {
+            if node.children.len() == 0 {
+                self.pieces.push("?\n")
+                return
+            }
+            self.expression(node.children[0], depth)
+            self.pieces.push("\n")
+            return
+        }
+        if node.kind == "return" || node.kind == "defer" {
+            self.pieces.push(node.kind)
+            if node.children.len() != 0 {
+                self.pieces.push(" ")
+                self.expression(node.children[0], depth)
+            } else if node.kind == "defer" {
+                self.pieces.push(" ?")
+            }
+            self.pieces.push("\n")
+            return
+        }
+        if node.kind == "break" || node.kind == "continue" {
+            self.pieces.push("{node.kind}\n")
+            return
+        }
+        if node.kind == "unsafe" {
+            if node.children.len() == 0 {
+                self.pieces.push("unsafe \{\}\n")
+                return
+            }
+            self.pieces.push("unsafe ")
+            self.block(node.children[0], depth)
+            self.pieces.push("\n")
+            return
+        }
+        if node.kind == "if" {
+            if node.children.len() < 2 {
+                self.pieces.push("if ? \{\}\n")
+                return
+            }
+            self.pieces.push("if ")
+            self.expression(node.children[0], depth)
+            self.pieces.push(" ")
+            self.block(node.children[1], depth)
+            if node.children.len() > 2 {
+                self.pieces.push(" else ")
+                let otherwise: AstNode = node.children[2]
+                if otherwise.kind == "if" {
+                    self.statement(otherwise, depth, false)
+                    return
+                }
+                if otherwise.kind == "block" &&
+                   otherwise.children.len() == 1 &&
+                   otherwise.children[0].kind == "if" {
+                    self.statement(otherwise.children[0], depth, false)
+                    return
+                }
+                self.block(otherwise, depth)
+            }
+            self.pieces.push("\n")
+            return
+        }
+        if node.kind == "for" {
+            if node.children.len() == 1 {
+                self.pieces.push("for ")
+                self.block(node.children[0], depth)
+                self.pieces.push("\n")
+                return
+            }
+            if node.children.len() == 2 {
+                self.pieces.push("for ")
+                self.expression(node.children[0], depth)
+                self.pieces.push(" ")
+                self.block(node.children[1], depth)
+                self.pieces.push("\n")
+                return
+            }
+            if node.children.len() >= 3 {
+                let binding: AstNode = node.children[0]
+                var type: string = "?"
+                if binding.children.len() != 0 {
+                    type = cli_ast_type(binding.children[0])
+                }
+                self.pieces.push("for {binding.value}: {type}")
+                if node.children.len() >= 4 &&
+                   node.children[1].kind == "binding" {
+                    let value_binding: AstNode = node.children[1]
+                    var value_type: string = "?"
+                    if value_binding.children.len() != 0 {
+                        value_type = cli_ast_type(value_binding.children[0])
+                    }
+                    self.pieces.push(", {value_binding.value}: {value_type} in ")
+                    self.expression(node.children[2], depth)
+                    self.pieces.push(" ")
+                    self.block(node.children[3], depth)
+                } else {
+                    self.pieces.push(" in ")
+                    self.expression(node.children[1], depth)
+                    self.pieces.push(" ")
+                    self.block(node.children[2], depth)
+                }
+                self.pieces.push("\n")
+                return
+            }
+        }
+        self.pieces.push("?\n")
+    }
 }
 
-fn cli_ast_statement(node: AstNode, depth: int) -> string {
-    let indent: string = cli_ast_indent(depth)
-    var annotations: string = ""
-    for annotation: AstNode in node.annotations {
-        annotations =
-            "{annotations}{cli_ast_annotation(annotation)} "
-    }
-    let prefix: string = "{indent}{annotations}"
-    if node.kind == "let" || node.kind == "var" {
-        var type: string = "?"
-        var value: string = ""
-        for child: AstNode in node.children {
-            if child.kind == "type" ||
-               child.kind == "array_type" ||
-               child.kind == "fn_type" {
-                type = cli_ast_type(child)
-            } else {
-                value =
-                    " = {cli_ast_expression(child, depth)}"
-            }
-        }
-        return "{prefix}{node.kind} {node.value}: {type}{value}\n"
-    }
-    if node.kind == "assign" {
-        if node.children.len() < 2 {
-            return "{prefix}assign ? {node.value} ?\n"
-        }
-        return "{prefix}assign {cli_ast_expression(node.children[0], depth)} {node.value} {cli_ast_expression(node.children[1], depth)}\n"
-    }
-    if node.kind == "expression" {
-        if node.children.len() == 0 { return "{prefix}?\n" }
-        return "{prefix}{cli_ast_expression(node.children[0], depth)}\n"
-    }
-    if node.kind == "return" {
-        if node.children.len() == 0 {
-            return "{prefix}return\n"
-        }
-        return "{prefix}return {cli_ast_expression(node.children[0], depth)}\n"
-    }
-    if node.kind == "break" || node.kind == "continue" {
-        return "{prefix}{node.kind}\n"
-    }
-    if node.kind == "defer" {
-        if node.children.len() == 0 {
-            return "{prefix}defer ?\n"
-        }
-        return "{prefix}defer {cli_ast_expression(node.children[0], depth)}\n"
-    }
-    if node.kind == "unsafe" {
-        if node.children.len() == 0 {
-            return "{prefix}unsafe \{\}\n"
-        }
-        return "{prefix}unsafe {cli_ast_block(node.children[0], depth)}\n"
-    }
-    if node.kind == "if" {
-        if node.children.len() < 2 {
-            return "{prefix}if ? \{\}\n"
-        }
-        var output: string =
-            "{prefix}if {cli_ast_expression(node.children[0], depth)} {cli_ast_block(node.children[1], depth)}"
-        if node.children.len() > 2 {
-            let otherwise: AstNode = node.children[2]
-            if otherwise.kind == "if" {
-                let nested: string =
-                    cli_ast_statement(otherwise, depth)
-                output =
-                    "{output} else {nested.slice(indent.len(), nested.len())}"
-                return output
-            }
-            if otherwise.kind == "block" &&
-               otherwise.children.len() == 1 &&
-               otherwise.children[0].kind == "if" {
-                let nested: string =
-                    cli_ast_statement(
-                        otherwise.children[0], depth)
-                output =
-                    "{output} else {nested.slice(indent.len(), nested.len())}"
-                return output
-            }
-            output =
-                "{output} else {cli_ast_block(otherwise, depth)}"
-        }
-        return "{output}\n"
-    }
-    if node.kind == "for" {
-        if node.children.len() == 1 {
-            return "{prefix}for {cli_ast_block(node.children[0], depth)}\n"
-        }
-        if node.children.len() == 2 {
-            return "{prefix}for {cli_ast_expression(node.children[0], depth)} {cli_ast_block(node.children[1], depth)}\n"
-        }
-        if node.children.len() >= 3 {
-            let binding: AstNode = node.children[0]
-            var type: string = "?"
-            if binding.children.len() != 0 {
-                type = cli_ast_type(binding.children[0])
-            }
-            if node.children.len() >= 4 &&
-               node.children[1].kind == "binding" {
-                let value_binding: AstNode = node.children[1]
-                var value_type: string = "?"
-                if value_binding.children.len() != 0 {
-                    value_type =
-                        cli_ast_type(value_binding.children[0])
-                }
-                return "{prefix}for {binding.value}: {type}, {value_binding.value}: {value_type} in {cli_ast_expression(node.children[2], depth)} {cli_ast_block(node.children[3], depth)}\n"
-            }
-            return "{prefix}for {binding.value}: {type} in {cli_ast_expression(node.children[1], depth)} {cli_ast_block(node.children[2], depth)}\n"
-        }
-    }
-    return "{prefix}?\n"
+fn cli_ast_block(node: AstNode, depth: int) -> string {
+    let printer: CliAstPrinter = new CliAstPrinter()
+    printer.block(node, depth)
+    return printer.pieces.join("")
 }
 
 fn cli_ast_function(node: AstNode, depth: int) -> string {
@@ -324,10 +382,10 @@ fn render_cli_ast(node: AstNode) -> string {
     if node.kind != "module" {
         return cli_ast_expression(node, 0)
     }
-    var output: string = ""
+    var output: List<string> = []
     for child: AstNode in node.children {
         if child.kind != "package" { continue }
-        output = "{output}package {child.value}\n\n"
+        output.push("package {child.value}\n\n")
     }
     var import_count: int = 0
     for child: AstNode in node.children {
@@ -348,23 +406,23 @@ fn render_cli_ast(node: AstNode) -> string {
             }
         }
         if named != "" {
-            output = "{output}import \{{named}\} from {child.value}\n"
+            output.push("import \{{named}\} from {child.value}\n")
             import_count += 1
             continue
         }
-        output = "{output}import {child.value}"
+        output.push("import {child.value}")
         for part: AstNode in child.children {
             if part.kind == "alias" {
-                output = "{output} as {part.value}"
+                output.push(" as {part.value}")
             }
         }
-        output = "{output}\n"
+        output.push("\n")
         import_count += 1
     }
-    if import_count != 0 { output = "{output}\n" }
+    if import_count != 0 { output.push("\n") }
     for child: AstNode in node.children {
         if child.kind == "import" || child.kind == "package" { continue }
-        output = "{output}{cli_ast_declaration(child)}"
+        output.push(cli_ast_declaration(child))
     }
-    return output
+    return output.join("")
 }

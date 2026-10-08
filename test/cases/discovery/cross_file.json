@@ -1,0 +1,41 @@
+{
+  "name": "diagnostic_cross_file",
+  "feature": "diagnostic-import-context",
+  "spec": "spec/SYNTAX.md#files-modules-imports-implemented-v04",
+  "disposition": "reject",
+  "modes": [
+    "check"
+  ],
+  "source_files": {
+    "main.b": "cross_main.b",
+    "broken/broken.b": "cross_broken.b",
+    "beans.pot": "cross_manifest.pot"
+  },
+  "snapshot_files": {
+    "stdout": "cross_file.stdout",
+    "stderr": "cross_file.stderr"
+  },
+  "rejection": {
+    "file": "broken/broken.b",
+    "line": 3,
+    "col": 12,
+    "message": "unknown name 'missing'",
+    "count": 1
+  },
+  "context": [
+    {
+      "file": "broken/broken.b",
+      "line": 2,
+      "col": 8,
+      "message": "in function"
+    },
+    {
+      "file": "main.b",
+      "line": 2,
+      "col": 1,
+      "message": "import"
+    }
+  ],
+  "caret": true,
+  "snapshot_contract": "authored context-chain target; current output is retained in evidence, not blessed"
+}

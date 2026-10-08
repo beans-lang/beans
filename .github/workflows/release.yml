@@ -30,6 +30,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  compiler-discovery:
+    name: compiler discovery and candidate acceptance
+    uses: ./.github/workflows/differential-fuzz.yml
+    with:
+      candidate: true
+      seconds: 7200
+
   version:
     name: resolve version
     runs-on: ubuntu-24.04
@@ -651,6 +658,7 @@ jobs:
     name: publish release
     needs:
       - version
+      - compiler-discovery
       - package-unix
       - package-windows
       - package-musl

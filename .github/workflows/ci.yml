@@ -229,12 +229,17 @@ jobs:
           ./test/differential.sh
           make fuzz-differential-smoke
 
+      - name: Syntax and diagnostic discovery gate
+        run: make test-compiler-discovery
+
       - name: Upload fuzz failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: preflight-fuzz-failures
-          path: build/differential-fuzz/failures/
+          path: |
+            build/differential-fuzz/failures/
+            build/compiler-discovery/
           if-no-files-found: ignore
 
   # Native Linux/x86-64 is split by failure area too. The compiler build is

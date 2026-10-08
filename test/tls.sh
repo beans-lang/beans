@@ -11,8 +11,8 @@
 #   partial IO — the byte-at-a-time handshake fuzz, the test the plan calls
 #   the one that matters.
 #
-# Everything is loopback: the peer is a local `openssl s_server` with pinned
-# configs, and the corpus is regenerated into the temp dir so no key ever
+# Everything is loopback: peers are local Beans TLS servers and `openssl
+# s_server` with pinned configs, and the corpus is regenerated so no key ever
 # outlives the run. No network test, ever.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -47,9 +47,13 @@ echo "checking a TLS backend is present"
 
 echo "generating the certificate corpus"
 bash test/fixtures/tls_cert_corpus.sh "$tmp/certs" >/dev/null
+# LibreSSL defaults to RC2-40 certificate bags, which OpenSSL 3 does not
+# enable. Its PBES2 encoding also fails SecPKCS12Import. Use the common
+# PKCS12 test-fixture format accepted by both backends.
 openssl pkcs12 -export -out "$tmp/server.p12" \
     -inkey "$tmp/certs/valid.key" -in "$tmp/certs/valid.crt" \
-    -certfile "$tmp/certs/ca.crt" -passout pass:beans >/dev/null 2>&1
+    -certfile "$tmp/certs/ca.crt" -passout pass:beans \
+    -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg SHA1 >/dev/null 2>&1
 
 # Starts an s_server with one corpus certificate and sets PORT to the port
 # it took. Deliberately NOT a command substitution: a subshell would keep
@@ -145,7 +149,7 @@ fi
     "$tmp/certs/valid.crt" "$tmp/certs/valid.key" \
     "$tmp/certs/sni.crt" "$tmp/certs/sni.key" \
     "$tmp/server.p12" "$tmp/certs/ca.crt" "$beans_server_port" \
-    "$server_alpn" "$pem_alpn" "$p12_alpn" \
+    "$server_alpn" "$pem_alpn" "$p12_alpn" clean-close \
     >"$tmp/tls_server.out" 2>"$tmp/tls_server.err" &
 beans_server_pid=$!
 servers+=("$beans_server_pid")
@@ -166,6 +170,22 @@ grep -q '^tls server client true$' "$tmp/tls_server_client.out" || {
     cat "$tmp/tls_server.err" "$tmp/tls_server_client.out" >&2
     exit 1
 }
+
+# LibreSSL's s_server -www closes without close_notify. Its EOF is rightly
+# reported as truncation, so use the Beans server's final PEM exchange for
+# the honest control. Keep the raw proxy cuts against s_server unchanged.
+echo "checking truncation is an error, not an end"
+start_server valid
+trunc_port=$PORT
+"$tmp/truncation" "$tmp/certs/ca.crt" "$trunc_port" \
+    "$beans_server_port" "$pem_alpn" >"$tmp/truncation.out" 2>&1
+cat "$tmp/truncation.out"
+diff -u - "$tmp/truncation.out" <<'EXPECTED'
+honest close reads as clean end true
+mid-response cut is an error true
+handshake cut refuses the connection true
+EXPECTED
+
 if ! wait "$beans_server_pid"; then
     cat "$tmp/tls_server.err" "$tmp/tls_server.out" >&2
     exit 1
@@ -303,17 +323,6 @@ case "$got" in
         echo "ALPN mismatch produced no verdict: $got" >&2
         exit 1 ;;
 esac
-
-echo "checking truncation is an error, not an end"
-start_server valid
-trunc_port=$PORT
-"$tmp/truncation" "$tmp/certs/ca.crt" "$trunc_port" >"$tmp/truncation.out" 2>&1
-cat "$tmp/truncation.out"
-diff -u - "$tmp/truncation.out" <<'EXPECTED'
-honest close reads as clean end true
-mid-response cut is an error true
-handshake cut refuses the connection true
-EXPECTED
 
 echo "checking the byte-at-a-time handshake fuzz"
 start_server valid

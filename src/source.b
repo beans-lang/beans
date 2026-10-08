@@ -22,4 +22,11 @@ class SourceManager {
     fn get(id: int) -> SourceFile {
         return self.files[id]
     }
+
+    fn find(path: string) -> Option<SourceFile> {
+        for file: SourceFile in self.files {
+            if file.path == path { return some(file) }
+        }
+        return none
+    }
 }

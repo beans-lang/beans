@@ -1,0 +1,6 @@
+main.b:2:30: error: expected ')'
+    let x: int = (1 + (2 * 3)
+                             ^
+note: '(' opened at main.b:2:18
+note: in function main, declared at main.b:1:4
+main.b: stopped before type checking

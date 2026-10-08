@@ -769,4 +769,108 @@ if private_lines != {16, 17}:
     fail(f"`priv fn hidden` and its `self.seen` are the private tokens here, "
          f"got {sorted(private_lines)}")
 print("ok the other half of a partial class answers for itself")
+
+# Unsaved source, tabs, CRLF and a non-BMP character before the diagnostic.
+# Expected columns are counted in UTF-16 from the authored text, independently
+# of the compiler's byte positions. The disk copy is deliberately valid.
+with tempfile.TemporaryDirectory(prefix="beans-lsp-discovery-") as directory:
+    path = pathlib.Path(directory) / "main.b"
+    path.write_text("fn main() {}\n")
+    source = 'import std.io\r\nfn main() {\r\n\tio.println("🙂 {missing + 1}")\r\n}\r\n'
+    s = Session()
+    s.open(path, source)
+    s.ask("textDocument/documentSymbol", path)
+    s.finish()
+    problems = [d for n in s.notes if n.get("method") == "textDocument/publishDiagnostics"
+                and n["params"]["uri"] == path.as_uri() for d in n["params"]["diagnostics"]]
+    primary = [d for d in problems if "unknown name 'missing'" in d["message"]]
+    if len(primary) != 1:
+        fail(f"unsaved source should report one unknown name: {problems}")
+    line = source.splitlines()[2]
+    column = len(line[:line.index("missing")].encode("utf-16-le")) // 2
+    if primary[0]["range"]["start"] != {"line": 2, "character": column}:
+        fail(f"tab/Unicode/CRLF diagnostic should use UTF-16 column {column}: {primary}")
+    if os.environ.get("BEANS_DISCOVERY_CONTEXT") == "1":
+        if primary[0]["range"]["end"] != {"line": 2, "character": column + len("missing")}:
+            fail(f"the diagnostic must retain the full primary name span: {primary}")
+        related = primary[0].get("relatedInformation", [])
+        if not related or related[0]["location"]["uri"] != path.as_uri() or \
+                related[0]["location"]["range"] != {
+                    "start": {"line": 1, "character": 3},
+                    "end": {"line": 1, "character": 7}} or \
+                "in function main" not in related[0]["message"]:
+            fail(f"diagnostic needs its unsaved enclosing function location: {primary}")
+        # Parser errors inside string pieces retain their own primary and
+        # inner-to-outer context, translated onto the unsaved document.
+        piece_source = pathlib.Path("test/cases/discovery/interpolation.b").read_text()
+        piece_session = Session()
+        piece_session.open(path, piece_source)
+        piece_session.ask("textDocument/documentSymbol", path)
+        piece_session.finish()
+        piece_errors = [d for n in piece_session.notes
+                        if n.get("method") == "textDocument/publishDiagnostics"
+                        and n["params"]["uri"] == path.as_uri()
+                        for d in n["params"]["diagnostics"]]
+        if len(piece_errors) != 1 or piece_errors[0]["message"] != "expected expression" or \
+                piece_errors[0]["range"] != {
+                    "start": {"line": 2, "character": 32},
+                    "end": {"line": 2, "character": 33}}:
+            fail(f"interpolation parse error needs its exact primary span: {piece_errors}")
+        piece_related = piece_errors[0].get("relatedInformation", [])
+        expected_context = [(2, 27, "opened"), (2, 15, "in string piece {1 + (2 * )}"),
+                            (1, 3, "in function main")]
+        if len(piece_related) != len(expected_context):
+            fail(f"interpolation context should be opener, piece, function: {piece_related}")
+        for note, (line_no, col_no, message) in zip(piece_related, expected_context):
+            if note["location"]["uri"] != path.as_uri() or \
+                    note["location"]["range"]["start"] != {"line": line_no, "character": col_no} or \
+                    message not in note["message"]:
+                fail(f"interpolation related information lost unsaved source context: {piece_related}")
+    s = Session()
+    s.open(path, source)
+    s.change(path, source.replace("missing", "1"))
+    s.ask("textDocument/documentSymbol", path)
+    s.finish()
+    notes = [n for n in s.notes if n.get("method") == "textDocument/publishDiagnostics"
+             and n["params"]["uri"] == path.as_uri()]
+    if not notes or notes[-1]["params"]["diagnostics"]:
+        fail(f"repairing an unsaved document should clear its diagnostics: {notes}")
+print("ok discovery LSP: unsaved source, Unicode, tabs, CRLF and repair")
+
+# Every incomplete edit the syntax discovery corpus generates (truncations at
+# token boundaries and a stray `]` in each valid program) is opened unsaved.
+# The server must stay up and answer, and every diagnostic it publishes must
+# lie inside the document it was published for. No wording is asserted: an
+# arbitrary mutation carries no must-reject claim (docs/COMPILER_DISCOVERY.md).
+with tempfile.TemporaryDirectory(prefix="beans-lsp-corpus-") as directory:
+    emitted = subprocess.run([sys.executable, "-B", "tools/syntax_fuzz.py", "--seed", "1",
+                              "--mutations-only", "--emit-corpus", directory],
+                             capture_output=True, timeout=120)
+    if emitted.returncode != 0:
+        fail("could not emit the discovery mutation corpus: " + emitted.stderr.decode(errors="replace"))
+    manifest = json.loads((pathlib.Path(directory) / "manifest.json").read_text())
+    if len(manifest) < 20:
+        fail(f"the mutation corpus is unexpectedly small: {len(manifest)} cases")
+    for case in manifest:
+        path = pathlib.Path(directory) / case["name"] / "main.b"
+        text = path.read_text()
+        s = Session()
+        s.open(path, text)
+        rid = s.ask("textDocument/documentSymbol", path)
+        s.finish()
+        if rid not in s.replies:
+            fail(f"{case['name']}: no documentSymbol reply for an incomplete edit")
+        lines = text.split("\n")
+        for note in s.notes:
+            if note.get("method") != "textDocument/publishDiagnostics" or \
+                    note["params"]["uri"] != path.as_uri():
+                continue
+            for d in note["params"]["diagnostics"]:
+                start, end = d["range"]["start"], d["range"]["end"]
+                if not (0 <= start["line"] < len(lines)) or start["character"] < 0 or \
+                        (end["line"], end["character"]) < (start["line"], start["character"]):
+                    fail(f"{case['name']}: diagnostic outside its document: {d}")
+                if not d.get("message"):
+                    fail(f"{case['name']}: diagnostic without a message: {d}")
+    print(f"ok discovery LSP: {len(manifest)} incomplete edits answered with in-document diagnostics")
 PY

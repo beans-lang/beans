@@ -5773,28 +5773,50 @@ class TreeInterpreter {
 
     fn binary(node: HirNode,
               frame: TreeFrame) -> TreeValue {
-        let left: TreeValue =
-            self.expression(node.children[0], frame)
-        if left.kind == "propagate" { return left }
-        if node.value == "&&" {
-            if !self.truth(node, left) {
-                return TreeValue.boolean(false)
-            }
-            return TreeValue.boolean(self.truth(
-                node,
-                self.expression(node.children[1], frame)))
+        // Flat left-associative input creates a deep left spine. Walk it
+        // iteratively while preserving the original operand order and each
+        // node's short-circuit decision. Recursive right operands are bounded
+        // by the parser's grammar/path limits.
+        var pending: List<HirNode> = []
+        var cursor: HirNode = node
+        for cursor.kind == "binary" {
+            pending.push(cursor)
+            cursor = cursor.children[0]
         }
-        if node.value == "||" {
-            if self.truth(node, left) {
-                return TreeValue.boolean(true)
+        var left: TreeValue = self.expression(cursor, frame)
+        if left.kind == "propagate" || self.failed { return left }
+        for pending.len() != 0 {
+            let current: HirNode = pending.pop().expect("pending binary node")
+            if current.value == "&&" {
+                if !self.truth(current, left) {
+                    left = TreeValue.boolean(false)
+                    if self.failed { return left }
+                    continue
+                }
+                left = TreeValue.boolean(self.truth(
+                    current, self.expression(current.children[1], frame)))
+            } else if current.value == "||" {
+                if self.truth(current, left) {
+                    left = TreeValue.boolean(true)
+                    if self.failed { return left }
+                    continue
+                }
+                left = TreeValue.boolean(self.truth(
+                    current, self.expression(current.children[1], frame)))
+            } else {
+                let right: TreeValue = self.expression(current.children[1], frame)
+                if right.kind == "propagate" { return right }
+                if self.failed { return right }
+                left = self.binary_values(current, left, right)
             }
-            return TreeValue.boolean(self.truth(
-                node,
-                self.expression(node.children[1], frame)))
+            if self.failed { return left }
         }
-        let right: TreeValue =
-            self.expression(node.children[1], frame)
-        if right.kind == "propagate" { return right }
+        return left
+    }
+
+    fn binary_values(node: HirNode,
+                     left: TreeValue,
+                     right: TreeValue) -> TreeValue {
         if node.value == "==" || node.value == "!=" {
             // A comparison over a type parameter is the `Eq` interface, not
             // the operators of whatever the instantiation bound: a float

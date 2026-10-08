@@ -31,13 +31,17 @@ import json
 import os
 import platform
 import random
+import re
+import signal
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from functools import lru_cache
 
-GENERATOR_VERSION = "3"
+GENERATOR_VERSION = "4"
 
 # ---------------------------------------------------------------------------
 # types
@@ -265,6 +269,25 @@ class Expr:
 
     def replace_child(self, i, new):
         raise NotImplementedError
+
+
+class Parenthesized(Expr):
+    """A syntax-only transformation; evaluation stays with the child."""
+    def __init__(self, child):
+        self.child = child
+        self.type = child.type
+
+    def children(self):
+        return [self.child]
+
+    def replace_child(self, i, new):
+        self.child = new
+
+    def emit(self):
+        return "(" + self.child.emit() + ")"
+
+    def eval(self, env):
+        return self.child.eval(env)
 
 
 class IntLit(Expr):
@@ -2997,7 +3020,7 @@ def generate_case_files(seed, case, groups, max_depth, max_stmts):
 
 class LaneResult:
     def __init__(self, lane, status, stdout, stderr, exit_code, commands,
-                 note=""):
+                 note="", elapsed_seconds=0.0):
         self.lane = lane
         self.status = status  # ok | check-reject | build-fail | timeout |
                               # crash | error | skipped
@@ -3006,24 +3029,71 @@ class LaneResult:
         self.exit_code = exit_code
         self.commands = commands
         self.note = note
+        self.elapsed_seconds = elapsed_seconds
 
 
-def run_proc(cmd, timeout, cwd=None):
-    """(kind, stdout, stderr, exit). kind: ok | timeout | crash."""
-    try:
-        p = subprocess.run(cmd, capture_output=True, timeout=timeout,
-                           cwd=cwd)
-    except subprocess.TimeoutExpired as e:
-        out = e.stdout.decode("utf-8", "replace") if e.stdout else ""
-        err = e.stderr.decode("utf-8", "replace") if e.stderr else ""
-        return "timeout", out, err, None
-    except OSError as e:
-        return "crash", "", str(e), None
-    out = p.stdout.decode("utf-8", "replace")
-    err = p.stderr.decode("utf-8", "replace")
-    if p.returncode < 0:
-        return "crash", out, err, p.returncode
-    return "ok", out, err, p.returncode
+def run_proc(cmd, timeout, cwd=None, input_bytes=None, max_output_bytes=4 * 1024 * 1024, env=None,
+             preexec_fn=None):
+    """Bound process time/output and retain evidence, including on timeout.
+
+    Temporary files keep huge AST dumps out of Python's heap. Each subprocess
+    owns a process group, so a timed-out compiler does not leave clang/linker
+    children running after the case has finished.
+    """
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        try:
+            p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=stdout, stderr=stderr,
+                                 stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+                                 start_new_session=(os.name == "posix"),
+                                 preexec_fn=preexec_fn if os.name == "posix" else None)
+        except OSError as e:
+            return "error", "", str(e), None
+        started = time.monotonic()
+        kind = "ok"
+        # The LSP transcripts used by tests are bounded and fit in a pipe.
+        if input_bytes is not None:
+            try:
+                p.stdin.write(input_bytes)
+                p.stdin.close()
+            except BrokenPipeError:
+                pass
+        while p.poll() is None:
+            if stdout.tell() + stderr.tell() > max_output_bytes:
+                kind = "output-limit"
+                break
+            if time.monotonic() - started >= timeout:
+                kind = "timeout"
+                break
+            time.sleep(0.01)
+        if kind != "ok":
+            if os.name == "posix":
+                # macOS answers EPERM, not ESRCH, when the leader exited between
+                # poll() and the kill and is still a zombie; the group is gone
+                # either way, so fall through and reap it.
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                try:
+                    p.kill()
+                except (ProcessLookupError, PermissionError):
+                    pass
+            else:
+                subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=10)
+                p.kill()
+            p.wait(timeout=10)
+        stdout.seek(0)
+        stderr.seek(0)
+        out = stdout.read(max_output_bytes).decode("utf-8", "replace")
+        err = stderr.read(max_output_bytes).decode("utf-8", "replace")
+        if kind == "ok" and (p.returncode < 0 or
+                (os.name == "nt" and (p.returncode & 0xC0000000) == 0xC0000000)):
+            kind = "crash"
+        if kind == "ok" and len(out.encode()) + len(err.encode()) >= max_output_bytes:
+            kind = "output-limit"
+        return kind, out, err, p.returncode if kind not in ("timeout", "output-limit") else None
 
 
 class Runner:
@@ -3077,23 +3147,26 @@ class Runner:
         results = []
         for lane, cc in (("check", self.beansc),):
             cmd = [cc, "check", main_file]
+            started = time.monotonic()
             kind, out, err, code = run_proc(cmd, self.timeout_build)
             if kind != "ok" or code != 0:
                 results.append(LaneResult(
                     lane, "check-reject" if kind == "ok" else kind,
-                    out, err, code, [cmd]))
+                    out, err, code, [cmd], elapsed_seconds=time.monotonic() - started))
         return results
 
     def run_lane(self, lane, case_dir, main_file):
         """Build and run one lane; every artifact path is lane-unique, so
         lanes are safe to run concurrently."""
         cc = self.compiler_for(lane)
+        started = time.monotonic()
         cmds = []
         if lane.startswith("interp"):
             cmd = [cc, "run", main_file]
             cmds.append(cmd)
             kind, out, err, code = run_proc(cmd, self.timeout_run)
-            return LaneResult(lane, kind, out, err, code, cmds)
+            return LaneResult(lane, kind, out, err, code, cmds,
+                              elapsed_seconds=time.monotonic() - started)
         flags = []
         if lane.startswith("release"):
             flags = ["--release"]
@@ -3105,16 +3178,21 @@ class Runner:
         kind, out, err, code = run_proc(build_cmd, self.timeout_build)
         if kind == "timeout":
             return LaneResult(lane, "timeout", out, err, code,
-                              cmds, "compiler timed out")
+                              cmds, "compiler timed out", time.monotonic() - started)
         if kind == "crash":
             return LaneResult(lane, "crash", out, err, code,
-                              cmds, "compiler crashed")
+                              cmds, "compiler crashed", time.monotonic() - started)
+        if kind != "ok":
+            return LaneResult(lane, kind, out, err, code, cmds,
+                              elapsed_seconds=time.monotonic() - started)
         if code != 0:
-            return LaneResult(lane, "build-fail", out, err, code, cmds)
+            return LaneResult(lane, "build-fail", out, err, code, cmds,
+                              elapsed_seconds=time.monotonic() - started)
         run_cmd = [binary]
         cmds.append(run_cmd)
         kind, out, err, code = run_proc(run_cmd, self.timeout_run)
-        return LaneResult(lane, kind, out, err, code, cmds)
+        return LaneResult(lane, kind, out, err, code, cmds,
+                          elapsed_seconds=time.monotonic() - started)
 
     def run_case(self, case_dir, main_file):
         """Run every configured lane; returns list of LaneResult in lane
@@ -3134,10 +3212,18 @@ class Runner:
                 for lane in self.lanes]
 
 
-def classify_failures(expected, lane_results):
+def classify_failures(expected, lane_results, required_lanes=None):
     """expected: (stdout, exit). Returns list of failure dicts."""
     failures = []
     exp_out, exp_exit = expected
+    if not lane_results:
+        return [{"lane": "all", "kind": "missing-lanes"}]
+    # A checker failure already blocks execution. Once execution starts,
+    # every selected lane must return evidence, including partial omissions.
+    if required_lanes and not any(r.lane == "check" for r in lane_results):
+        for lane in required_lanes:
+            if not any(r.lane == lane for r in lane_results):
+                failures.append({"lane": lane, "kind": "missing-lanes"})
     for lr in lane_results:
         if lr.status == "check-reject":
             failures.append({"lane": lr.lane, "kind": "check-reject"})
@@ -3151,15 +3237,49 @@ def classify_failures(expected, lane_results):
             if (lr.stdout != exp_out or lr.exit_code != exp_exit
                     or lr.stderr != ""):
                 failures.append({"lane": lr.lane, "kind": "mismatch"})
+        else:
+            failures.append({"lane": lr.lane, "kind": "incomplete"})
     return failures
 
 
 # ---------------------------------------------------------------------------
 # artifacts
 
+@lru_cache(maxsize=8)
+def compiler_evidence(beansc):
+    """Capture provenance once per process, never once per generated item."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    binary = os.path.abspath(beansc)
+    def output(cmd):
+        kind, out, err, code = run_proc(cmd, 10, cwd=root)
+        return (out + err).strip() if kind == "ok" and code == 0 else "unavailable"
+    try:
+        with open(binary, "rb") as f:
+            digest = hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        digest = "unavailable"
+    diff = output(["git", "diff", "HEAD", "--"])
+    return {
+        "binary": binary, "sha256": digest,
+        "version": output([binary, "--version"]),
+        "revision": output(["git", "rev-parse", "HEAD"]),
+        "tracked_diff_sha256": hashlib.sha256(diff.encode()).hexdigest(),
+        "workspace_status": output(["git", "status", "--porcelain=v1"]),
+        "clang": output(["clang", "--version"]),
+        "generator_sha256": {name: hashlib.sha256(open(os.path.join(root, "tools", name), "rb").read()).hexdigest()
+                             for name in ("differential_fuzz.py", "syntax_fuzz.py", "compiler_campaign.py")
+                             if os.path.isfile(os.path.join(root, "tools", name))},
+        "driver_environment": {key: os.environ[key] for key in
+                               ("BEANS_CC", "BEANS_SANITIZE", "BEANS_NO_POOL") if key in os.environ},
+        "host": {"platform": platform.platform(), "machine": platform.machine(),
+                 "python": sys.version.split()[0]},
+    }
+
 def save_failure(out_root, seed, case, files, expected, lane_results,
                  failures, config):
     name = "{}-{}".format(seed, case)
+    if config.get("transform"):
+        name += "-" + config["transform"]
     fail_dir = os.path.join(out_root, "failures", name)
     if os.path.exists(fail_dir):
         shutil.rmtree(fail_dir)
@@ -3184,6 +3304,8 @@ def save_failure(out_root, seed, case, files, expected, lane_results,
             "status": lr.status,
             "exit": lr.exit_code,
             "note": lr.note,
+            "elapsed_seconds": lr.elapsed_seconds,
+            "commands": lr.commands,
         }
         for cmd in lr.commands:
             cmd_lines.append("{}: {}".format(
@@ -3201,6 +3323,9 @@ def save_failure(out_root, seed, case, files, expected, lane_results,
         "files": sorted(files),
         "expected_exit": expected[1],
         "failures": failures,
+        "results": lanes_meta,
+        "configuration": config,
+        "compiler": compiler_evidence(config.get("beansc", "build/beansc")),
         "host": {
             "platform": platform.platform(),
             "machine": platform.machine(),
@@ -3236,6 +3361,18 @@ def model_closed(prog):
                 return c
         return None
 
+    def declared(cls):
+        """The program's own ClassType for `cls`. Call-argument generation
+        can hand a NewObj a copy of its class, and deepcopy (metamorphic
+        transformations, replay) always does; identity alone would then
+        reject a program both compilers accept."""
+        if cls is None:
+            return None
+        for c in prog.classes:
+            if c is cls or (c.name == cls.name and c.package == cls.package):
+                return c
+        return None
+
     def check_type(t):
         if t is None or t in type_names:
             return
@@ -3255,9 +3392,10 @@ def model_closed(prog):
         if isinstance(e, EnumLit):
             check_type(e.enum.name)
         if isinstance(e, NewObj):
-            if e.cls not in prog.classes:
+            cls = declared(e.cls)
+            if cls is None:
                 ok[0] = False
-            elif e.cls.init is None:
+            elif cls.init is None:
                 ok[0] = False
         if isinstance(e, MethodCall):
             recv_cls = None
@@ -3269,9 +3407,9 @@ def model_closed(prog):
             if recv_cls is None or resolve_impl(recv_cls, e.slot) is None:
                 ok[0] = False
         if isinstance(e, SuperCall):
-            if e.owner_cls not in prog.classes or \
-                    e.owner_cls.parent is None or \
-                    resolve_impl(e.owner_cls.parent, e.slot) is None:
+            owner = declared(e.owner_cls)
+            if owner is None or owner.parent is None or \
+                    resolve_impl(owner.parent, e.slot) is None:
                 ok[0] = False
         if isinstance(e, MatchEnumValue):
             walk_expr(e.scrut, names)
@@ -3800,6 +3938,13 @@ def make_runner(args, workdir):
                     args.timeout_build, args.timeout_run, workdir,
                     jobs=args.jobs)
     runner.probe_lto()
+    if runner.skipped:
+        os.makedirs(workdir, exist_ok=True)
+        with open(os.path.join(workdir, "incomplete.json"), "w") as f:
+            json.dump({"required_lanes": lanes, "missing": runner.skipped,
+                       "compiler": compiler_evidence(args.beansc)}, f, indent=2)
+        raise SystemExit("required execution lanes unavailable: " +
+                         ", ".join(sorted(runner.skipped)))
     for lane in Runner.ALL_LANES:
         if lane not in runner.lanes and lane not in runner.skipped:
             print("lane {} skipped: not selected".format(lane))
@@ -3829,6 +3974,8 @@ def resolve_lanes(spec):
     for l in lanes:
         if l not in Runner.ALL_LANES:
             raise SystemExit("unknown lane: " + l)
+    if not lanes or len(lanes) != len(set(lanes)):
+        raise SystemExit("select at least one lane, without duplicates")
     return lanes
 
 
@@ -3839,6 +3986,13 @@ def run_one_case(runner, out_root, seed, case, config, keep=False,
     prog, files = generate_case_files(seed, case, config["groups"],
                                       config["max_depth"],
                                       config["max_stmts"])
+    config = dict(config, beansc=runner.beansc)
+    if config.get("transform"):
+        original_expected = oracle_expected(prog, sabotage)
+        prog = transform_program(prog, config["transform"])
+        files = prog.emit_files()
+        if oracle_expected(prog, sabotage) != original_expected:
+            raise SystemExit("metamorphic transformation changed the oracle result")
     source = files["main.b"]
     expected = (oracle_expected(prog, sabotage)
                 if expected_override is None else expected_override)
@@ -3857,7 +4011,7 @@ def run_one_case(runner, out_root, seed, case, config, keep=False,
     if not any(r.status in ("check-reject", "timeout", "crash")
                for r in lane_results):
         lane_results = runner.run_case(case_dir, main_file)
-    failures = classify_failures(expected, lane_results)
+    failures = classify_failures(expected, lane_results, runner.lanes)
     fail_dir = None
     if failures:
         fail_dir = save_failure(out_root, seed, case, files, expected,
@@ -3867,11 +4021,19 @@ def run_one_case(runner, out_root, seed, case, config, keep=False,
     return failures, fail_dir, prog, source
 
 
-def failure_predicate(runner, out_root, config, sabotage=None):
-    """Builds the reducer predicate: does this program still fail?"""
+def failure_signature(failures):
+    return frozenset((f["lane"], f["kind"]) for f in failures)
+
+
+def failure_predicate(runner, out_root, config, sabotage=None, signature=None):
+    """Preserve the original category and lane, not just any failure."""
     scratch = os.path.join(out_root, "reduce-work")
+    original = signature
 
     def predicate(prog):
+        nonlocal original
+        if not model_closed(prog):
+            return False
         expected = oracle_expected(prog, sabotage)
         if expected is None:
             return False
@@ -3884,7 +4046,10 @@ def failure_predicate(runner, out_root, config, sabotage=None):
         if not any(r.status in ("check-reject", "timeout", "crash")
                    for r in lane_results):
             lane_results = runner.run_case(scratch, main_file)
-        return bool(classify_failures(expected, lane_results))
+        current = failure_signature(classify_failures(expected, lane_results, runner.lanes))
+        if original is None:
+            original = current
+        return bool(original) and original.issubset(current)
 
     return predicate
 
@@ -3893,6 +4058,8 @@ def reduce_failure(runner, out_root, seed, case, config, budget,
                    sabotage=None):
     prog, _ = generate_case(seed, case, config["groups"],
                             config["max_depth"], config["max_stmts"])
+    if config.get("transform"):
+        prog = transform_program(prog, config["transform"])
     log = []
     reducer = Reducer(failure_predicate(runner, out_root, config, sabotage),
                       budget=budget, log=log)
@@ -3904,6 +4071,8 @@ def reduce_failure(runner, out_root, seed, case, config, budget,
     expected = oracle_expected(reduced, sabotage)
     fail_dir = os.path.join(out_root, "failures",
                             "{}-{}".format(seed, case))
+    if config.get("transform"):
+        fail_dir += "-" + config["transform"]
     if os.path.isdir(fail_dir):
         reduced_files = reduced.emit_files()
         if len(reduced_files) == 1:
@@ -3920,8 +4089,15 @@ def reduce_failure(runner, out_root, seed, case, config, budget,
                                "reduced_expected_stdout.txt"), "w") as f:
             f.write(expected[0])
         with open(os.path.join(fail_dir, "reduced_meta.json"), "w") as f:
+            scratch = os.path.join(out_root, "reduce-work")
+            write_case_files(scratch, reduced_files)
+            results = runner.check_case(os.path.join(scratch, "main.b"))
+            if not results:
+                results = runner.run_case(scratch, os.path.join(scratch, "main.b"))
             json.dump({"expected_exit": expected[1],
-                       "reduction_evals": reducer.evals}, f)
+                       "reduction_evals": reducer.evals,
+                       "failures": classify_failures(expected, results, runner.lanes),
+                       "compiler": compiler_evidence(runner.beansc)}, f, indent=2)
             f.write("\n")
         with open(os.path.join(fail_dir, "reduction.log"), "w") as f:
             f.write("\n".join(log) + "\n")
@@ -3939,6 +4115,7 @@ def fuzz_loop(args):
         "max_depth": args.max_depth,
         "max_stmts": args.max_stmts,
         "lanes": runner.lanes,
+        "beansc": args.beansc,
     }
     total_failures = 0
     started = time.time()
@@ -3968,6 +4145,19 @@ def fuzz_loop(args):
             elapsed = time.time() - started
             print("... {} cases, {} failures, {:.0f}s".format(
                 case - args.start + 1, total_failures, elapsed))
+        if getattr(args, "metamorphic", False):
+            for transform in ("rename", "parentheses"):
+                transformed_config = dict(config, transform=transform)
+                extra, artifact, _, _ = run_one_case(
+                    runner, out_root, args.seed, case, transformed_config,
+                    keep=args.keep)
+                if extra:
+                    total_failures += 1
+                    print("FAIL metamorphic {} {}-{} -> {}".format(
+                        transform, args.seed, case, artifact))
+                    if args.reduce_failures:
+                        reduce_failure(runner, out_root, args.seed, case,
+                                       transformed_config, args.reduce_budget)
     print("done: {} cases, {} failing, seed {}, groups {}".format(
         args.cases, total_failures, args.seed, ",".join(config["groups"])))
     return 1 if total_failures else 0
@@ -4011,11 +4201,46 @@ def replay_dir(args):
         meta = json.load(f)
     seed, case = meta["seed"], meta["case"]
     file_list = meta.get("files", ["main.b"])
+    reduced = getattr(args, "replay_reduced", False)
+    if meta.get("configuration", {}).get("rejection"):
+        scratch = os.path.join(args.out, "replay-negative")
+        os.makedirs(scratch, exist_ok=True)
+        saved = {rel: open(os.path.join(fail_dir, rel)).read() for rel in file_list}
+        write_case_files(scratch, saved)
+        cmd = [args.beansc, "check", os.path.join(scratch, "main.b")]
+        kind, out, err, code = run_proc(cmd, args.timeout_build)
+        failures = rejection_failures(LaneResult("check", kind, out, err, code, [cmd]),
+                                      meta["configuration"]["rejection"], scratch)
+        save_failure(args.out, seed, case, saved, ("", 1),
+                     [LaneResult("check", kind, out, err, code, [cmd])], failures,
+                     dict(meta["configuration"], beansc=args.beansc))
+        print("replay-dir negative: " + ("still failing" if failures else "passing"))
+        return int(bool(failures))
+    if meta.get("configuration", {}).get("edge_kind"):
+        files = {rel: open(os.path.join(fail_dir, rel)).read() for rel in file_list}
+        config = meta["configuration"]
+        scratch = os.path.join(args.out, "replay-work")
+        write_case_files(scratch, files)
+        runner = make_runner(args, args.out)
+        results = runner.check_case(os.path.join(scratch, config["main_file"]))
+        if not results:
+            results = runner.run_case(scratch, os.path.join(scratch, config["main_file"]))
+        expected = (open(os.path.join(fail_dir, "expected_stdout.txt")).read(), meta["expected_exit"])
+        failures = classify_failures(expected, results, runner.lanes)
+        save_failure(args.out, seed, case, files, expected, results, failures,
+                     dict(config, beansc=args.beansc))
+        return int(bool(failures))
     prog, regenerated = generate_case_files(
         seed, case, meta["groups"], meta["max_depth"], meta["max_stmts"])
+    if meta.get("configuration", {}).get("transform"):
+        regenerated = transform_program(prog, meta["configuration"]["transform"]).emit_files()
     saved = {}
     for rel in file_list:
-        saved[rel] = open(os.path.join(fail_dir, rel)).read()
+        path = os.path.join(fail_dir, rel)
+        if reduced:
+            path = (os.path.join(fail_dir, "reduced.b") if len(file_list) == 1 else
+                    os.path.join(fail_dir, "reduced", rel))
+        saved[rel] = open(path).read()
     if saved != regenerated:
         print("replay-dir: regenerated source differs from the saved "
               "program (generator changed since the failure was recorded); "
@@ -4029,13 +4254,17 @@ def replay_dir(args):
     os.makedirs(scratch)
     main_file = os.path.join(scratch, "main.b")
     write_case_files(scratch, saved)
-    expected = (open(os.path.join(fail_dir, "expected_stdout.txt")).read(),
+    expected = (open(os.path.join(fail_dir, "reduced_expected_stdout.txt" if reduced else "expected_stdout.txt")).read(),
                 meta["expected_exit"])
     lane_results = runner.check_case(main_file)
     if not any(r.status in ("check-reject", "timeout", "crash")
                for r in lane_results):
         lane_results = runner.run_case(scratch, main_file)
-    failures = classify_failures(expected, lane_results)
+    failures = classify_failures(expected, lane_results, runner.lanes)
+    replay_meta = dict(meta["configuration"], beansc=args.beansc)
+    replay_meta["original_failure_preserved"] = failure_signature(meta["failures"]).issubset(
+        failure_signature(failures))
+    save_failure(out_root, seed, case, saved, expected, lane_results, failures, replay_meta)
     if failures:
         kinds = sorted({f["kind"] for f in failures})
         print("replay-dir {}: still failing ({})".format(
@@ -4043,6 +4272,39 @@ def replay_dir(args):
         return 1
     print("replay-dir {}: no longer failing".format(fail_dir))
     return 0
+
+
+def transform_program(prog, transform):
+    """Rename fresh root locals or add legal parentheses, without new semantics."""
+    result = copy.deepcopy(prog)
+    root_locals = [s for s in result.main if isinstance(s, Let)]
+    if transform == "parentheses":
+        for local in root_locals:
+            local.init = Parenthesized(local.init)
+    elif transform == "rename":
+        names = {s.name: "renamed_" + s.name for s in root_locals}
+        seen = set()
+        def walk(value):
+            if id(value) in seen:
+                return
+            seen.add(id(value))
+            if isinstance(value, (Let, VarRef, Assign, FieldAssign)) and value.name in names:
+                value.name = names[value.name]
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    walk(item)
+            elif isinstance(value, dict):
+                for item in value.values():
+                    walk(item)
+            elif hasattr(value, "__dict__"):
+                for item in value.__dict__.values():
+                    walk(item)
+        walk(result)
+    else:
+        raise ValueError("unknown transformation: " + transform)
+    if not model_closed(result):
+        raise ValueError("transformation introduced an unbound name or invalid type")
+    return result
 
 
 def parse_case_ref(text):
@@ -4281,14 +4543,15 @@ def run_edge_case(args, runner, out_root, seed, case):
     results = rejects if rejects else runner.run_case(case_dir, main_file)
     failures = ([{"lane": result.lane, "kind": result.status}
                  for result in rejects] if rejects else
-                classify_failures(expected, results))
+                classify_failures(expected, results, runner.lanes))
     fail_dir = None
     if failures:
         fail_dir = save_failure(out_root, "edge-{}".format(seed), case,
                                 files, expected, results, failures,
                                 {"groups": ["edge", kind], "max_depth": 0,
                                  "max_stmts": 0,
-                                 "lanes": list(runner.lanes)})
+                                 "lanes": list(runner.lanes), "beansc": args.beansc,
+                                 "edge_kind": kind, "main_file": main_rel})
     if not args.keep:
         shutil.rmtree(case_dir, ignore_errors=True)
     return kind, failures, fail_dir
@@ -4554,8 +4817,8 @@ def negative_case_files(seed, case):
                  "}"]
     files = {
         "beans.pot": pot,
-        "pkx/pkx.b": base_text,
-        "main.b": "\n".join(main) + "\n",
+        "pkx/pkx.b": "package pkx\n\n" + base_text,
+        "main.b": "package main\n\n" + "\n".join(main) + "\n",
     }
     return kind, files
 
@@ -4573,11 +4836,81 @@ def normalize_diagnostics(text, case_dir):
         out.append(line.rstrip())
     while out and not out[-1]:
         out.pop()
-    return "\n".join(out) + "\n"
+    return "\n".join(out) + "\n" if out else ""
+
+
+def rejection_failures(result, expectation, case_dir):
+    """A rejection is a located, relevant error, never merely a failed process.
+
+    expectation is authored from the invalid source/rule, not blessed from
+    the compiler output. Syntax discovery reuses this validator.
+    """
+    if result.status != "ok":
+        return [{"lane": result.lane, "kind": result.status}]
+    if result.exit_code != 1:
+        return [{"lane": result.lane, "kind": "invalid-accepted" if
+                 result.exit_code == 0 else "unexpected-exit"}]
+    text = normalize_diagnostics(result.stdout + result.stderr, case_dir)
+    if re.search(r"runtime fault:|internal compiler error|AddressSanitizer|"
+                 r"UndefinedBehaviorSanitizer|(^|\n)panic:", text, re.I):
+        return [{"lane": result.lane, "kind": "compiler-fault"}]
+    errors = re.findall(r"^(.+):(\d+):(\d+): error: (.*)$", text, re.M)
+    failures = []
+    if not errors:
+        failures.append({"lane": result.lane, "kind": "missing-diagnostic"})
+    required = expectation.get("errors", [expectation])
+    for wanted in required:
+        matches = [e for e in errors if
+                   e[0].replace("\\", "/") == wanted["file"] and
+                   (wanted.get("line") is None or int(e[1]) == wanted["line"]) and
+                   (wanted.get("col") is None or int(e[2]) == wanted["col"]) and
+                   int(e[1]) > 0 and int(e[2]) > 0 and
+                   re.search(wanted["message"], e[3])]
+        if not matches:
+            failures.append({"lane": result.lane, "kind": "wrong-diagnostic"})
+    if "count" in expectation and len(errors) != expectation["count"]:
+        failures.append({"lane": result.lane, "kind": "wrong-diagnostic-count"})
+    return failures
+
+
+def negative_expectation(kind, files):
+    # Markers identify the actual invalid operation in the generated source.
+    rules = {
+        "private_class": ("main.b", r"let x: pkx.Inner", r"type .* isn't pub"),
+        "private_field": ("main.b", r"v\.secret", r"field .* isn't pub"),
+        "private_method": ("main.b", r"v\.hidden", r"method .* isn't pub"),
+        "through_value": ("main.b", r"v\.secret", r"field .* isn't pub"),
+        "private_override": ("main.b", r"override fn", r"marked override but no parent"),
+        "super_private": ("main.b", r"return super\.", r"method .* isn't pub"),
+        "super_outside": ("main.b", r"super\.hidden", r"only be called from an instance method"),
+        "super_static": ("main.b", r"super\.hidden", r"only be called from an instance method"),
+        "super_no_parent": ("main.b", r"super\.hidden", r"needs a parent class"),
+        "super_unknown": ("main.b", r"super\.absent", r"no parent implementation"),
+        "unknown_import": ("main.b", r"import .*nowhere", r"doesn't exist|no module"),
+        "unknown_member": ("main.b", r"pkx\.absent", r"has no function"),
+        "private_fn": ("main.b", r"pkx\.helper", r"function .* isn't pub"),
+        "builtin_reuse": ("pkx/pkx.b", r"pub (class|struct|enum) (?!Vault|Inner)", r"type name .* already taken"),
+        "missing_return": ("main.b", r"fn wrong", r"must return int.*body can finish"),
+        "ownership_branch": ("main.b", r"return if", r"return needs .*move.*move-only"),
+        "ownership_match": ("main.b", r"true => source", r"return needs .*move.*move-only"),
+        "ownership_generic": ("main.b", r"let alias", r"cannot use move-only.*generic T"),
+        "ownership_try": ("main.b", r"source\d+\?", r"\? needs .*move.*move-only"),
+        "ownership_err": ("main.b", r"err\(source", r"err needs .*move.*move-only"),
+        "ownership_arena": ("main.b", r"\.add\(source", r"Arena.add needs .*move.*move-only"),
+        "ownership_channel": ("main.b", r"\.send\(source", r"Channel.send needs .*move.*move-only"),
+        "ownership_map_index": ("main.b", r"let alias", r"can't copy a move-only map value"),
+    }
+    file, marker, message = rules[kind]
+    lines = [n for n, line in enumerate(files[file].splitlines(), 1)
+             if re.search(marker, line)]
+    if len(lines) != 1:
+        raise ValueError("negative marker must identify one source line: " + kind)
+    return {"file": file, "line": lines[0], "message": message}
 
 
 def run_negative_case(args, out_root, seed, case):
     kind, files = negative_case_files(seed, case)
+    expectation = negative_expectation(kind, files)
     case_dir = os.path.join(out_root, "neg-work",
                             "{}-{}".format(seed, case))
     if os.path.exists(case_dir):
@@ -4588,29 +4921,25 @@ def run_negative_case(args, out_root, seed, case):
     failures = []
     outputs = {}
     for lane, cc in (("check", args.beansc),):
+        started = time.monotonic()
         pkind, out, err, code = run_proc([cc, "check", main_file],
                                          args.timeout_build)
+        result = LaneResult(lane, pkind, out, err, code,
+                            [[cc, "check", main_file]],
+                            elapsed_seconds=time.monotonic() - started)
         outputs[lane] = normalize_diagnostics(out + err, case_dir)
-        if pkind != "ok":
-            failures.append({"lane": lane, "kind": pkind})
-        elif code == 0:
-            failures.append({"lane": lane, "kind": "invalid-accepted"})
+        failures.extend(rejection_failures(result, expectation, case_dir))
     fail_dir = None
     if failures:
-        fail_dir = os.path.join(out_root, "failures",
-                                "neg-{}-{}".format(seed, case))
-        if os.path.exists(fail_dir):
-            shutil.rmtree(fail_dir)
-        os.makedirs(fail_dir)
-        write_case_files(fail_dir, files)
+        fail_dir = save_failure(out_root, "neg-{}".format(seed), case, files,
+                                ("", 1), [result], failures,
+                                {"groups": ["negative", kind], "max_depth": 0,
+                                 "max_stmts": 0, "lanes": ["check"],
+                                 "beansc": args.beansc,
+                                 "rejection": expectation})
         for lane in outputs:
             with open(os.path.join(fail_dir, lane + ".diag"), "w") as f:
                 f.write(outputs[lane])
-        with open(os.path.join(fail_dir, "meta.json"), "w") as f:
-            json.dump({"negative_kind": kind, "seed": seed, "case": case,
-                       "files": sorted(files), "failures": failures},
-                      f, indent=2, sort_keys=True)
-            f.write("\n")
     shutil.rmtree(case_dir, ignore_errors=True)
     return kind, failures, fail_dir
 
@@ -4643,8 +4972,10 @@ def self_test(args):
     out_root = args.out
     os.makedirs(out_root, exist_ok=True)
     failures = []
+    checks = []
 
     def report(name, ok, detail=""):
+        checks.append(name)
         print("self-test {:<28} {}".format(name, "PASS" if ok else
                                            "FAIL " + detail))
         if not ok:
@@ -4652,7 +4983,7 @@ def self_test(args):
 
     groups = args.groups.split(",")
     config = {"groups": groups, "max_depth": args.max_depth,
-              "max_stmts": args.max_stmts, "lanes": ["interp"]}
+              "max_stmts": args.max_stmts, "lanes": ["interp"], "beansc": args.beansc}
 
     # 1. determinism: byte-identical regeneration
     ok = True
@@ -4854,11 +5185,123 @@ def self_test(args):
             break
     report("edge-parity", ok, detail)
 
-    total = 13
+    for transform in ("rename", "parentheses"):
+        ok = True
+        for case in range(10):
+            original, _ = generate_case(71, case, groups, args.max_depth, args.max_stmts)
+            changed = transform_program(original, transform)
+            if oracle_expected(original) != oracle_expected(changed):
+                ok = False
+                break
+        report("metamorphic-" + transform, ok)
+    for label, ok in harness_fault_checks():
+        report(label, ok)
+    for label, ok in oracle_contract_checks():
+        report(label, ok)
+    total = len(checks)
     print("self-test: {} of {} checks failed".format(len(failures), total)
           if failures else
           "self-test: all {} checks passed".format(total))
     return 1 if failures else 0
+
+
+def harness_fault_checks():
+    """Negative controls for the gates themselves, with no compiler dependency."""
+    expected = {"file": "main.b", "line": 3, "col": 5,
+                "message": "unknown name 'missing'", "count": 1}
+    located = "main.b:3:5: error: unknown name 'missing'\n"
+    checks = []
+    for label, status, out, err, code in (
+            ("silent-failure", "ok", "", "", 1),
+            ("runtime-fault", "ok", "", "runtime fault: stack overflow\n", 1),
+            ("missing-diagnostic", "ok", "failed\n", "", 1),
+            ("wrong-location", "ok", "", located.replace(":3:5:", ":1:1:"), 1),
+            ("wrong-reason", "ok", "", located.replace("unknown name 'missing'", "no package clause"), 1),
+            ("unexpected-exit", "ok", "", located, 2),
+            ("crash", "crash", "", "", -11),
+            ("timeout", "timeout", "", "", None),
+            ("skipped", "skipped", "", "", None)):
+        lr = LaneResult("check", status, out, err, code, [])
+        checks.append(("reject-" + label, bool(rejection_failures(lr, expected, "/tmp/case"))))
+    checks.append(("reject-good-control", not rejection_failures(
+        LaneResult("check", "ok", "", located, 1, []), expected, "/tmp/case")))
+    for label, results in (
+            ("wrong-output", [LaneResult("interp", "ok", "wrong\n", "", 0, [])]),
+            ("silent-runtime", [LaneResult("interp", "ok", "", "", 1, [])]),
+            ("skipped-lane", [LaneResult("lto", "skipped", "", "", None, [])]),
+            ("empty-lanes", [])):
+        checks.append((label, bool(classify_failures(("ok\n", 0), results))))
+    checks.append(("reducer-category", not failure_signature(
+        [{"lane": "interp", "kind": "mismatch"}]).issubset(failure_signature(
+            [{"lane": "interp", "kind": "check-reject"}]))))
+    checks.append(("partial-lanes", bool(classify_failures(("ok\n", 0),
+        [LaneResult("interp", "ok", "ok\n", "", 0, [])], ["interp", "native"]))))
+    # A generated program with package classes must read as closed, and so
+    # must its deep copy: the reducer and both metamorphic transformations
+    # work on copies, and an identity-only class check once rejected every
+    # such program (a soak iteration then died in the harness, not the
+    # compiler).
+    closed = True
+    for case in range(12):
+        prog, _ = generate_case(20261007, case, ["core", "classes", "packages"], 4, 12)
+        closed = closed and model_closed(prog) and model_closed(copy.deepcopy(prog))
+    checks.append(("model-closed-with-package-classes", closed))
+    # Exercise process handling and the real validators, rather than trusting
+    # only fabricated status records. No compiler/toolchain is needed here.
+    for label, script, timeout, rejection in (
+            ("process-silent", "raise SystemExit(1)", 5, True),
+            ("process-fault", "import sys; sys.stderr.write('runtime fault: overflow\\n'); sys.exit(1)", 5, True),
+            ("process-wrong-output", "print('wrong')", 5, False),
+            ("process-timeout", "import time; time.sleep(30)", 0.05, False),
+            ("process-crash", "import os, signal; os.kill(os.getpid(), signal.SIGABRT)", 5, False)):
+        kind, out, err, code = run_proc([sys.executable, "-c", script], timeout)
+        lr = LaneResult("check" if rejection else "interp", kind, out, err, code, [])
+        failed = (rejection_failures(lr, expected, "/tmp/case") if rejection else
+                  classify_failures(("ok\n", 0), [lr], ["interp"]))
+        checks.append((label, bool(failed)))
+    with tempfile.TemporaryDirectory(prefix="beans-harness-control-") as directory:
+        checks.append(("missing-executable", run_proc(
+            [os.path.join(directory, "absent-compiler")], 1)[0] == "error"))
+        prog, _ = generate_case(71, 0, ["core"], 2, 4)
+        class ControlledRunner:
+            lanes = ["interp"]
+            refuse = False
+            def check_case(self, path):
+                return [LaneResult("check", "check-reject", "", located, 1, [])] if self.refuse else []
+            def run_case(self, directory, path):
+                return [LaneResult("interp", "ok", "injected wrong answer\n", "", 0, [])]
+        runner = ControlledRunner()
+        predicate = failure_predicate(runner, directory, {})
+        accepted = predicate(prog)
+        runner.refuse = True
+        checks.append(("reducer-rejects-category-drift", accepted and not predicate(prog)))
+    return checks
+
+
+def oracle_contract_checks():
+    """Authored examples from SYNTAX.md Number rules, not compiler answers."""
+    checks = []
+    for label, expression, expected in (
+            ("oracle-i8-wrap", Binary("+", IntLit("i8", 127), IntLit("i8", 1), "i8"), -128),
+            ("oracle-u8-wrap", Binary("-", IntLit("u8", 0), IntLit("u8", 1), "u8"), 255),
+            ("oracle-low-bits-cast", Cast(IntLit("int", 300), "i8"), 44),
+            ("oracle-sign-extension", Cast(IntLit("i8", -1), "int"), -1),
+            ("oracle-masked-shift", Binary("<<", IntLit("i8", 1), IntLit("i8", 8), "i8"), 1),
+            ("oracle-division", Binary("/", IntLit("int", -7), IntLit("int", 3), "int"), -2),
+            ("oracle-remainder", Binary("%", IntLit("int", -7), IntLit("int", 3), "int"), -1)):
+        checks.append((label, expression.eval(None) == expected))
+    class Unreachable(Expr):
+        type = BOOL
+        def eval(self, env):
+            raise AssertionError("short-circuit evaluated its right operand")
+    for op, left, expected in (("&&", False, False), ("||", True, True)):
+        checks.append(("oracle-short-circuit-" + op,
+                       Binary(op, BoolLit(left), Unreachable(), BOOL).eval(None) == expected))
+    original = StructVal("Nested", {"child": StructVal("Child", {"value": 1})})
+    cloned = copy_value(original)
+    cloned.fields["child"].fields["value"] = 2
+    checks.append(("oracle-nested-value-copy", original.fields["child"].fields["value"] == 1))
+    return checks
 
 
 def find_sabotage_case(groups, args):
@@ -4906,11 +5349,16 @@ def main():
                     help="keep per-case work directories")
     ap.add_argument("--keep-going", action="store_true",
                     help="continue after a failing case")
+    ap.add_argument("--metamorphic", action="store_true",
+                    help="also check fresh local renaming and redundant parentheses")
+    ap.add_argument("--harness-self-test", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--replay", metavar="SEED:CASE",
                     help="regenerate and run one case, print its source")
     ap.add_argument("--replay-dir", metavar="DIR",
                     help="re-run a saved failure directory")
+    ap.add_argument("--replay-reduced", action="store_true",
+                    help="replay the minimized source and its retained expectation")
     ap.add_argument("--reduce", metavar="SEED:CASE",
                     help="reduce one failing case")
     ap.add_argument("--reduce-failures", action="store_true",
@@ -4931,6 +5379,12 @@ def main():
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--selftest-cases", type=int, default=6)
     args = ap.parse_args()
+
+    if args.harness_self_test:
+        checks = harness_fault_checks()
+        for name, ok in checks:
+            print("{} {}".format("PASS" if ok else "FAIL", name))
+        return int(not all(ok for _, ok in checks))
 
     if args.self_test:
         return self_test(args)

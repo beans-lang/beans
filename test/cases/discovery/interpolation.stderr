@@ -1,0 +1,6 @@
+main.b:3:33: error: expected expression
+    io.println("value {1 + (2 * )}")
+                                ^
+note: '(' opened at main.b:3:28
+note: in string piece {1 + (2 * )} at main.b:3:16
+note: in function main, declared at main.b:2:4

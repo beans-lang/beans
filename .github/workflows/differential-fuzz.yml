@@ -7,8 +7,23 @@ name: Semantic differential fuzz
 # lives in normal CI (make fuzz-differential-smoke).
 
 on:
+  workflow_call:
+    inputs:
+      candidate:
+        type: boolean
+        default: false
+      seconds:
+        type: number
+        default: 7200
   workflow_dispatch:
     inputs:
+      candidate:
+        description: Run the release-blocking three-host campaign
+        type: boolean
+        default: false
+      seconds:
+        description: Primary-host stress seconds (less than 7200 remains incomplete)
+        default: "7200"
       cases:
         description: Cases per shard
         required: true
@@ -25,6 +40,7 @@ permissions:
 
 jobs:
   fuzz:
+    if: ${{ !inputs.candidate }}
     name: seed sweep (${{ matrix.os }}, shard ${{ matrix.shard }}/4, ${{ matrix.groups }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 300
@@ -56,7 +72,7 @@ jobs:
       - name: Fuzz one recorded seed
         env:
           INPUT_CASES: ${{ github.event_name == 'workflow_dispatch' && inputs.cases || '400' }}
-          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || '100' }}
+          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || (100 + 4 * github.run_number) }}
           SHARD: ${{ matrix.shard }}
           FUZZ_GROUPS: ${{ matrix.groups }}
         run: |
@@ -79,7 +95,7 @@ jobs:
         if: contains(matrix.groups, 'classes')
         env:
           INPUT_CASES: ${{ github.event_name == 'workflow_dispatch' && inputs.cases || '400' }}
-          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || '100' }}
+          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || (100 + 4 * github.run_number) }}
           SHARD: ${{ matrix.shard }}
         run: |
           OOP_FUZZ_SEED=$(( INPUT_START_SEED + SHARD - 1 ))
@@ -92,7 +108,7 @@ jobs:
         if: contains(matrix.groups, 'classes')
         env:
           INPUT_CASES: ${{ github.event_name == 'workflow_dispatch' && inputs.cases || '400' }}
-          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || '100' }}
+          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || (100 + 4 * github.run_number) }}
           SHARD: ${{ matrix.shard }}
         run: |
           OWNERSHIP_FUZZ_SEED=$(( INPUT_START_SEED + SHARD - 1 ))
@@ -112,3 +128,129 @@ jobs:
             build/ownership-fuzz/failures/
             build/fuzz-artifacts/
           if-no-files-found: ignore
+
+  candidate:
+    if: ${{ inputs.candidate }}
+    name: compiler candidate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 480
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-beansc
+      - name: Install Linux toolchain
+        if: runner.os == 'Linux'
+        run: |
+          bash .github/scripts/apt-update.sh
+          sudo apt-get install -y --no-install-recommends clang lld llvm ripgrep
+      - name: Install macOS test tools
+        if: runner.os == 'macOS'
+        # The final gates run every core test. test/tls.sh's honest-close
+        # control needs an `openssl s_server` that sends close_notify, which
+        # the system LibreSSL does not (BUGFIX_TODO.md CD-18); bash 3.2 is
+        # the system shell, and ripgrep is used by the core tests.
+        run: |
+          brew install bash openssl@3 ripgrep
+          echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix openssl@3)/bin" >> "$GITHUB_PATH"
+      - name: Install Windows toolchain
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          BEANS_LLVM_MINGW_CRT: ucrt
+        run: |
+          bin=$(bash test/windows_toolchain.sh)
+          echo "$bin" >> "$GITHUB_PATH"
+          echo "BEANS_CC=$(cygpath -w "$bin/clang.exe")" >> "$GITHUB_ENV"
+      - name: Build Unix compiler
+        if: runner.os != 'Windows'
+        run: make
+      - name: Build Windows compiler
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p build
+          beansc build --release src/main.b --target x86_64-pc-windows-gnullvm -o build/beansc.exe
+      - name: Run candidate campaign and deterministic replay
+        shell: bash
+        env:
+          CAMPAIGN_SECONDS: ${{ inputs.seconds }}
+        run: |
+          args=(--seed "$GITHUB_RUN_NUMBER" --out build/compiler-discovery/candidate)
+          if [ "$RUNNER_OS" = Windows ]; then
+            args+=(--beansc build/beansc.exe --replay-only --seconds 0)
+          else
+            args+=(--seconds "$CAMPAIGN_SECONDS")
+          fi
+          python -u tools/compiler_campaign.py "${args[@]}"
+      - name: Upload candidate evidence, including failures and missing gates
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiler-candidate-${{ matrix.os }}
+          path: build/compiler-discovery/
+          if-no-files-found: error
+
+  replay-retained:
+    if: ${{ always() && inputs.candidate }}
+    needs: candidate
+    name: retained corpus replay (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-beansc
+      - name: Install Linux toolchain
+        if: runner.os == 'Linux'
+        run: |
+          bash .github/scripts/apt-update.sh
+          sudo apt-get install -y --no-install-recommends clang lld llvm ripgrep
+      - name: Install Windows toolchain
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          BEANS_LLVM_MINGW_CRT: ucrt
+        run: |
+          bin=$(bash test/windows_toolchain.sh)
+          echo "$bin" >> "$GITHUB_PATH"
+          echo "BEANS_CC=$(cygpath -w "$bin/clang.exe")" >> "$GITHUB_ENV"
+      - name: Build Unix compiler
+        if: runner.os != 'Windows'
+        run: make
+      - name: Build Windows compiler
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p build
+          beansc build --release src/main.b --target x86_64-pc-windows-gnullvm -o build/beansc.exe
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: compiler-candidate-*
+          path: build/retained
+      - name: Require evidence from all candidate hosts
+        shell: bash
+        run: |
+          for host in ubuntu-24.04 macos-latest windows-latest; do
+            test -f "build/retained/compiler-candidate-$host/candidate/report.json"
+          done
+      - name: Replay every original and minimized retained failure
+        shell: bash
+        run: |
+          args=(--replay-only --seconds 0 --seed "$GITHUB_RUN_NUMBER"
+                --replay-root build/retained --out build/compiler-discovery/replay)
+          if [ "$RUNNER_OS" = Windows ]; then args+=(--beansc build/beansc.exe); fi
+          python -u tools/compiler_campaign.py "${args[@]}"
+      - name: Upload replay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiler-replay-${{ matrix.os }}
+          path: build/compiler-discovery/
+          if-no-files-found: error

@@ -11,7 +11,11 @@
 // Two cuts are tested: during the handshake, and mid-application-data.
 // Both must be `eof`, and the honest close must still be a clean empty read.
 //
-// Usage: tls_truncation <ca-pem> <server-port>
+// The honest peer is the Beans TLS server, which sends close_notify. The
+// proxy's upstream remains openssl s_server; its shutdown behavior is not
+// part of either cut oracle.
+//
+// Usage: tls_truncation <ca-pem> <cut-server-port> <honest-server-port> [alpn]
 package main
 
 import std.fs
@@ -162,8 +166,8 @@ fn pump(
 
 fn main() {
     let arguments: List<string> = os.args()
-    if arguments.len() < 2 {
-        io.println("usage: tls_truncation <ca-pem> <server-port>")
+    if arguments.len() < 3 {
+        io.println("usage: tls_truncation <ca-pem> <cut-server-port> <honest-server-port> [alpn]")
         os.exit(2)
     }
     let loaded_roots: Result<Bytes> = fs.read_bytes(arguments[0])
@@ -176,14 +180,17 @@ fn main() {
     }
     let roots: Bytes = (move loaded_roots).expect("root bundle")
     let server_port: int = arguments[1].to_int().or(0)
+    let honest_port: int = arguments[2].to_int().or(0)
+    var honest_alpn: string = ""
+    if arguments.len() > 3 { honest_alpn = arguments[3] }
 
-    // 1. The honest control: straight to the server, read to its close.
+    // 1. The honest control: a real exchange, then the Beans server's close.
     var clean_close: bool = false
-    match tls.TlsStream.connect_with_roots("localhost", server_port, "", roots, 8000) {
+    match tls.TlsStream.connect_with_roots("localhost", honest_port, honest_alpn, roots, 8000) {
         ok(stream) => {
-            let sent: Result<int> =
-                stream.write_all(Bytes.from("GET / HTTP/1.0\r\n\r\n"))
-            var reading: bool = true
+            let sent: int = stream.write_all(Bytes.from("ping")).or(-1)
+            let response: Bytes = stream.read_exact(4).or(new Bytes(0))
+            var reading: bool = sent == 4 && response.to_string() == "pong"
             var total: int = 0
             for reading && total < 1048576 {
                 match stream.read(16384) {

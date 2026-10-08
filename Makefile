@@ -93,6 +93,13 @@ test-ci: test
 # from build/test_timing on a dev laptop; the whole chain is under five
 # minutes when the compiler is already built.
 test-quick: $(BIN)
+	BEANSC="./$(BIN)" bash ./test/compiler_discovery.sh self-test
+	bash ./test/issue201.sh
+	bash ./test/issue202.sh
+	bash ./test/issue202_lsp.sh
+	bash ./test/issue203.sh
+	bash ./test/issue204.sh
+	bash ./test/issue206.sh
 	./test/parse_recovery.sh
 	bash ./test/diagnostics.sh
 	bash ./test/package_semantics.sh
@@ -113,6 +120,13 @@ test-quick: $(BIN)
 # fails if they ever drift apart — so a green run of all five plus nothing
 # else is the same claim as `make test`.
 test-frontend: $(BIN)
+	BEANSC="./$(BIN)" bash ./test/compiler_discovery.sh self-test
+	bash ./test/issue201.sh
+	bash ./test/issue202.sh
+	bash ./test/issue202_lsp.sh
+	bash ./test/issue203.sh
+	bash ./test/issue204.sh
+	bash ./test/issue206.sh
 	bash ./test/diagnostics.sh
 	./test/docs.sh
 	./test/version.sh
@@ -300,6 +314,13 @@ test-platform: $(BIN)
 	bash ./test/compiler_arch_objects.sh
 
 test-core: $(BIN)
+	BEANSC="./$(BIN)" bash ./test/compiler_discovery.sh self-test
+	bash ./test/issue201.sh
+	bash ./test/issue202.sh
+	bash ./test/issue202_lsp.sh
+	bash ./test/issue203.sh
+	bash ./test/issue204.sh
+	bash ./test/issue206.sh
 	bash ./test/diagnostics.sh
 	./test/differential.sh
 	./test/panic.sh
@@ -576,6 +597,16 @@ fuzz-differential: $(BIN)
 
 fuzz-differential-smoke: $(BIN)
 	bash ./test/differential_fuzz.sh smoke
+
+.PHONY: test-discovery-harness test-compiler-discovery test-compiler-candidate
+test-discovery-harness:
+	bash ./test/compiler_discovery.sh self-test
+
+test-compiler-discovery: $(BIN)
+	BEANSC="./$(BIN)" bash ./test/compiler_discovery.sh smoke
+
+test-compiler-candidate: $(BIN)
+	BEANSC="./$(BIN)" bash ./test/compiler_discovery.sh candidate
 
 # rm before cp: overwriting a signed binary in place leaves macOS's signature
 # cache stale, and the kernel then kills the new binary on exec with SIGKILL

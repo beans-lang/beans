@@ -8,6 +8,11 @@ class AstNode {
     resolved: string
     note: string
     parenthesized: bool
+    // Parser-owned path cost. A binary edge costs one unit; other nodes
+    // cost sixteen so a call/member path cannot consume the stack reserved
+    // for much cheaper flat arithmetic. This is depth, not total tree size.
+    parse_path_cost: int
+    interpolation_syntax_ready: bool
     // Where the node's own identifier is written. A declaration anchors at
     // its keyword and a member access at its dot, so the name a person
     // clicks is somewhere else on the line; editor queries need that exact
@@ -31,8 +36,8 @@ class AstNode {
     // The expressions written inside a string literal's `{}` pieces, each
     // already moved onto its real file position. They hang here rather than
     // in `children` so no existing walk, printer or expander sees them: they
-    // are a second parse of the same bytes, kept only so editor queries can
-    // resolve names people write inside strings.
+    // are parsed and placed once by the parser, then checked in their lexical
+    // scope. Editor queries can resolve names people write inside strings.
     interpolations: List<AstNode>
     // The HirNode the expression checker produced for this node, attached
     // during checking. Editor queries (completion, signatures) read types,
@@ -47,6 +52,8 @@ class AstNode {
         self.resolved = ""
         self.note = ""
         self.parenthesized = false
+        self.parse_path_cost = ast_parse_path_cost(kind)
+        self.interpolation_syntax_ready = false
         self.name_line = line
         self.name_col = col
         self.end_line = line
@@ -59,7 +66,14 @@ class AstNode {
 
     fn add(value: AstNode) {
         self.children.push(value)
+        let cost: int = ast_parse_path_cost(self.kind) + value.parse_path_cost
+        if cost > self.parse_path_cost { self.parse_path_cost = cost }
     }
+}
+
+fn ast_parse_path_cost(kind: string) -> int {
+    if kind == "binary" { return 1 }
+    return 16
 }
 
 // The end position an unterminated block reports: past every real line and

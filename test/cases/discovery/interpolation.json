@@ -1,0 +1,48 @@
+{
+  "name": "diagnostic_interpolation",
+  "feature": "diagnostic-interpolation-context",
+  "spec": "spec/SYNTAX.md#strings",
+  "disposition": "reject",
+  "modes": [
+    "check"
+  ],
+  "source_files": {
+    "main.b": "interpolation.b"
+  },
+  "snapshot_files": {
+    "stdout": "interpolation.stdout",
+    "stderr": "interpolation.stderr"
+  },
+  "rejection": {
+    "file": "main.b",
+    "line": 3,
+    "col": 33,
+    "message": "expected expression",
+    "count": 1
+  },
+  "context": [
+    {
+      "file": "main.b",
+      "line": 3,
+      "col": 28,
+      "message": "opened"
+    },
+    {
+      "file": "main.b",
+      "line": 3,
+      "col": 16,
+      "message": "in string piece \\{1 \\+ \\(2 \\* \\)\\}"
+    },
+    {
+      "file": "main.b",
+      "line": 2,
+      "col": 4,
+      "message": "in function"
+    }
+  ],
+  "caret": true,
+  "repair": {
+    "main.b": "import std.io\nfn main() {\n    io.println(\"value {1 + (2 * 3)}\")\n}\n"
+  },
+  "snapshot_contract": "authored context-chain target; current output is retained in evidence, not blessed"
+}
