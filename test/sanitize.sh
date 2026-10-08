@@ -223,7 +223,6 @@ chmod +x "$chunk_reach_dir/clang"
 chunk_reach_clang=$(command -v clang)
 chunk_reach_module="^build/beans_chunk\.$chunk_reach_stem\..*\.ll$"
 chunk_reach_object="^build/beans_chunk\.$chunk_reach_stem\..*\.o$"
-chunk_reach_skipped=0
 for chunk_reach_lane in first cached normal undefined; do
     chunk_reach_log="$chunk_reach_dir/$chunk_reach_lane-commands"
     mkdir -p "$chunk_reach_log"
@@ -276,23 +275,12 @@ for chunk_reach_lane in first cached normal undefined; do
         done
     done
     chunk_reach_linked=$(($(wc -l < "$chunk_reach_dir/$chunk_reach_lane.objects")))
+    # Every host this script runs on can chunk this build, so a lane that
+    # linked no chunk objects is a failure, never a skip. On Linux that once
+    # was every build: the module's PIC/PIE flags sat in the emitter's debug
+    # metadata list, and `chunk_modules` refuses to split a module with any
+    # (CD-22).
     if [[ "$chunk_reach_links" -ne 1 || "$chunk_reach_linked" -lt 2 ]]; then
-        # A Linux module states its PIC/PIE levels in !llvm.module.flags,
-        # which the emitter keeps in the same list as debug metadata, and
-        # `chunk_modules` never splits a module that has any (CD-22). Then no
-        # build on this host takes the chunked backend, the reach probes
-        # above already cover the only path it has, and this leg says so
-        # instead of failing or passing quietly. Anywhere else, and on Linux
-        # the day the emitter does split, the leg runs in full.
-        if [[ "$chunk_reach_lane" == first ]] &&
-           grep -q '^!llvm\.module\.flags' "build/$chunk_reach_stem.ll"; then
-            echo "SKIP: the #207 chunked leg did not run: this host's IR" \
-                 "carries !llvm.module.flags, which the emitter never splits" \
-                 "into chunks (docs/BUGFIX_TODO.md CD-22), so no build here" \
-                 "uses the chunked backend"
-            chunk_reach_skipped=1
-            break
-        fi
         echo "the $chunk_reach_lane lane linked no chunk objects" \
              "($chunk_reach_links links, $chunk_reach_linked objects): the" \
              "build took the single-module path" >&2
@@ -346,10 +334,8 @@ done
 rm -f build/beans_chunk."$chunk_reach_stem".* build/"$chunk_reach_stem".*ll \
     "build/${chunk_reach_stem}_ffi.c"
 rm -rf "$chunk_reach_dir"
-if [[ "$chunk_reach_skipped" -eq 0 ]]; then
-    echo "ASan ok chunked release: fresh and cached chunks carry the flags and" \
-         "report the faults; normal and UBSan-only objects never share a key"
-fi
+echo "ASan ok chunked release: fresh and cached chunks carry the flags and" \
+     "report the faults; normal and UBSan-only objects never share a key"
 
 # The same question for rt_unwind: drop a flag and the runtime abandons a
 # panicking fiber's frames, which on macOS leaks with nothing to report it.

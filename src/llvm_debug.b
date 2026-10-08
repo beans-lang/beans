@@ -222,43 +222,52 @@ partial class LlvmTextEmitter {
     }
 
     // Every named metadata line the module has, written directly under
-    // `target triple`. One function owns them because they share one list:
-    // `!llvm.module.flags` carries the target's flags and the debug build's
-    // together, and building it in two places would mean building it twice.
+    // `target triple`. One function owns them because a debug build's
+    // `!llvm.module.flags` carries the target's flags and its own together,
+    // and building it in two places would mean building it twice.
+    //
+    // Clang supplies the Linux PIC and PIE levels when compiling C for a
+    // distro-default PIE, but an existing .ll module must state them itself.
+    // ppc32 otherwise emits a secure-PLT call with the wrong GOT base and
+    // jumps to null on the first direct extern call.
     //
     // Without `Debug Info Version` LLVM drops every debug node in silence, so
     // it is not optional decoration: it is what makes the rest of the file
     // mean anything.
     fn module_named_metadata() -> string {
+        let linux: bool = self.program.target.os == "linux"
+        if !self.debug_info {
+            // A build without a line table has no other metadata, so the
+            // flags are written whole, here in the head. The head is what
+            // every chunk repeats, so each chunk's object gets the same
+            // levels; and they stay out of `debug_meta`, which chunk_modules
+            // reads as "this module has a line table" and refuses to split
+            // (CD-22: interned there, they kept every Linux build in one
+            // module). Nothing else numbers metadata in such a build, so
+            // !0 and !1 are free.
+            if !linux { return "" }
+            return "!llvm.module.flags = !\{!0, !1\}\n!0 = !\{i32 7, !\"PIC Level\", i32 2\}\n!1 = !\{i32 7, !\"PIE Level\", i32 2\}\n"
+        }
         var flags: List<string> = []
-        if self.program.target.os == "linux" {
-            // Clang supplies these when compiling C for a distro-default PIE,
-            // but an existing .ll module must state them itself. ppc32
-            // otherwise emits a secure-PLT call with the wrong GOT base and
-            // jumps to null on the first direct extern call.
+        if linux {
             flags.push(
                 "!{self.debug_node("!\{i32 7, !\"PIC Level\", i32 2\}")}")
             flags.push(
                 "!{self.debug_node("!\{i32 7, !\"PIE Level\", i32 2\}")}")
         }
-        var output: string = ""
-        if self.debug_info {
+        flags.push(
+            "!{self.debug_node("!\{i32 2, !\"Debug Info Version\", i32 3\}")}")
+        if self.debug_uses_codeview() {
             flags.push(
-                "!{self.debug_node("!\{i32 2, !\"Debug Info Version\", i32 3\}")}")
-            if self.debug_uses_codeview() {
-                flags.push(
-                    "!{self.debug_node("!\{i32 2, !\"CodeView\", i32 1\}")}")
-            } else {
-                // 4 rather than 5: every debugger in the support matrix reads
-                // it, including the older GDB on the long-tail Linux targets,
-                // and nothing here needs a version-5 feature.
-                flags.push(
-                    "!{self.debug_node("!\{i32 7, !\"Dwarf Version\", i32 4\}")}")
-            }
-            output = "!llvm.dbg.cu = !\{!{self.debug_unit}\}\n"
+                "!{self.debug_node("!\{i32 2, !\"CodeView\", i32 1\}")}")
+        } else {
+            // 4 rather than 5: every debugger in the support matrix reads
+            // it, including the older GDB on the long-tail Linux targets,
+            // and nothing here needs a version-5 feature.
+            flags.push(
+                "!{self.debug_node("!\{i32 7, !\"Dwarf Version\", i32 4\}")}")
         }
-        if flags.len() == 0 { return output }
-        return "{output}!llvm.module.flags = !\{{flags.join(", ")}\}\n"
+        return "!llvm.dbg.cu = !\{!{self.debug_unit}\}\n!llvm.module.flags = !\{{flags.join(", ")}\}\n"
     }
 
     // The DIType for one Beans type, or -1 for a type the debugger is not

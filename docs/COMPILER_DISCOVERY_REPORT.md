@@ -268,7 +268,7 @@ merge of all five fix branches, built from the 0.1.51 release binary and then
 by itself: `make test-compiler-discovery` (325 cases, 325 passed, 0 known, 0 new, 0 changed, 0 stale; `known_failures.json` is empty), `test/issue201.sh`, `issue202.sh`, `issue202_lsp.sh`, `issue203.sh`, `issue204.sh`, `issue206.sh`, `diagnostic_context.sh`, `ci_coverage.sh`, `make test-quick` (163 s), `make test-frontend` (269 s), `make test-fixpoint` (stage 2 = stage 3), `make test-core` with the system LibreSSL 3.3.6 and `BEANS_AUTOBAHN_SKIP=1` (1 386 s, `tls.sh` included), `make test-self-host` (1 406 s, 80 examples compiled and matched), `make test-sanitize` with OpenSSL 3 first on `PATH` (468 s, one explicit skip: `-fsanitize=function`), and `tools/compiler_campaign.py --sanitize-only` (all nine steps, the chunked `compiler-asan-fault-reach` included). Logs: `build/compiler-discovery/final-gates/`. The per-issue rows below were each verified on their own
 branch; the combined run above is the evidence for the merged compiler.
 
-**Release remains blocked:** no new Linux/macOS two-hour candidate soak, Windows deterministic replay, or complete release workflow has run for the changed compiler; the Autobahn suite was skipped; CD-22 is open.
+**Release remains blocked:** no new Linux/macOS two-hour candidate soak, Windows deterministic replay, or complete release workflow has run for the changed compiler; the Autobahn suite was skipped. CD-22 is fixed on its own branch (`fix/cd22-linux-chunking`); the combined gates above predate that fix.
 
 | Issue | Findings | Existing owner extended | Local change and acceptance boundary |
 | --- | --- | --- | --- |
@@ -297,13 +297,62 @@ Apple clang, system bash 3.2.
 | #207 leg with a chunk cache key that ignores the flags | fails in the UBSan-only lane: 0 chunks compiled, 8 linked |
 | `test/tls.sh`, LibreSSL 3.3.6 / OpenSSL 3.6.3 first on `PATH` | **passed**, 17 s / 16 s |
 | `test/tls.sh`, `http2.sh`, `websocket.sh` with LibreSSL, `BEANS_AUTOBAHN_SKIP=1` | **passed**, 21 s, 111 s, 43 s |
-| Ubuntu 24.04 arm64 container (OpenSSL 3.0.13, clang 18): `test/tls.sh`, then `test/sanitize.sh` through the #207 leg | **passed** in 20 s; the leg reports itself skipped, because no Linux build is chunked (CD-22) |
+| Ubuntu 24.04 arm64 container (OpenSSL 3.0.13, clang 18): `test/tls.sh`, then `test/sanitize.sh` through the #207 leg | **passed** in 20 s; the leg reported itself skipped, because no Linux build was chunked (CD-22, since fixed: see [CD-22](#cd-22-verified-locally--2026-10-08)) |
 | `make test-quick`, `make test-fixpoint` | **passed**, 219 s and 20 s |
 | `make test-self-host` | **passed** in 35 min |
 | The 182 commands of `make -n test-core`, one by one, OpenSSL 3 first on `PATH`, `BEANS_AUTOBAHN_SKIP=1` | 179 passed in 38 min. 3 failed, none from #207 or #208. `docs.sh` (bash 3.2 array expansion in `test/issue204.sh:21`) and `language_gaps.sh` (14 of 16 string `+` shapes refused) fail the same way on pristine 76a7b29. `fiber_stacks.sh`: the interpreter's resident set fell 81 MB against a 120 MB floor; it passed on rerun (166 MB). |
 
 Not run: the Autobahn suite, Linux x86-64, the Windows TLS staging (unchanged
 two-connection contract), and any candidate soak.
+
+### CD-22 verified locally — 2026-10-08
+
+No Linux build took the chunked backend: the module's PIC and PIE levels sat in
+the emitter's debug metadata list, and `chunk_modules` never splits a module
+with any. A build without a line table now writes the flags whole in the module
+head, which every chunk repeats, so a Linux release build is split like any
+other and every chunk object gets the same levels. `--debug` builds are
+unchanged and still never split. Branch `fix/cd22-linux-chunking`, on
+`7340671`.
+
+Ubuntu 24.04 arm64 container (`test/docker/linux.Dockerfile`, clang 18.1.3),
+both trees bootstrapped from the 0.1.51 Linux release and then built by
+themselves:
+
+| Run | Before (`7340671`) | After |
+| --- | --- | --- |
+| Compiler builds itself (29 MB IR) | 0 chunk objects, 19 s | 8 chunk objects, 10 s; every chunk module carries both flags |
+| #207 probe (4.3 MB IR), `--release`, `BEANS_BUILD_JOBS=2` | 0 chunk objects | 8 compiled and linked; runs |
+| Same probe for ppc32 (`powerpc-unknown-linux-gnu`, lld) | 0 chunk objects; runs under qemu | 8 compiled and linked, each with both flags; runs under qemu |
+| `test/sanitize.sh` with the strict #207 leg | fails: "the first lane linked no chunk objects" | **passed** in 484 s, no skip; the #207 leg runs in full |
+| `make test-fixpoint` | — | **passed** in 23 s |
+| `compiler_campaign.py --sanitize-only` | — | **passed**, nine steps in 107 s; the chunked fault build compiled 8 chunk objects |
+| `make test-self-host` | — | **passed** in 1 339 s, 80 examples compiled and matched |
+| `test/chunk_module_flags.sh` (new) | fails: no chunk module for a Linux target | passes |
+
+On ppc32 the flags change the code: without them a chunk's PLT calls lose the
+secure-PLT `+0x8000` GOT offset. With them removed from every chunk module, this
+probe still linked and ran, so that run shows the difference, not a crash.
+
+The chunk cache key needed nothing new. It hashes each chunk's text, and the
+flags are now in that text: a build with the flags left out of chunks 1 to 7
+gives those seven chunks new keys and leaves chunk 0's alone.
+
+macOS ARM64, Apple clang, the same change built by itself:
+
+| Run | Result |
+| --- | --- |
+| `--emit ir` before and after, four programs (`src/main.b` included) for the host (default, `--release`, `--debug`), Linux `--debug`, ppc32 `--debug`, MSVC `--debug` and wasm (not `src/main.b`, which cannot target wasm) | byte-identical, 27 of 27 |
+| The same for Linux and ppc32 release | differ only in where the two flag nodes are written (12 of 12) |
+| `make test-fixpoint` | **passed** in 11 s |
+| `make test-quick` | **passed** in 164 s |
+| `make test-sanitize`, OpenSSL 3 first on `PATH` | **passed** in 469 s; one explicit skip (`-fsanitize=function`) |
+| `compiler_campaign.py --sanitize-only` | **passed**, nine steps in 68 s |
+| `test/ci_coverage.sh`, `test/native_debug.sh` | **passed** |
+
+Not run: Linux x86-64 (only arm64 in a container), macOS `make test-self-host`,
+`make test-core` on either host, Windows, and any candidate soak. The macOS
+and container runs shared the machine, so their times are not benchmarks.
 
 ### Evidence required before a release verdict changes
 

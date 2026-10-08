@@ -108,6 +108,7 @@ test-quick: $(BIN)
 	bash ./test/builtin_names.sh
 	./test/annotations.sh
 	./test/deterministic_build.sh
+	bash ./test/chunk_module_flags.sh
 	bash ./test/unsafe.sh
 	./test/differential.sh
 	bash ./test/ownership_fuzz.sh smoke
@@ -308,6 +309,7 @@ test-platform: $(BIN)
 	./test/embedded.sh
 	bash ./test/release_completeness.sh --self-test
 	./test/deterministic_build.sh
+	bash ./test/chunk_module_flags.sh
 	./test/asm.sh
 	./test/targets.sh
 	./test/ios_target.sh
@@ -336,6 +338,7 @@ test-core: $(BIN)
 	bash ./test/release_completeness.sh --self-test
 	./test/version.sh
 	./test/deterministic_build.sh
+	bash ./test/chunk_module_flags.sh
 	./test/numerics.sh
 	bash ./test/interpreter_ranges.sh
 	bash ./test/interpreter_values.sh
