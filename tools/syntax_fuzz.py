@@ -3,9 +3,9 @@
 
 No compiler fix or new language semantics lives here. Known-invalid cases have
 authored expectations taken from spec/SYNTAX.md; arbitrary mutations assert
-process safety only. The 256-layer nesting contract pins both acceptance at
-the limit and a located refusal above it. Saved sources are portable and can
-be replayed.
+process safety only. The 256-layer nesting contract and the 4096-node chain
+depth contract (spec/SYNTAX.md, Lexical) pin both acceptance at each limit and
+a located refusal above it. Saved sources are portable and can be replayed.
 
 Known failures are tracked in test/cases/discovery/known_failures.json, each
 tied to a finding in docs/BUGFIX_TODO.md. A per-change (smoke) run blocks on a
@@ -29,6 +29,7 @@ import differential_fuzz as df
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 GENERATOR_VERSION = "2"
 NESTING_LIMIT = 256
+CHAIN_LIMIT = 4096
 BASELINE = ROOT / "test/cases/discovery/known_failures.json"
 SPEC = ROOT / "spec/SYNTAX.md"
 IO = "import std.io\n"
@@ -112,8 +113,12 @@ def valid_cases():
         "scoping", "variables", output="2\n1\n")
     yield case("empty_file", "", "lexical-edges", "lexical", modes=CHECK)
     yield case("only_comment", "// nothing here\n", "lexical-edges", "lexical", modes=CHECK)
+    # A 20 000-term sum is 20 002 syntax nodes deep, past the 4 096-node chain
+    # limit (spec Lexical): refused once in the parser. It stays in this list
+    # so the seeded mutation corpus derived from it does not shift.
     yield case("long_line", "fn main() {\n    let x: int = " + " + ".join(["1"] * 20000) + "\n}\n",
-               "shallow-long-chains", "number-rules", modes=CHECK)
+               "shallow-long-chains", "lexical", "reject", modes=PARSE,
+               rejection=rejection(2, re.escape("syntax chain deeper than {} levels".format(CHAIN_LIMIT))))
     # #206: settled language contracts, with values authored from the rules.
     for name, literal, output in (("literal_double_separator", "1__0", "10\n"),
                                   ("literal_trailing_separator", "1_", "1\n"),
@@ -136,6 +141,10 @@ def valid_cases():
                "precedence-associativity", "number-rules", output="true\n")
     yield case("operator_bitand_equality", main_body("io.println(6 & 3 == 2)"),
                "precedence-associativity", "number-rules", output="true\n")
+    # The same line length, wide instead of deep: 20 000 list elements are
+    # siblings, so the chain limit does not apply.
+    yield case("long_line_wide", "fn main() {\n    let xs: List<int> = [" + ", ".join(["1"] * 20000) +
+               "]\n}\n", "shallow-long-chains", "lexical", modes=CHECK)
 
 
 def reject_cases():
@@ -446,7 +455,14 @@ def _corpus(seed, extreme=False, mutations=True):
                        c["feature"], c["spec"].split("#")[-1], "explore")
 
 
-NESTED_SHAPES = ("parentheses", "types", "blocks", "interpolation", "prefix", "mixed", "calls")
+# `match_arms` nests a `match` value in an arm; `if_else_blocks` nests
+# if/else statements, alternating the branch that holds the next one (both
+# branches at every level would double the source per level). `else_if` is
+# a chain of branches side by side: one nesting level whatever its length,
+# so its depth is a syntax chain (spec/SYNTAX.md, Lexical), like flat_*.
+NESTED_SHAPES = ("parentheses", "types", "blocks", "interpolation", "prefix", "mixed", "calls",
+                 "match_arms", "else_if", "if_else_blocks")
+CHAIN_SHAPES = ("flat_operators", "flat_members", "else_if")
 CRASH_WITNESSES = (("parentheses", 32768), ("calls", 8192), ("flat_members", 16384),
                    ("flat_operators", 32768))
 
@@ -470,23 +486,60 @@ def nested_case(shape, depth):
     elif shape == "calls":
         prelude = "fn id(v: int) -> int { return v }\n"
         body = "let x: int = " + "id(" * depth + "1" + ")" * depth
+    elif shape == "match_arms":
+        expression = "1"
+        for _ in range(depth):
+            expression = "match 1 { 1 => " + expression + ", _ => 0 }"
+        body = "let x: int = " + expression
+    elif shape == "else_if":
+        body = ("let v: int = 1\n    if v == 0 { let x: int = 0 }" +
+                "".join(" else if v == {} {{ let x: int = {} }}".format(i, i) for i in range(1, depth)) +
+                " else {{ let x: int = {} }}".format(depth))
+    elif shape == "if_else_blocks":
+        body = "let x: int = 1"
+        for layer in range(depth):
+            body = ("if true { " + body + " } else { let y: int = 0 }" if layer % 2 == 0 else
+                    "if true { let y: int = 0 } else { " + body + " }")
     elif shape == "flat_operators":
         body = "let x: int = " + " + ".join(["1"] * depth)
     elif shape == "flat_members":
         body = 'let x: int = "x"' + ".trim()" * depth + ".len()"
     else:
         body = "let x: bool = " + "!" * depth + "true"
-    flat = shape.startswith("flat_")
-    # A flat chain has no nesting contract yet (docs/BUGFIX_TODO.md); it must
-    # simply never fault. Nested constructs follow the proposed 256 limit.
-    disposition = ("explore" if flat else "valid" if depth <= NESTING_LIMIT else "reject")
+    flat = shape in CHAIN_SHAPES
+    # Nested constructs follow the 256-level grammar limit. A chain is not
+    # nested, so it follows the syntax-tree depth limit instead.
+    if flat:
+        disposition = "valid" if chain_depth(shape, depth) <= CHAIN_LIMIT else "reject"
+        message = "syntax chain deeper than {} levels".format(CHAIN_LIMIT)
+    else:
+        disposition = "valid" if depth <= NESTING_LIMIT else "reject"
+        message = "nesting deeper than {} levels".format(NESTING_LIMIT)
     extra = {}
     if disposition == "reject":
-        extra["rejection"] = {"file": "main.b", "message": "(?i)nest|depth|complexity|limit", "count": 1}
+        extra["rejection"] = {"file": "main.b", "message": re.escape(message), "count": 1}
     return case("nest_{}_{}".format(shape, depth), prelude + "fn main() {\n    " + body + "\n}\n",
                 ("shallow-long-chains" if flat else "nesting-" + shape),
-                ("number-rules" if flat else "lexical"), disposition,
+                "lexical", disposition,
                 modes=["parse", "check"], shape=shape, depth=depth, **extra)
+
+
+def chain_depth(shape, depth):
+    """Syntax-tree depth of a flat case: the nodes on its deepest path.
+
+    The function body block and the `let` are one node each. A sum of n
+    terms is n - 1 binary nodes over a literal; each `.trim()` is a member
+    access and a call, and `.len()` adds one more pair over the literal.
+    """
+    if shape == "flat_operators":
+        return 2 + depth
+    if shape == "flat_members":
+        return 2 + 1 + 2 * depth + 2
+    if shape == "else_if":
+        # Branch k hangs k levels below the first; each branch is its `if`
+        # node over a block, a `let` and a literal.
+        return 1 + depth + 3
+    raise ValueError(shape)
 
 
 def diagnostic_cases():
@@ -641,7 +694,7 @@ def reduce_nesting(args, c, failures, artifact):
     """Reduce a depth failure while preserving its lane and category."""
     if not c.get("depth") or not args.reduce:
         return
-    flat = c["shape"].startswith("flat_")
+    flat = c["shape"] in CHAIN_SHAPES
     floor = 1 if flat else NESTING_LIMIT + 1
     if c["depth"] <= floor:
         return
@@ -753,6 +806,11 @@ def self_test():
                    for c in first if "_truncate_" in c["name"] or c["name"].endswith("_insert"))))
     checks.append(("nesting-boundaries", [nested_case("parentheses", n)["disposition"]
                    for n in (255, 256, 257)] == ["valid", "valid", "reject"]))
+    checks.append(("chain-boundaries", [nested_case(shape, n)["disposition"]
+                   for shape, n in (("flat_operators", 4094), ("flat_operators", 4095),
+                                    ("flat_members", 2045), ("flat_members", 2046),
+                                    ("else_if", 4092), ("else_if", 4093))]
+                   == ["valid", "reject", "valid", "reject", "valid", "reject"]))
     extreme = list(corpus(11, extreme=True))
     checks.append(("unique-case-names", len({c["name"] for c in first}) == len(first) and
                    len({c["name"] for c in extreme}) == len(extreme)))
@@ -883,6 +941,7 @@ def main():
     blocked = counts["new"] + counts["changed"] + counts["stale"] > 0
     report = {"generator_version": GENERATOR_VERSION, "seed": args.seed,
               "proposed_nesting_limit": NESTING_LIMIT,
+              "chain_depth_limit": CHAIN_LIMIT,
               "stack_limit_bytes": STACK_LIMIT_BYTES if limit_stack() else None,
               "baseline": None if args.ignore_baseline else args.baseline,
               "compiler": df.compiler_evidence(args.beansc), "cases": rows,

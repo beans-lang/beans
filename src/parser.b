@@ -31,6 +31,9 @@ class Parser {
     pending_type_closes: int
     nesting_depth: int
     limit_exceeded: bool
+    limit_message: string
+    limit_line: int
+    limit_col: int
     in_string_piece: bool
     // Brackets opened and not yet closed, innermost last: `(`, `[`, `{`
     // and a generic `<`. A diagnostic names the innermost as context.
@@ -51,6 +54,9 @@ class Parser {
         self.pending_type_closes = 0
         self.nesting_depth = 0
         self.limit_exceeded = false
+        self.limit_message = ""
+        self.limit_line = 0
+        self.limit_col = 0
         self.in_string_piece = false
         self.delimiters = []
         self.functions = []
@@ -200,26 +206,38 @@ class Parser {
     // A resource refusal aborts this source, then unwinds normally. Keeping
     // the exhausted cursor at EOF avoids derivative missing-delimiter
     // errors and keeps hostile unsaved documents away from recursive walks.
+    // The refusal is also kept apart from `errors`: an earlier error in the
+    // same statement suppresses the diagnostic, and a string piece's parser
+    // must still hand the outer parser the limit it hit, not that error.
     fn reject_limit(token: Token, message: string) {
+        if self.limit_exceeded { return }
         self.fail(token, message)
         self.limit_exceeded = true
+        self.limit_message = message
+        self.limit_line = token.line
+        self.limit_col = token.col
         self.pending_type_closes = 0
         self.pos = self.tokens.len() - 1
     }
 
     fn enter_nesting(token: Token) -> bool {
         if self.limit_exceeded { return false }
-        if self.nesting_depth >= 256 {
-            self.reject_limit(token, "nesting deeper than 256 levels")
+        if self.nesting_depth >= parser_nesting_limit() {
+            self.reject_limit(token, "nesting deeper than {parser_nesting_limit()} levels")
             return false
         }
         self.nesting_depth += 1
         return true
     }
 
+    // Grammar nesting is bounded above, but a flat chain is not nested: a
+    // long sum or method chain is a left-deep tree the parser builds in a
+    // loop, and every later walk (checker, lowering, interpreter, printers,
+    // editor queries) recurses through it. Bound the depth of the tree the
+    // parser hands them, measured as each node is finished.
     fn bounded(node: AstNode, token: Token) -> AstNode {
-        if node.parse_path_cost > 24576 {
-            self.reject_limit(token, "expression complexity exceeds the 24576-unit path limit")
+        if node.parse_path_cost > parser_chain_limit() {
+            self.reject_limit(token, "syntax chain deeper than {parser_chain_limit()} levels")
             return self.node("error", "", token)
         }
         return node
@@ -361,7 +379,17 @@ class Parser {
                 module.add(
                     self.parse_package_clause(false, declared))
             } else {
-                module.add(self.parse_declaration())
+                let start: Token = self.current()
+                let declaration: AstNode = self.parse_declaration()
+                // A resource refusal stopped this declaration part way, and
+                // parsing ends with it. The editor still checks a tree with
+                // errors, so hand on only the refusal: the cut-off tree would
+                // give derivative errors (missing types, branches, returns).
+                if self.limit_exceeded {
+                    module.add(self.node("error", "", start))
+                } else {
+                    module.add(declaration)
+                }
             }
             self.skip_newlines()
         }
@@ -1325,7 +1353,11 @@ class Parser {
         }
         statement.annotations = move annotations
         self.statement_delimiter_depth = saved_depth
-        return statement
+        // A chain that only crosses the depth limit with its statement node
+        // is reported on the statement's own line, not at the block's brace.
+        return self.bounded(statement, Token {
+            kind: statement.kind, text: "", line: statement.line, col: statement.col,
+        })
     }
 
     fn parse_statement_body() -> AstNode {
@@ -1422,34 +1454,69 @@ class Parser {
     fn parse_if() -> AstNode {
         let token: Token = self.current()
         if !self.enter_nesting(token) { return self.node("error", "", token) }
-        let result: AstNode = self.parse_if_body()
+        let result: AstNode = self.parse_if_chain(false)
         self.nesting_depth -= 1
         return self.bounded(result, token)
     }
 
-    fn parse_if_body() -> AstNode {
-        let start: Token = self.advance()
-        let result: AstNode = self.node("if", "", start)
-        let saved: bool = self.allow_initializer
-        self.allow_initializer = false
-        result.add(self.parse_expression())
-        self.allow_initializer = saved
-        self.skip_newlines()
-        result.add(self.parse_block(false))
-        let branch_end_line: int = self.tokens[self.pos - 1].line
-        self.skip_newlines()
-        if self.check("else") && self.current().line != branch_end_line {
-            self.fail(self.current(), "else must follow '}' on the same line")
-        }
-        if self.match_token("else") {
+    // `if … else if … else` is one construct at one nesting level however
+    // many arms it has: the arms sit side by side in the source. The tree
+    // still hangs each `else if` arm under the previous one, so parse the
+    // arms in a loop, bound the depth that hanging creates as each arm
+    // arrives, and link them from the last arm up once all are parsed.
+    // `value` selects the expression form, which requires its `else`.
+    fn parse_if_chain(value: bool) -> AstNode {
+        var arms: List<AstNode> = []
+        var otherwise: Option<AstNode> = none
+        for {
+            let start: Token = self.advance()
+            let arm: AstNode =
+                self.node(if value { "if_expression" } else { "if" }, "", start)
+            let saved: bool = self.allow_initializer
+            self.allow_initializer = false
+            arm.add(self.parse_expression())
+            self.allow_initializer = saved
             self.skip_newlines()
-            if self.check("if") {
-                result.add(self.parse_if())
-            } else {
-                result.add(self.parse_block(false))
+            arm.add(self.parse_block(false))
+            // Arm n hangs n levels below the first one.
+            if arms.len() + arm.parse_path_cost > parser_chain_limit() {
+                self.reject_limit(start, "syntax chain deeper than {parser_chain_limit()} levels")
+                return self.node("error", "", start)
             }
+            arms.push(arm)
+            let branch_end_line: int = self.tokens[self.pos - 1].line
+            self.skip_newlines()
+            if value && !self.check("else") {
+                self.fail(self.current(), "expected else")
+                break
+            }
+            if self.check("else") && self.current().line != branch_end_line {
+                self.fail(self.current(), "else must follow '}' on the same line")
+            }
+            if !self.match_token("else") { break }
+            self.skip_newlines()
+            if self.check("if") { continue }
+            let opening: Token = self.current()
+            let tail: AstNode = self.parse_block(false)
+            if arms.len() + tail.parse_path_cost > parser_chain_limit() {
+                self.reject_limit(opening, "syntax chain deeper than {parser_chain_limit()} levels")
+                return self.node("error", "", opening)
+            }
+            otherwise = some(tail)
+            break
         }
-        return result
+        var below: Option<AstNode> = otherwise
+        var index: int = arms.len()
+        for index > 0 {
+            index -= 1
+            let arm: AstNode = arms[index]
+            match below {
+                some(child) => { arm.add(child) }
+                none => {}
+            }
+            below = some(arm)
+        }
+        return arms[0]
     }
 
     fn parse_for() -> AstNode {
@@ -1538,9 +1605,7 @@ class Parser {
                operand.children.len() >= 2 {
                 unary.add(operand.children[0])
                 operand.children[0] = unary
-                operand.parse_path_cost = 16 + unary.parse_path_cost
-                let type_cost: int = 16 + operand.children[1].parse_path_cost
-                if type_cost > operand.parse_path_cost { operand.parse_path_cost = type_cost }
+                ast_refresh_path_cost(operand)
                 return self.bounded(operand, operation)
             }
             unary.add(operand)
@@ -1759,11 +1824,12 @@ class Parser {
             parser.in_string_piece = true
             let expression: AstNode = parser.parse_standalone_expression()
             if parser.limit_exceeded {
-                let last: int = parser.errors.len() - 1
+                // The piece was parsed as a tiny source starting at 1:1;
+                // its first byte sits at column `literal.col + start`.
                 self.reject_limit(Token {
                     kind: "string", text: "", line: literal.line,
-                    col: literal.col + start + parser.errors[last].col - 1,
-                }, parser.errors[last].message)
+                    col: literal.col + start + parser.limit_col - 1,
+                }, parser.limit_message)
                 ready = false
                 break
             }
@@ -1773,8 +1839,7 @@ class Parser {
             }
             ast_place_interpolation(expression, literal.line, literal.col + start - 1)
             literal.interpolations.push(expression)
-            let cost: int = 16 + expression.parse_path_cost
-            if cost > literal.parse_path_cost { literal.parse_path_cost = cost }
+            ast_refresh_path_cost(literal)
             self.bounded(literal, Token {
                 kind: "string", text: "", line: literal.line, col: literal.col + start,
             })
@@ -2140,7 +2205,10 @@ class Parser {
         if !self.enter_nesting(token) { return self.node("error", "", token) }
         let result: AstNode = self.parse_closure_expression_body()
         self.nesting_depth -= 1
-        return self.bounded(result, token)
+        // A call or member access written after the body applies to the
+        // closure from outside it: `fn() -> int { 1 }()` opens its argument
+        // list one level below the closure, like any other call's.
+        return self.parse_postfix(self.bounded(result, token))
     }
 
     fn parse_closure_expression_body() -> AstNode {
@@ -2200,43 +2268,15 @@ class Parser {
         }
         self.skip_newlines()
         closure.add(self.parse_block(false))
-        return self.parse_postfix(closure)
+        return closure
     }
 
     fn parse_if_expression() -> AstNode {
         let token: Token = self.current()
         if !self.enter_nesting(token) { return self.node("error", "", token) }
-        let result: AstNode = self.parse_if_expression_body()
+        let result: AstNode = self.parse_if_chain(true)
         self.nesting_depth -= 1
         return self.bounded(result, token)
-    }
-
-    fn parse_if_expression_body() -> AstNode {
-        let start: Token = self.advance()
-        let result: AstNode = self.node("if_expression", "", start)
-        let saved: bool = self.allow_initializer
-        self.allow_initializer = false
-        result.add(self.parse_expression())
-        self.allow_initializer = saved
-        self.skip_newlines()
-        result.add(self.parse_block(false))
-        let branch_end_line: int = self.tokens[self.pos - 1].line
-        self.skip_newlines()
-        if !self.check("else") {
-            self.fail(self.current(), "expected else")
-            return result
-        }
-        if self.current().line != branch_end_line {
-            self.fail(self.current(), "else must follow '}' on the same line")
-        }
-        self.advance()
-        self.skip_newlines()
-        if self.check("if") {
-            result.add(self.parse_if_expression())
-        } else {
-            result.add(self.parse_block(false))
-        }
-        return result
     }
 }
 
@@ -2250,6 +2290,21 @@ fn parser_scalar_type_name(name: string) -> bool {
            name == "byte" || name == "float" || name == "f32" ||
            name == "f64" || name == "decimal" ||
            name == "bool" || name == "string" || name == "unit"
+}
+
+// The language's nesting contract (spec/SYNTAX.md, Lexical): at most this
+// many grammar constructs open along one path inside a declaration.
+fn parser_nesting_limit() -> int {
+    return 256
+}
+
+// The depth of the syntax tree a declaration may hand to recursive walks,
+// counted in AST nodes along one path (spec/SYNTAX.md, Lexical). At an
+// 8 MiB stack the first walk to fault on a flat chain did so between
+// 18 000 and 37 000 nodes deep, so this keeps a margin of more than four
+// for larger frames on other hosts and in instrumented compiler builds.
+fn parser_chain_limit() -> int {
+    return 4096
 }
 
 // These words start statements or declarations, so a missing expression

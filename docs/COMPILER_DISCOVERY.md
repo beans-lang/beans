@@ -152,8 +152,8 @@ modes exercised, the expectation and the result. The authored matrix covers:
 | Control flow and declarations | `control_flow`, `loop_control_outside`, `return_outside_fn`, `declaration_*`, `shadowing` | check, run |
 | Delimiters and recovery | `delimiter_*`, `missing_operand`, `incomplete_member`, `independent_errors_kept` | parse, ast, check |
 | Diagnostic context chains | `test/cases/discovery/*.json` | check |
-| Nesting contract (256) | `nest_<shape>_<depth>` for parentheses, types, blocks, interpolation, prefix, mixed, calls at 1/32/255/256/257 (+4096/8192/32768 with `--extreme`) | parse, check |
-| Shallow long chains | `nest_flat_operators_*`, `nest_flat_members_*`, `long_line` | parse, check |
+| Nesting contract (256) | `nest_<shape>_<depth>` for parentheses, types, blocks, interpolation, prefix, mixed, calls, match_arms, if_else_blocks at 1/32/255/256/257 (+4096/8192/32768 with `--extreme`): valid to 256, refused once above | parse, check |
+| Chain-depth contract (4096 nodes) | `nest_else_if_*` (an `else if` chain is one nesting level), `nest_flat_operators_*`, `nest_flat_members_*`, `long_line` (a 20 000-term sum): valid while the syntax tree is at most 4096 nodes deep (`chain_depth`), refused once deeper; `long_line_wide` (20 000 list elements) is valid, since siblings do not add depth | parse, check |
 | Process safety | `*_truncate_*`, `*_insert` mutations from every valid case; the same edits are opened unsaved in `test/lsp_navigation.sh`, which requires the server to answer and every diagnostic to lie inside its document | parse, check, lsp |
 
 Wrong-answer coverage lives in `differential_fuzz.py` groups (`core`, `widths`,

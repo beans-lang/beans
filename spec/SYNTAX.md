@@ -368,23 +368,32 @@ fn main() {
 
 ## Lexical
 
-- Within a declaration or named function body, the parser accepts at most
-  **256 nested grammar constructs**. Parentheses, prefix operators, argument
-  and index lists, list/map/record literals, generic/array/function types, and
-  control-flow or closure forms count along the active path. A control-flow
-  or closure form and its own body count as one level; the outer body of a
-  named function and a string piece's interpolation braces do not count.
-  An interpolated expression inherits the surrounding nesting budget, and
-  an ordinary string nested inside a piece adds a level. Level 257 produces
-  one located `nesting deeper than 256 levels` error and normal exit status 1.
-- Shallow expression and block paths also have a **24,576-unit complexity
-  limit**: each binary AST node costs one unit and each other AST node costs
-  sixteen units, taking the longest child path rather than summing siblings.
-  Parentheses add no AST node. This accepts a flat 20,000-term arithmetic
-  expression while refusing unsafe member/call chains and combinations of
-  chains with nesting before recursive compiler or editor walks. Exceeding
-  the limit produces one located complexity error and normal exit status 1.
-  The limit does not restrict a file's total statement or list-element count.
+- Within one declaration the parser accepts at most **256 nested grammar
+  constructs** along any path. Each of these opens a level: a parenthesis, a
+  prefix operator (`-`, `!`, `~`, `move`, `inout`), a call's argument list, an
+  index, a list, map or record literal, a generic, array or function type that
+  encloses another type, explicit type arguments, an `if`, `for`, `match`,
+  closure or `unsafe` form (the form and its own body together are one
+  level), and a non-raw string literal written inside another string's
+  interpolation piece. An `else if` continues its chain at the same level, so
+  any number of arms is one level. The body of a named function or method and
+  the braces of an interpolation piece do not count, and a piece's expression
+  continues from the level of the literal around it. Level 257 produces one
+  located `nesting deeper than 256 levels` error and exit status 1; parsing
+  that file stops there.
+- A chain is not nested but is still deep: in `a + b + c`, `x.f().g()`, a run
+  of `as` casts or an `else if` chain, each step hangs one syntax node below
+  the last. The syntax tree of one declaration may be at most **4096 nodes
+  deep** along any path. Every operator, call, member access, index, cast,
+  `?`, literal, name, statement, block and `else if` arm on the path counts
+  one; parentheses add no node. Siblings count from the same level, so the
+  limit does not restrict how many statements, list elements, arguments or
+  `match` arms there are. One statement holds a flat chain of about 4,000
+  binary operators or 2,000 method calls; split a longer one across
+  statements. A deeper tree produces one located `syntax chain deeper than
+  4096 levels` error and exit status 1; parsing that file stops there. Both
+  limits are checked before any later compiler stage or the language server
+  walks the tree, which keeps those recursive walks inside an 8 MiB stack.
 - No semicolons. Newline ends a statement (Go-style: only after a token that can end one).
   This rule also applies inside parentheses: `(1` followed by a newline and
   `+ 2)` is refused, while `(1 +` followed by a newline and `2)` continues.

@@ -8,9 +8,10 @@ class AstNode {
     resolved: string
     note: string
     parenthesized: bool
-    // Parser-owned path cost. A binary edge costs one unit; other nodes
-    // cost sixteen so a call/member path cannot consume the stack reserved
-    // for much cheaper flat arithmetic. This is depth, not total tree size.
+    // Parser-owned depth of this subtree: the nodes on its longest path to
+    // a leaf, this node included, string pieces too. It is depth, not size:
+    // siblings take the deepest one. The parser refuses a declaration whose
+    // tree is deeper than its chain limit before any recursive walk runs.
     parse_path_cost: int
     interpolation_syntax_ready: bool
     // Where the node's own identifier is written. A declaration anchors at
@@ -72,8 +73,24 @@ class AstNode {
 }
 
 fn ast_parse_path_cost(kind: string) -> int {
-    if kind == "binary" { return 1 }
-    return 16
+    // What one node adds to a path. Every kind counts the same: on a flat
+    // chain the recursive walks spend about the same stack per node whatever
+    // its kind (a sum, a member access, a call or a cast), so weighting one
+    // kind cheaper would only let its chains run closer to the stack's end.
+    return 1
+}
+
+// Recompute a node's path cost after the parser rewired its children.
+fn ast_refresh_path_cost(node: AstNode) {
+    node.parse_path_cost = ast_parse_path_cost(node.kind)
+    for child: AstNode in node.children {
+        let cost: int = ast_parse_path_cost(node.kind) + child.parse_path_cost
+        if cost > node.parse_path_cost { node.parse_path_cost = cost }
+    }
+    for piece: AstNode in node.interpolations {
+        let cost: int = ast_parse_path_cost(node.kind) + piece.parse_path_cost
+        if cost > node.parse_path_cost { node.parse_path_cost = cost }
+    }
 }
 
 // The end position an unterminated block reports: past every real line and
@@ -220,6 +237,11 @@ fn ast_place_interpolation(node: AstNode, line: int,
     }
     for child: AstNode in node.children {
         ast_place_interpolation(child, line, column_offset)
+    }
+    // A string written inside a piece had its own pieces parsed and placed
+    // relative to that piece's source, so they move with it.
+    for piece: AstNode in node.interpolations {
+        ast_place_interpolation(piece, line, column_offset)
     }
 }
 

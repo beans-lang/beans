@@ -72,20 +72,24 @@ class BindgenJsonParser {
         return self.source.byte_at(self.index)
     }
 
+    // Plain bytes are taken as whole runs and the pieces joined once: the
+    // language server reads every unsaved document through here, and
+    // growing one string a byte at a time made a long document quadratic.
     fn string_value() -> string {
-        var result: string = ""
+        var pieces: List<string> = []
         self.index += 1
+        var run: int = self.index
         for self.index < self.source.len() {
-            let start: int = self.index
             let byte: int =
                 self.source.byte_at(self.index)
-            self.index += 1
-            if byte == 34 { return result }
-            if byte != 92 {
-                result =
-                    "{result}{self.source.slice(start, self.index)}"
+            if byte != 34 && byte != 92 {
+                self.index += 1
                 continue
             }
+            pieces.push(self.source.slice(run, self.index))
+            self.index += 1
+            if byte == 34 { return pieces.join("") }
+            run = self.index
             if self.index >= self.source.len() {
                 break
             }
@@ -93,30 +97,33 @@ class BindgenJsonParser {
                 self.source.byte_at(self.index)
             self.index += 1
             if escaped == 34 {
-                result = "{result}\""
+                pieces.push("\"")
             } else if escaped == 92 {
-                result = "{result}\\"
+                pieces.push("\\")
             } else if escaped == 47 {
-                result = "{result}/"
+                pieces.push("/")
             } else if escaped == 110 {
-                result = "{result}\n"
+                pieces.push("\n")
             } else if escaped == 114 {
-                result = "{result}\r"
+                pieces.push("\r")
             } else if escaped == 116 {
-                result = "{result}\t"
+                pieces.push("\t")
             } else if escaped == 117 {
                 if self.index + 4 <=
                    self.source.len() {
                     self.index += 4
                 }
-                result = "{result}?"
+                pieces.push("?")
             } else {
-                result =
-                    "{result}{self.source.slice(self.index - 1, self.index)}"
+                pieces.push(self.source.slice(self.index - 1, self.index))
             }
+            run = self.index
         }
         self.ok = false
-        return result
+        if run < self.source.len() {
+            pieces.push(self.source.slice(run, self.source.len()))
+        }
+        return pieces.join("")
     }
 
     fn value() -> BindgenJson {

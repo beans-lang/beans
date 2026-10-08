@@ -14471,6 +14471,13 @@ class ExpressionChecker {
     }
 
     fn check_statement(node: AstNode) -> HirNode {
+        // The parser already reported this statement: a resource refusal
+        // leaves an error node where the statement was. The editor checks
+        // such partial trees, and must not add a second diagnostic.
+        if node.kind == "error" {
+            return self.make_node(
+                node, "error", node.value, poison_hir_type())
+        }
         if node.kind == "let" || node.kind == "var" {
             return self.check_local(node)
         }
