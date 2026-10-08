@@ -50,12 +50,72 @@ def run_step(name, cmd, out, timeout, steps, env=None, expected_sanitizer=False,
         status = "incomplete"
     row = {"name": name, "commands": [cmd], "status": status,
            "process": kind, "exit": code, "timeout_seconds": timeout,
-           "environment": {key: env[key] for key in ("BEANS_DISCOVERY_CONTEXT", "BEANS_SANITIZE", "BEANS_NO_POOL", "ASAN_OPTIONS")
+           "environment": {key: env[key] for key in ("BEANS_DISCOVERY_CONTEXT", "BEANS_SANITIZE", "BEANS_NO_POOL",
+                                                     "BEANS_BUILD_JOBS", "ASAN_OPTIONS")
                            if env and key in env},
            "seconds": time.monotonic() - started}
     steps.append(row)
     print("{}: {} ({:.1f}s)".format(name, status, row["seconds"]), flush=True)
     return row
+
+
+# `native_chunk_count` in src/driver.b splits an `--emit bin` build whose IR is
+# this many bytes or more, unless BEANS_BUILD_JOBS=1 (or --debug, --lto, wasm)
+# keeps it whole.
+CHUNK_THRESHOLD = 4 * 1024 * 1024
+# `cached_chunk_objects` in src/driver.b names them beans_chunk.<name>.<target>.<index>.<key>.
+CHUNK_OBJECT = re.compile(r"^beans_chunk\..+\.o$")
+CHUNK_MODULE = re.compile(r"^beans_chunk\..+\.ll$")
+# The logging Clang of test/sanitize.sh's #207 leg: it keeps each command the
+# driver runs, one argument per line, then hands it to the real Clang.
+LOGGING_CC = """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$@" > "$(mktemp "$BEANS_CAMPAIGN_CC_LOG/XXXXXXXX")"
+exec "$BEANS_CAMPAIGN_CC" "$@"
+"""
+
+
+def backend_evidence(name, commands, output, ir_bytes, single_module):
+    """Say which backend built `output`, from the commands that built it.
+
+    The link is the one command that writes `output`. A chunked build names
+    its chunk objects there, in chunk order; a single-module build names the
+    module's IR instead. The IR size says which path the build should take;
+    the link says which one it took (CD-23). A cached chunk is linked without
+    being compiled again, so chunk compiles are counted but not required.
+    """
+    links = [argv for argv in commands
+             if any(argv[i] == "-o" and argv[i + 1] == output for i in range(len(argv) - 1))]
+    compiled = sum(1 for argv in commands
+                   if any(CHUNK_MODULE.match(os.path.basename(arg)) for arg in argv))
+    chunked = not single_module and ir_bytes >= CHUNK_THRESHOLD
+    row = {"name": name, "commands": [], "seconds": 0, "status": "passed",
+           "expected_backend": "chunked" if chunked else "single-module", "ir_bytes": ir_bytes,
+           "chunk_objects_linked": None, "chunk_modules_compiled": compiled}
+    if len(links) != 1:
+        # Without the link there is no evidence either way.
+        row["status"] = "incomplete"
+        row["reason"] = "{} logged commands wrote {}; expected one link".format(len(links), output)
+        return row
+    objects = [arg for arg in links[0] if CHUNK_OBJECT.match(os.path.basename(arg))]
+    modules = [arg for arg in links[0] if arg.endswith(".ll")]
+    row["chunk_objects_linked"] = len(objects)
+    if chunked and len(objects) < 2:
+        row["status"] = "failed"
+        row["reason"] = ("the IR is {} bytes, past the {}-byte chunk threshold, but the link named {} "
+                         "chunk objects: the build took the single-module path").format(
+                             ir_bytes, CHUNK_THRESHOLD, len(objects))
+    elif not chunked and (objects or len(modules) != 1):
+        row["status"] = "failed"
+        row["reason"] = ("a single-module build links the module's IR and no chunk object; this link "
+                         "named {} chunk objects and {} IR modules").format(len(objects), len(modules))
+    return row
+
+
+def backend_line(row):
+    return "{}: {} ({} expected; {} chunk objects linked, {} chunk modules compiled){}".format(
+        row["name"], row["status"], row["expected_backend"], row["chunk_objects_linked"],
+        row["chunk_modules_compiled"], "; " + row["reason"] if "reason" in row else "")
 
 
 def sanitize_compiler(args, steps):
@@ -66,8 +126,11 @@ def sanitize_compiler(args, steps):
     default (chunked, parallel) backend and the single-module backend
     (BEANS_BUILD_JOBS=1) are both exercised, because instrumentation that is
     present in the IR can still be dropped by the step that compiles it
-    (docs/BUGFIX_TODO.md CD-16). UBSan covers the C runtime; textual Beans IR
-    has no UBSan attribute.
+    (docs/BUGFIX_TODO.md CD-16). Each fault build goes through a logging
+    Clang, and its link line shows which backend it took: the IR size alone
+    does not, because a driver can refuse to split a module that is big
+    enough (CD-22, CD-23). UBSan covers the C runtime; textual Beans IR has no
+    UBSan attribute.
     """
     root = pathlib.Path(args.out, "sanitizer").resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -89,12 +152,16 @@ def sanitize_compiler(args, steps):
     ir = ir_path.read_text()
     definitions = [line for line in ir.splitlines() if line.startswith("define ")]
     marked = bool(definitions) and all("sanitize_address" in line for line in definitions)
-    chunked = len(ir.encode()) >= 4 * 1024 * 1024
-    pathlib.Path(root, "instrumentation.json").write_text(json.dumps({
+    ir_bytes = len(ir.encode())
+    # The fault copy below adds a few lines, so its IR is this size too.
+    instrumentation = {
         "definitions": len(definitions), "all_marked_address": marked,
-        "ir_bytes": len(ir.encode()), "chunked_backend_by_default": chunked,
+        "ir_bytes": ir_bytes, "ir_past_chunk_threshold": ir_bytes >= CHUNK_THRESHOLD,
+        # Set from the default fault build's link line, never from the size.
+        "chunked_backend_by_default": None, "chunk_objects_linked": None,
         "generated_ir_ubsan": False, "runtime_ubsan": True,
-        "compiler": df.compiler_evidence(args.beansc)}, indent=2) + "\n")
+        "compiler": df.compiler_evidence(args.beansc)}
+    pathlib.Path(root, "instrumentation.json").write_text(json.dumps(instrumentation, indent=2) + "\n")
     steps.append({"name": "compiler-asan-ir-reach", "status": "passed" if marked else "failed",
                   "commands": [], "seconds": 0, "definitions": len(definitions)})
     if not marked:
@@ -113,16 +180,39 @@ def sanitize_compiler(args, steps):
                         "        probe.offset(1).write(42)\n"
                         "        probe.free()\n    }\n", 1)
     main.write_text(text)
+    # The driver's Clang (BEANS_CC, else clang) runs behind the logging one.
+    logging_cc = root / "logging-clang"
+    logging_cc.write_text(LOGGING_CC)
+    logging_cc.chmod(0o755)
+    real_cc = os.environ.get("BEANS_CC") or "clang"
+    real_cc = shutil.which(real_cc) or real_cc
     reach = True
-    for label, build_env in (("", env), ("-single-module", single)):
+    for label, build_env, single_module in (("", env, False), ("-single-module", single, True)):
         fault = root / ("beansc-fault-asan" + label + exe)
+        # A fresh log per build: a command left from an earlier run is not
+        # evidence about this one.
+        log = root / ("clang-commands" + label)
+        shutil.rmtree(log, ignore_errors=True)
+        log.mkdir()
         built = run_step("compiler-asan-fault-build" + label, [args.beansc, "build", "--release",
-                         str(main), "-o", str(fault)], args.out, 1800, steps, env=build_env)
+                         "--cc", str(logging_cc), str(main), "-o", str(fault)], args.out, 1800, steps,
+                         env=dict(build_env, BEANS_CAMPAIGN_CC=real_cc, BEANS_CAMPAIGN_CC_LOG=str(log)))
         if built["status"] != "passed":
             return False
+        backend = backend_evidence("compiler-asan-fault-backend" + label,
+                                   [path.read_text().splitlines() for path in sorted(log.iterdir())],
+                                   str(fault), ir_bytes, single_module)
+        steps.append(backend)
+        print(backend_line(backend), flush=True)
+        if not single_module:
+            linked = backend["chunk_objects_linked"]
+            instrumentation.update(chunk_objects_linked=linked,
+                                   chunked_backend_by_default=None if linked is None else linked > 0)
+            pathlib.Path(root, "instrumentation.json").write_text(
+                json.dumps(instrumentation, indent=2) + "\n")
         observed = run_step("compiler-asan-fault-reach" + label, [str(fault), "--version"],
                             args.out, 60, steps, env=env, expected_sanitizer=True)
-        reach = reach and observed["status"] == "passed"
+        reach = reach and backend["status"] == "passed" and observed["status"] == "passed"
     # 3. The instrumented compiler that demonstrably carries its checks is
     #    the one that processes supported nested source.
     clean = root / ("beansc-asan" + exe)
@@ -310,6 +400,10 @@ def main():
                "| Gate | Status | Seconds |", "|---|---|---:|"]
     summary += ["| {} | {} | {:.1f} |".format(s["name"], s["status"], s.get("seconds", 0.0))
                 for s in steps if not s["name"].startswith("stress-")]
+    backends = [s for s in steps if "expected_backend" in s]
+    if backends:
+        summary += ["", "Compiler fault builds, as their link lines show:"]
+        summary += ["- " + backend_line(s) for s in backends]
     summary += ["", "Stress: {} completed iterations, {:.1f}s; {} retained failures replayed.".format(
         completed, soak_seconds, replays), "", "Remaining evidence:"]
     summary += ["- " + item for item in missing] or ["- None within this run's scope."]
@@ -352,6 +446,22 @@ def self_test():
         row = run_step("replay-tool-exception", [sys.executable, "-c", "raise RuntimeError('harness defect')"],
                        out, 5, [], expect_reproduced=True)
         checks.append(("replay-tool-exception-incomplete", row["status"] == "incomplete"))
+    # The backend a fault build took is read from its link line (CD-23). The
+    # commands are spelled as the logging Clang records them.
+    binary, big = "/campaign/beansc-fault-asan", CHUNK_THRESHOLD + 1
+    chunks = ["build/beans_chunk.main.t.{}.k{}.o".format(i, i) for i in range(8)]
+    compiles = [["-O2", "-c", "build/beans_chunk.main.t.{}.k{}.ll".format(i, i), "-o", "staged"]
+                for i in range(8)]
+    chunk_link = ["-O2"] + chunks + ["build/beans_rt.o", "-o", binary]
+    whole_link = ["-O2", "build/main.1x2.ll", "build/beans_rt.o", "-o", binary]
+    for label, commands, single_module, expected in (
+            ("chunk-sized-build-linked-whole-module-fails", [whole_link], False, "failed"),
+            ("chunked-build-linked-chunks-passes", compiles + [chunk_link], False, "passed"),
+            ("single-module-build-linked-chunks-fails", [chunk_link], True, "failed"),
+            ("single-module-build-linked-whole-module-passes", [whole_link], True, "passed"),
+            ("unlogged-link-incomplete", compiles, False, "incomplete")):
+        row = backend_evidence(label, commands, binary, big, single_module)
+        checks.append((label, row["status"] == expected))
     for name, ok in checks:
         print(("PASS " if ok else "FAIL ") + name)
     return int(not all(ok for _, ok in checks))
