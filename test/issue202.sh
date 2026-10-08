@@ -113,10 +113,9 @@ SHAPES = ("parentheses", "prefix", "calls", "index", "lists", "maps", "initializ
           "closures", "matches", "if_values", "interpolation", "nested_strings", "annotations",
           "patterns", "mixed")
 # The backends are compared on the discovery shapes and on each different
-# lowering (closures, records, indexes, value forms). Native builds of deeply
-# nested List/Map types grow exponentially in IR emission, a separate defect.
+# lowering (closures, records, indexes, value forms, nested List and Map types).
 NATIVE = ("parentheses", "types", "blocks", "interpolation", "prefix", "mixed", "calls",
-          "closures", "initializers", "index", "if_values", "matches")
+          "closures", "initializers", "index", "if_values", "matches", "lists", "maps")
 
 
 def else_if(n, value):
@@ -146,8 +145,11 @@ def lane(work, mode, source):
     path.write_text(source)
     if mode == "native":
         binary = work / "main"
-        built = subprocess.run([BIN, "build", str(path), "-o", str(binary)], capture_output=True,
-                               timeout=120, preexec_fn=STACK)
+        try:
+            built = subprocess.run([BIN, "build", str(path), "-o", str(binary)], capture_output=True,
+                                   timeout=120, preexec_fn=STACK)
+        except subprocess.TimeoutExpired:
+            return "timeout", "", "the native build did not finish in 120 s"
         if built.returncode != 0:
             return built.returncode, "", built.stderr.decode(errors="replace")
         ran = subprocess.run([str(binary)], capture_output=True, timeout=60)
@@ -175,6 +177,51 @@ def refused(work, mode, source, message, label="", at=None):
     assert line > 0 and col > 0, (label, mode, errors)
     if at is not None:
         assert (line, col) == at, (label, mode, (line, col), at)
+
+
+ELEMENTS = {
+    "record": ("P", "P { v: 7 }", ".v", "7"),
+    "class": ("C", "new C()", ".v", "2"),
+    "enum": ("Tone", "Tone.high", " == Tone.high", "true"),
+}
+
+
+def element_nest(shape, element, n):
+    """A List or Map type n levels deep around a record, class or enum, and
+    what it prints. A list is read back through every level."""
+    leaf, value, read, shown = ELEMENTS[element]
+    prelude = "struct P {\n    v: int\n}\nclass C {\n    v: int = 2\n}\nenum Tone {\n    low\n    high\n}\n"
+    if shape == "lists":
+        return (wrap("let x: " + "List<" * n + leaf + ">" * n + " = " + "[" * n + value + "]" * n +
+                     "\n    io.println(\"{x.len()} {x" + "[0]" * n + read + "}\")", prelude),
+                "1 %s\n" % shown)
+    return (wrap("let x: " + "Map<int, " * n + leaf + ">" * n + " = " + "{1: " * n + value + "}" * n +
+                 "\n    io.println(\"{x.len()}\")", prelude), "1\n")
+
+
+def cpu_seconds():
+    # CPU time of finished children: steadier than wall time on a busy host.
+    import resource
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return usage.ru_utime + usage.ru_stime
+
+
+def emit_seconds(work, source, label):
+    """Best of three CPU times for writing the program's LLVM IR."""
+    path = work / "scale.b"
+    path.write_text(source)
+    best = None
+    for _ in range(3):
+        start = cpu_seconds()
+        try:
+            result = subprocess.run([BIN, "llvm", str(path)], capture_output=True, timeout=60,
+                                    preexec_fn=STACK)
+        except subprocess.TimeoutExpired:
+            sys.exit("%s: IR emission did not finish in 60 s" % label)
+        assert result.returncode == 0, (label, result.stderr.decode(errors="replace")[-800:])
+        spent = cpu_seconds() - start
+        best = spent if best is None else min(best, spent)
+    return best
 
 
 with tempfile.TemporaryDirectory(prefix="beans-issue202-") as directory:
@@ -317,4 +364,31 @@ fn main() {
     for mode in ("run", "native"):
         accepted(work, mode, semantics, expected, label="binary semantics")
     print("ok binary operand order, short circuit, widths, decimal, propagation and panic cleanup on both backends")
+
+    # CD-24: the native backend spelt each List or Map level's element type
+    # twice (llvm_type), and spelt a record, class or enum element again to
+    # size it (type_text), so IR emission doubled at every level: 24 levels
+    # took 18 s and 32 over 300 s. The lists and maps shapes above now build
+    # at 256; these do it around each kind of declared element (its
+    # initializer is a level, so 255), and time is judged by scaling: CPU
+    # time for 8x the depth must stay well under the 64x a quadratic step
+    # would cost. The timeouts only stop a regression from hanging the run.
+    for shape in ("lists", "maps"):
+        for element in ELEMENTS:
+            source, output = element_nest(shape, element, NESTING_LIMIT - 1)
+            for mode in ("run", "native"):
+                accepted(work, mode, source, output, label="%s of %s" % (shape, element))
+    ratios = []
+    for shape in ("lists", "maps"):
+        for element in ("int", "record"):
+            pairs = ((3, 24), (32, 256)) if element == "int" else ((3, 24), (31, 248))
+            for small, large in pairs:
+                label = "%s of %s, depth %d -> %d" % (shape, element, small, large)
+                sources = [nest(shape, n)[0] if element == "int" else element_nest(shape, element, n)[0]
+                           for n in (small, large)]
+                ratio = emit_seconds(work, sources[1], label) / max(emit_seconds(work, sources[0], label), 0.005)
+                assert ratio <= 3 * 8, "%s: %.1fx CPU for 8x the depth; a linear step stays under 24x" % (label, ratio)
+                ratios.append("%.1fx" % ratio)
+    print("ok nested List/Map types of int, a record, a class and an enum build at the nesting limit on both "
+          "backends; IR emission CPU for 8x the depth: %s" % " ".join(ratios))
 PY

@@ -22,6 +22,7 @@ bug-free.
 | CD-3 | crash | Deep nesting or a long flat chain ends `beansc` and `beansc lsp` with SIGSEGV instead of a diagnostic. | #202 |
 | CD-14 | hang | Checking a 6 150-deep generic type exceeds 20 s; 8 192 takes 70 s. | #203 |
 | CD-16 | sanitizer coverage | A `--release` build with IR ≥ 4 MiB is compiled by the chunked backend without `-fsanitize=`, so ASan never reaches it, the compiler itself included. | #207 |
+| CD-24 | hang | A native build of a `List` or `Map` type nested 24 deep spends 18 to 24 s writing IR; 32 deep, over 300 s. Found later, while verifying #202. | none |
 | CD-25 | invalid acceptance | A `move(...)` closure whose body branches leaves its captures usable, so two names own one value. Found later, while fixing CD-15. | none |
 | CD-26 | invalid acceptance | A closure that reads an outer binding only inside a loop or a returning branch does not borrow it, so the binding can be moved away; a native reproduction segfaults. Found later, while fixing CD-15. | none |
 
@@ -275,7 +276,7 @@ branch; the combined run above is the evidence for the merged compiler.
 | Issue | Findings | Existing owner extended | Local change and acceptance boundary |
 | --- | --- | --- | --- |
 | [#201](https://github.com/beans-lang/beans/issues/201) | CD-1, CD-2, CD-10 | Lexer number/punctuation scanners and parser generic-close handling | Require a real digit after a radix prefix, reject unknown bytes in the lexer, and report a stray generic close where its type ends (a `>>` is split only while an enclosing type list is open). Verified 2026-10-08, macOS ARM64: `test/issue201.sh`, `syntax_v07.sh`, `generic_calls.sh`, `generic_interfaces.sh`, `string_literals.sh` pass; nested generics and shifts keep their output on both backends. |
-| [#202](https://github.com/beans-lang/beans/issues/202) | CD-3, CD-4 | Parser nesting counter and AST path depth, string-piece parsing, the checker's statement entry and the LSP's JSON reader | Done and verified locally (macOS ARM64, 8 MiB stack). The parser counts a level at every grammar opener (an `else if` chain is one level) and refuses level 257; it also refuses a declaration whose syntax tree is deeper than 4 096 nodes, which bounds flat chains (sums, member chains, casts, `else if` branches). Each refusal is one located error, exit 1, before any recursive stage runs, and the language server publishes the same single diagnostic. Without the limits the first fault was at 17 536 member calls (`check`) and 18 176 casts (`run`), so the 4 096 limit keeps a margin above four. 22 constructs check and run at 256 and are refused once from 257 to 32 768; 76 deep or long unsaved documents leave `beansc lsp` answering (12 s for all, 180 s before the JSON reader stopped growing strings a byte at a time). The repository's own sources peak at 12 levels and 139 nodes (`src/llvm.b`'s 152-branch `else if`). Not run: Linux, Windows (whose main-thread stack the executable sets). |
+| [#202](https://github.com/beans-lang/beans/issues/202) | CD-3, CD-4 | Parser nesting counter and AST path depth, string-piece parsing, the checker's statement entry and the LSP's JSON reader | Done and verified locally (macOS ARM64, 8 MiB stack). The parser counts a level at every grammar opener (an `else if` chain is one level) and refuses level 257; it also refuses a declaration whose syntax tree is deeper than 4 096 nodes, which bounds flat chains (sums, member chains, casts, `else if` branches). Each refusal is one located error, exit 1, before any recursive stage runs, and the language server publishes the same single diagnostic. Without the limits the first fault was at 17 536 member calls (`check`) and 18 176 casts (`run`), so the 4 096 limit keeps a margin above four. 22 constructs check and run at 256 and are refused once from 257 to 32 768; 76 deep or long unsaved documents leave `beansc lsp` answering (12 s for all, 180 s before the JSON reader stopped growing strings a byte at a time). The repository's own sources peak at 12 levels and 139 nodes (`src/llvm.b`'s 152-branch `else if`). Not run: Linux, Windows (whose main-thread stack the executable sets). Nested `List`/`Map` types were left out of the native comparison because IR emission doubled per level (24 levels: 18 s; CD-24, in [BUGFIX_TODO.md](BUGFIX_TODO.md)). Fixed on `fix/deep-generic-ir`: emitted IR is byte-identical, both shapes and lists and maps of a struct, a class and an enum build natively at the limit with the interpreter's output, and `test/issue202.sh` compares 14 constructs on both backends and checks the emission scaling. |
 | [#203](https://github.com/beans-lang/beans/issues/203) | CD-14, CD-15 | Type structural keys/equality and generic validation; CLI and raw AST renderers; the checker's branch state | Done and verified locally (macOS ARM64, CPU time against a 0.1.51 build). `check`: `Option<` × n in 0.008 s / 0.027 s at n = 1 024 / 8 192 with the parser limit lifted (was 0.18 s / 96 s); a 16 384-layer type built by generic substitution in 0.48 s (47 s at 4 096). `parse`: 4 096 nested blocks in 0.40 s (48 s), a class of 16 000 methods in 0.19 s (0.98 s). `ast`: 2 048 nested blocks in 0.07 s (27 s), a 64 000-statement function in 0.73 s (40 s). Output bytes match 0.1.51 on all 884 files of `examples/`, `test/cases/`, `src/` and `stdlib/` and on 13 generated deep and wide shapes; `ast` indentation stops at depth 2 048, which only an operator chain reaches. `test/issue203.sh` checks exact deep output past the parser limit and 8x-work scaling, and fails with the fix reverted. The checker's move-state snapshots, quadratic in visible bindings, are now an undo log: 8 000 `let`/`if` pairs check in 0.110 s (25.1 s), with `check` output unchanged; see [CD-15's checker part](#cd-15-checker-part-verified-locally--2026-10-08). |
 | [#204](https://github.com/beans-lang/beans/issues/204) | CD-5 to CD-9 | Lexer/parser recovery and expression checking | Preserve following declarations, issue one primary per defect, keep independent errors, and locate interpolation diagnostics at the expression bytes. An ordinary string ends with its line; the first pass's next-line keyword guess is gone. Verified 2026-10-08: `test/issue204.sh`, `parse_recovery.sh`, `diagnostics.sh`, `language_gaps.sh`, `crema_findings.sh` pass; a 1 218-input grid of awkward tokens in 30 grammar contexts parses without a hang. |
 | [#205](https://github.com/beans-lang/beans/issues/205) | CD-11 | Existing `Diagnostic`, CLI formatting, source snapshots, module loading and LSP diagnostics | Extend the same diagnostic with end positions and ordered related notes; render excerpts from retained sources and carry notes over LSP, including unsaved files. Every authored context-chain snapshot must pass without derivative errors. **Verified locally (macOS ARM64):** all five `diagnostic_*` snapshots and five `delimiter_missing_*` cases pass exactly with the baseline ignored; `test/diagnostic_context.sh` and `test/lsp_navigation.sh` (with and without `BEANS_DISCOVERY_CONTEXT=1`) pass; CD-11 baseline entries removed. Excerpts use a per-file line index and a per-file function index, so many diagnostics in one large file render in linear time; a clean `check` is unchanged within noise. |
@@ -419,6 +420,53 @@ reproduction segfaults). The code involved is unchanged since 0.1.51.
 
 Not run: Linux, Windows, `make test-sanitize`, the Autobahn suite and any
 candidate soak.
+
+### CD-24 verified locally — 2026-10-09
+
+A native build of a nested `List` or `Map` type doubled its IR-emission work
+at every level. `llvm_type` asked for the element's spelling twice per level,
+and a struct, class or enum element was spelt again by `type_size` right after
+`type_text` had spelt it. The output was never the problem: the same three
+functions at every depth, 140 to 180 bytes more IR per level. Each level now
+spells its element once. Branch `fix/deep-generic-ir`, on `95c457e`. macOS
+ARM64, Apple clang. "Before" is `94a46a8`'s sources built by the fixed
+compiler, whose IR for them is byte-identical to the unfixed compiler's;
+"after" is the change built by itself.
+
+| Shape | Before | After |
+| --- | --- | --- |
+| `List<` × n `int`, `--emit ir`, n = 16 / 20 / 24 (wall s) | 0.09 / 1.2 / 17.8 | 0.01 / 0.01 / 0.01 |
+| `Map<int, ` × n `int`, n = 16 / 20 / 24 | 0.09 / 1.3 / 24.2 | 0.02 / 0.01 / 0.01 |
+| `List` of a struct, n = 16 / 20 (CPU s) | 0.31 / 5.3 | under 0.01 |
+| `--release` build, `List` / `Map` at 24 | 19.3 / 23.9 | 0.15 / 0.06 |
+| `--release` build, `List` / `Map` at 256 | not run (32 levels: over 300 s) | 0.07 / 0.09 |
+| IR bytes, `List` at 8 / 24 / 256 | 9 604 / 11 843 / — | the same / the same / 45 115 |
+
+Behaviour is unchanged. Unfixed against fixed:
+
+| Corpus | Programs | Result |
+| --- | --- | --- |
+| `--emit ir` of `examples/`, every `.b` under `test/` and `src/main.b` | 533 built, 236 refused by both | byte-identical IR |
+| Generated nested `List`, `Map`, `OrderedMap` and mixed programs at 4, 10, 12, 16 and 20 levels | 855 built, 30 refused by both | byte-identical IR |
+| Native debug builds run: `examples/` and the 182 `test/cases` programs with goldens | 263 | same exit status and stdout; one 30 s timeout under load matched on three reruns |
+| Native `--release` builds run: `examples/` | 81 | same exit status and stdout |
+| Generated programs of int, string, float, `Option`, struct, class and enum elements, interpreter against native | 167 at 255 levels | same output; at most 0.09 s CPU to emit |
+
+| Run | Result |
+| --- | --- |
+| `test/issue202.sh`: `lists` and `maps` natively at 256, lists and maps of a struct, a class and an enum at 255, IR-emission CPU for 3 → 24 and 32 → 256 levels | **passed** in 22 s, 0.6x to 10.9x for 8x the depth. The unfixed compiler **fails**: its `lists` build does not finish in 120 s, and the scaling check alone measures 3 529x. With only the `llvm_type` half, lists of a struct do not finish 24 levels in 60 s |
+| `make test-fixpoint` | **passed** in 12 s |
+| `test/issue203.sh`, `checker_width.sh`, `ci_coverage.sh`, `generic_calls.sh`, `generic_interfaces.sh`, `reflect_generics.sh`, `interpolated_types.sh`, `backend_parity.sh` | **passed** |
+| `make test-quick` / `make test-frontend` | **passed** in 248 s / 7 427 s (the machine was shared with other builds; 311 s before the rebase) |
+| Before the rebase onto `95c457e` (commit `5fb3a0c`): `make test-self-host`; `make test-core` with `BEANS_AUTOBAHN_SKIP=1`; `list_*`, `map*`, `wide_*`, `reflection*`, `reflect_perf.sh`, `panic_position_parity.sh` | **passed**: 1 288 s, 80 examples compiled and matched; 1 516 s; all passed |
+
+Found on the way, recorded and not fixed: CD-27, cubic IR emission for nested
+`Result` and `Option`-of-struct types (1.7 s at 255 levels; unchanged by this
+fix).
+
+Not run: Linux, Windows, `make test-sanitize`, the Autobahn suite and any
+candidate soak; `make test-self-host` and `make test-core` were not rerun after
+the rebase.
 
 ### Evidence required before a release verdict changes
 

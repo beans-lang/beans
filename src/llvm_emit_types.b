@@ -40,14 +40,35 @@ partial class LlvmTextEmitter {
     fn type_text(type: HirType) -> string {
         let builtin: string = llvm_type(type)
         if builtin != "" { return builtin }
+        return self.type_text_composite(type)
+    }
+
+    // type_text of a type llvm_type has already refused, so it answers ""
+    // or "void" and need not be asked again. Asking it at every level of
+    // a nested List or Map walked the rest of the chain each time (CD-24).
+    fn type_text_refused(type: HirType) -> string {
+        if canonical_hir_name(type.name) == "unit" {
+            return "void"
+        }
+        return self.type_text_composite(type)
+    }
+
+    // The part of type_text that llvm_type cannot spell alone.
+    fn type_text_composite(type: HirType) -> string {
         let name: string =
             canonical_hir_name(type.name)
+        // A List or Map level spells its element once and sizes it from
+        // that spelling. Sizing it from scratch spelt the element again, so
+        // each level of a nested List or Map of a record, class or enum
+        // doubled the work (CD-24). llvm_type refused this List, so it
+        // refused the element too.
         if name == "List" && type.args.len() == 1 {
             let element: string =
-                self.type_text(type.args[0])
+                self.type_text_refused(type.args[0])
             if element != "" && element != "void" {
                 let size: int =
-                    self.type_size(type.args[0])
+                    self.type_size_spelled(
+                        type.args[0], element)
                 if size > 0 &&
                    (size <= 8 ||
                     self.wide_inline_value(
@@ -59,12 +80,18 @@ partial class LlvmTextEmitter {
         }
         if (name == "Map" || name == "OrderedMap") &&
            type.args.len() == 2 {
+            // With a key llvm_type accepts, its refusal was the value's.
             let value: string =
-                self.type_text(type.args[1])
+                if llvm_map_key_kind(type.args[0]) >= 0 {
+                    self.type_text_refused(type.args[1])
+                } else {
+                    self.type_text(type.args[1])
+                }
             if self.map_key_kind(type.args[0]) >= 0 &&
                value != "" && value != "void" {
                 let size: int =
-                    self.type_size(type.args[1])
+                    self.type_size_spelled(
+                        type.args[1], value)
                 if size > 0 &&
                    (size <= 8 ||
                     self.wide_inline_value(
@@ -184,6 +211,21 @@ partial class LlvmTextEmitter {
     }
 
     fn type_size(type: HirType) -> int {
+        let size: int = self.type_size_by_shape(type)
+        if size != -2 { return size }
+        return self.type_size_of_text(self.type_text(type))
+    }
+
+    // type_size for a caller that already holds type_text(type).
+    fn type_size_spelled(type: HirType, text: string) -> int {
+        let size: int = self.type_size_by_shape(type)
+        if size != -2 { return size }
+        return self.type_size_of_text(text)
+    }
+
+    // The size a type's shape decides, or -2 when its LLVM spelling
+    // decides it (type_size_of_text).
+    fn type_size_by_shape(type: HirType) -> int {
         if canonical_hir_name(type.name) == "decimal" {
             return 32
         }
@@ -265,7 +307,10 @@ partial class LlvmTextEmitter {
                     self.type_size(failed),
                 alignment)
         }
-        let llvm: string = self.type_text(type)
+        return -2
+    }
+
+    fn type_size_of_text(llvm: string) -> int {
         if llvm == "i1" || llvm == "i8" { return 1 }
         if llvm == "i16" { return 2 }
         if llvm == "i32" || llvm == "float" {

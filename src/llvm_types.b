@@ -39,10 +39,12 @@ fn llvm_type(type: HirType) -> string {
        type.args.len() == 1 {
         return "ptr"
     }
-    if name == "Slice" && type.args.len() == 1 &&
-       llvm_type(type.args[0]) != "" &&
-       llvm_type(type.args[0]) != "void" {
-        return "\{ptr, i64\}"
+    // Each element type is spelled once. Asking twice per level doubled
+    // the work at every level of a nested List or Map (CD-24).
+    if name == "Slice" && type.args.len() == 1 {
+        if llvm_type_is_value(llvm_type(type.args[0])) {
+            return "\{ptr, i64\}"
+        }
     }
     // refcounted runtime handles; their operations arrive separately
     if (name == "Mutex" || name == "Channel" ||
@@ -67,15 +69,13 @@ fn llvm_type(type: HirType) -> string {
     if name == "decimal" { return "\{ i128, i64, i64 \}" }
     if name == "string" { return "ptr" }
     if name == "List" && type.args.len() == 1 &&
-       llvm_type(type.args[0]) != "" &&
-       llvm_type(type.args[0]) != "void" {
+       llvm_type_is_value(llvm_type(type.args[0])) {
         return "ptr"
     }
     if (name == "Map" || name == "OrderedMap") &&
        type.args.len() == 2 &&
        llvm_map_key_kind(type.args[0]) >= 0 &&
-       llvm_type(type.args[1]) != "" &&
-       llvm_type(type.args[1]) != "void" {
+       llvm_type_is_value(llvm_type(type.args[1])) {
         return "ptr"
     }
     if name == "Option" && type.args.len() == 1 {
@@ -89,6 +89,11 @@ fn llvm_type(type: HirType) -> string {
         return "\{ i1, {element} \}"
     }
     return ""
+}
+
+// A spelling a value can have: not unsupported, not unit.
+fn llvm_type_is_value(text: string) -> bool {
+    return text != "" && text != "void"
 }
 
 fn llvm_type_supported(type: HirType) -> bool {
