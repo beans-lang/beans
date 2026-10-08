@@ -23,8 +23,9 @@ bug-free.
 | CD-14 | hang | Checking a 6 150-deep generic type exceeds 20 s; 8 192 takes 70 s. | #203 |
 | CD-16 | sanitizer coverage | A `--release` build with IR ≥ 4 MiB is compiled by the chunked backend without `-fsanitize=`, so ASan never reaches it, the compiler itself included. | #207 |
 | CD-24 | hang | A native build of a `List` or `Map` type nested 24 deep spends 18 to 24 s writing IR; 32 deep, over 300 s. Found later, while verifying #202. | none |
-| CD-25 | invalid acceptance | A `move(...)` closure whose body branches leaves its captures usable, so two names own one value. Found later, while fixing CD-15. | none |
+| CD-25 | invalid acceptance | A `move(...)` closure whose body branches left its captures usable, so two names owned one value. Found later, while fixing CD-15. Fixed locally on branch `fix/cd25-stale-binding`; see its BUGFIX_TODO row. | none |
 | CD-26 | invalid acceptance | A closure that reads an outer binding only inside a loop or a returning branch does not borrow it, so the binding can be moved away; a native reproduction segfaults. Found later, while fixing CD-15. | none |
+| CD-28 | wrong code | A `move(...)` closure over a `var` still shares the variable: assigning it afterwards releases the value the closure owns and hands the closure the new one, and a `send fn` made this way shares it with the worker thread. Found while fixing CD-25. | none |
 
 Decisions needed from owners before the remaining red gates can turn green:
 CD-4 (adopt the 256-level nesting contract, #202), CD-11 (diagnostic context

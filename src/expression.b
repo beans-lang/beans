@@ -84,9 +84,9 @@ class ExpressionChecker {
     // Counts the points where the old checker replaced every binding with
     // a copy. A LocalBinding from an older epoch is one it would have left
     // behind, still held by a caller that looked it up before a branch.
-    // Such a binding is copied into its slot before the slot changes, so
-    // the caller's object keeps the state it had and its writes stay its
-    // own, exactly as with the copies (see write_binding_state).
+    // Such a binding is copied into its slot before the slot changes, and
+    // a caller reads and writes state through the slot's object
+    // (current_binding, write_binding_state), not the old one (CD-25).
     scope_epoch: int
     current: HirFunction
     current_constraints: List<HirGeneric>
@@ -769,24 +769,37 @@ class ExpressionChecker {
         }
     }
 
-    // Every write to a binding's state goes through here. A binding of the
-    // current epoch is the one in its slot: log what it held, then write.
-    // An older one was looked up before a branch, and by then the old
-    // checker had put a copy of every binding in the scopes, so the write
-    // reached only the caller's object. That stays so: the slot keeps the
-    // state it had. CD-24's wrong answers depend on it: a `move(...)`
-    // closure whose body branches, and an assignment from a branching
-    // value.
+    // The object in a binding's slot now. A caller that looked a binding
+    // up before a branch holds an object of an older epoch: the slot has
+    // had its own copy since, and nothing reads the old object again
+    // (CD-25). If the slot no longer holds that binding, the caller's
+    // object is all there is.
+    fn current_binding(binding: LocalBinding) -> LocalBinding {
+        if binding.epoch == self.scope_epoch { return binding }
+        match self.live_binding(binding.depth, binding.name) {
+            some(live) => {
+                if live.id == binding.id { return live }
+            }
+            none => {}
+        }
+        return binding
+    }
+
+    // Every write to a binding's state goes through here, and lands in the
+    // binding's slot: log what the slot held, then write. A write to an
+    // object of an older epoch used to reach only that object, so a
+    // `move(...)` closure whose body branched did not spend its captures,
+    // and an assignment from a branching value left the local moved
+    // (CD-25).
     fn write_binding_state(binding: LocalBinding, move_state: string,
                            borrowed: bool, borrows_owner: int) {
-        if binding.epoch == self.scope_epoch {
-            self.scope_log.push(new ScopeUndo(binding, false))
-        } else {
-            self.live_binding(binding.depth, binding.name)
+        let slot: LocalBinding = self.current_binding(binding)
+        if slot.epoch == self.scope_epoch {
+            self.scope_log.push(new ScopeUndo(slot, false))
         }
-        binding.move_state = move_state
-        binding.borrowed = borrowed
-        binding.borrows_owner = borrows_owner
+        slot.move_state = move_state
+        slot.borrowed = borrowed
+        slot.borrows_owner = borrows_owner
     }
 
     // Where the old checker set the scopes to a copy taken when the log
@@ -12476,9 +12489,10 @@ class ExpressionChecker {
         // bindings are spent, exactly as if each was passed to a move
         // parameter
         for binding: LocalBinding in moved_captures {
+            let spent: LocalBinding = self.current_binding(binding)
             self.write_binding_state(
-                binding, "moved", binding.borrowed,
-                binding.borrows_owner)
+                spent, "moved", spent.borrowed,
+                spent.borrows_owner)
         }
         return result
     }
@@ -13892,21 +13906,24 @@ class ExpressionChecker {
                 place.binding_id = binding.id
                 let value: HirNode = self.check_expression(
                     node.children[1], binding.type)
+                // the value may branch, and then the state is in the
+                // slot's object, not this one (CD-25)
+                let state: LocalBinding = self.current_binding(binding)
                 if node.value == "=" {
                     self.require_move_source(
                         node.children[1], value.type,
                         "assignment")
                     if binding.mutable {
                         self.write_binding_state(
-                            binding, "available",
-                            binding.borrowed,
-                            binding.borrows_owner)
+                            state, "available",
+                            state.borrowed,
+                            state.borrows_owner)
                     }
-                } else if binding.move_state == "moved" {
+                } else if state.move_state == "moved" {
                     self.fail(
                         target,
                         "use of moved value '{target.value}'")
-                } else if binding.move_state ==
+                } else if state.move_state ==
                           "maybe_moved" {
                     self.fail(
                         target,
