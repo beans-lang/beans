@@ -64,8 +64,10 @@ fn main() {
             let p12_ok: bool = serve_pkcs12(listener)
             io.println("tls server pem sni {pem_ok}")
             io.println("tls server pkcs12 {p12_ok}")
-            // Windows staging keeps the two-connection identity contract.
-            // tls.sh opts into the truncation test's final honest control.
+            // test/tls.sh asks for a third connection: the honest control of
+            // test/cases/tls_truncation.b, which needs a peer that really
+            // sends close_notify (#208). test/windows_native_run.sh opens
+            // only the first two and does not ask.
             if args.len() > 10 && args[10] == "clean-close" {
                 let close_ok: bool = serve_pem(listener, true)
                 io.println("tls server clean close {close_ok}")

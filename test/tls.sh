@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# std.tls end to end, against a local openssl s_server and a generated
-# certificate corpus:
+# std.tls end to end, against local Beans TLS servers, a local openssl
+# s_server and a generated certificate corpus:
 #
 #   the corpus matrix — expired, not-yet-valid, wrong-host and self-signed
 #   certificates are refused, the valid control is accepted, and the
@@ -47,9 +47,11 @@ echo "checking a TLS backend is present"
 
 echo "generating the certificate corpus"
 bash test/fixtures/tls_cert_corpus.sh "$tmp/certs" >/dev/null
-# LibreSSL defaults to RC2-40 certificate bags, which OpenSSL 3 does not
-# enable. Its PBES2 encoding also fails SecPKCS12Import. Use the common
-# PKCS12 test-fixture format accepted by both backends.
+# The PKCS12 encoding is pinned so the fixture does not depend on which
+# `openssl` wrote it. LibreSSL's default (RC2-40 certificate bags) needs
+# OpenSSL 3's legacy provider, so the OpenSSL lane below cannot read it;
+# PBE-SHA1-3DES with a SHA1 MAC is read by LibreSSL, OpenSSL 3 and the macOS
+# Security framework alike.
 openssl pkcs12 -export -out "$tmp/server.p12" \
     -inkey "$tmp/certs/valid.key" -in "$tmp/certs/valid.crt" \
     -certfile "$tmp/certs/ca.crt" -passout pass:beans \
@@ -171,9 +173,12 @@ grep -q '^tls server client true$' "$tmp/tls_server_client.out" || {
     exit 1
 }
 
-# LibreSSL's s_server -www closes without close_notify. Its EOF is rightly
-# reported as truncation, so use the Beans server's final PEM exchange for
-# the honest control. Keep the raw proxy cuts against s_server unchanged.
+# #208: the honest control needs a peer that sends close_notify, and
+# LibreSSL's `s_server -www` closes without one; the Beans client then rightly
+# reports truncation. So the control is the Beans server's third connection,
+# which runs on every host whatever `openssl` is first on PATH. The two cuts
+# still go through the proxy to s_server: the proxy drops the connection
+# itself, so how s_server would have closed it never reaches the client.
 echo "checking truncation is an error, not an end"
 start_server valid
 trunc_port=$PORT
