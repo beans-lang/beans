@@ -403,24 +403,38 @@ fn main() {
   trailing-dot or leading-dot style. `..` stays a range operator and never
   continues a line. `...` is one token and means only the C variadic tail in
   an `extern "C" fn` signature.
-- An `else` must follow the preceding branch's `}` on the same source line,
-  as in `} else {`. This applies to statement and value forms, including
-  `} else if ...` chains; a newline inside an intervening comment also breaks
-  the rule.
-- Comments: `//` line, `/* */` block (nesting allowed).
+- `else` may follow the branch's `}` on the same line, as in `} else {`, or
+  begin the next line. No statement begins with `else`, so the newline after
+  `}` does not end the `if`; this holds for statement and value forms and for
+  `else if` chains. `} else {` is the house style, and the compiler and
+  standard library are written that way; the other layout is accepted, not
+  warned about.
+- Comments: `//` line, `/* */` block (nesting allowed). A block comment still
+  open at the end of the file is one error at its opening `/*`.
 - Number literals can use `_` separators: `1_000_000`. Hex `0xFF`, binary `0b1010`.
   Separators in digit sequences are ignored, including doubled, trailing, and
   prefix-adjacent separators: `1__0`, `1_`, and `0x_F` mean 10, 1, and 15.
   A hex or binary prefix still requires at least one actual digit; `0x`,
-  `0b`, `0x_`, and `0b_` are errors.
+  `0b`, `0x_`, and `0b_` are errors. An exponent's digits take no
+  separators: `1e1_0` is refused.
 - Conditions do not need parentheses: `if x > 3 { }` is the preferred style,
   and `if (x > 3) { }` is also accepted. Braces are always required.
-- A leading UTF-8 byte-order mark is not skipped. Its bytes are refused as
-  unexpected source bytes, beginning with `unexpected byte 239` at 1:1.
+- Outside strings and comments, source text is ASCII. Any other character is
+  refused where it appears, as one error that names it: `unexpected character
+  '$'`, or `unexpected character 'é' (U+00E9)` for a UTF-8 character. A byte
+  that is not UTF-8 text, or a control byte, is `unexpected byte 0x00`.
+- A leading UTF-8 byte-order mark is not skipped: it is refused at 1:1 as
+  `unexpected byte-order mark (U+FEFF)`.
 
 ## Strings
 
 - `"..."`, immutable, UTF-8.
+- An ordinary literal ends on the line it starts. A `"` still open at the end
+  of its line is one error, `string not closed before end of line`, at that
+  quote, and the next line is read as code of its own. When the next line
+  also leaves a string open (`"ab` newline `cd"`), that is the same mistake
+  and is not reported again. Use `\n` or a raw literal for text that spans
+  lines.
 - Interpolation with `{}`: `"hi {name}, total {price * (qty as decimal)}"`.
 - Format specs ride after a `:` in the braces: `{x:8}` pads to width 8 (right-aligned),
   `{x:-8}` left-aligns, `{pi:.2}` fixes decimals (float/decimal only), `{pi:8.2}` both.
@@ -2555,8 +2569,11 @@ No `return` in there — and that's on purpose, not an inconsistency. `return` a
 
 `match` works the same way: `pattern => expression` in value position, and arms can pattern-match on values, variants, ranges, `_`:
 
-A comma may be omitted after an arm that ends at a newline. A trailing arm
-comma before `}` is also allowed.
+Commas between arms are optional: an arm ends where its expression or block
+ends, at a newline or before the next pattern (`some(v) => v none => 0`). A
+trailing comma before `}` is allowed. Write the comma when the next pattern
+starts with `-`, which would otherwise continue the expression as a
+subtraction.
 
 ```
 match code {

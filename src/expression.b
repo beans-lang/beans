@@ -7350,9 +7350,26 @@ class ExpressionChecker {
         let left: HirNode =
             self.check_expression(
                 node.children[0], operand_expected)
+        let hint: HirType =
+            if hir_already_refused(left.type) { no_hir_type() } else { left.type }
+        let right_errors: int = self.errors.len()
         let right: HirNode =
-            self.check_expression(node.children[1],
-                if hir_already_refused(left.type) { no_hir_type() } else { left.type })
+            self.check_expression(node.children[1], hint)
+        // The left type is a hint that gives a bare literal on the right its
+        // type (`x + 1` with `x: u8`). When the right side simply has another
+        // type, the operator rule below says why in its own terms ("'+' is
+        // not defined for string", "needs matching numbers"), so the plain
+        // mismatch the hint produced is dropped rather than reported first.
+        if self.errors.len() == right_errors + 1 &&
+           !hir_already_refused(right.type) {
+            let mismatch: Diagnostic = self.errors[right_errors]
+            if mismatch.line == node.children[1].line &&
+               mismatch.col == node.children[1].col &&
+               mismatch.message ==
+                   "expected {render_hir_type(hint)}, got {render_hir_type(right.type)}" {
+                self.errors.pop()
+            }
+        }
         if self.errors.len() > errors_before ||
            hir_already_refused(left.type) || hir_already_refused(right.type) {
             return self.make_node(node, "error", node.value, poison_hir_type())

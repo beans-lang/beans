@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# #206: enforce the existing else-line contract and pin settled spec probes.
+# #206: the settled spec probes (spec/SYNTAX.md, Lexical, Strings, Generics,
+# match), each pinned by what the compiler prints and its exit status.
+#
+# `else` may begin the line after `}`: no statement starts with `else`, so
+# the layout is unambiguous, and the sibling packages and older programs
+# are written that way. `} else {` stays the house style.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -7,87 +12,77 @@ compiler=${BEANSC:-./build/beansc}
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-issue206.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
-reject_else() {
-    local name=$1 line=$2 col=$3 mode status
-    for mode in parse ast check run; do
-        status=0
-        "$compiler" "$mode" "$tmp/$name.b" >"$tmp/$name.$mode" 2>&1 || status=$?
-        if [ "$status" -ne 1 ] ||
-           ! grep -Fq ":$line:$col: error: else must follow '}' on the same line" "$tmp/$name.$mode" ||
-           [ "$(grep -c ': error: ' "$tmp/$name.$mode")" -ne 1 ]; then
-            echo "$name/$mode: expected one located else-line error and exit 1, got $status" >&2
-            cat "$tmp/$name.$mode" >&2
-            exit 1
-        fi
-        if [ "$mode" = ast ] && ! grep -Fq '(let "kept"' "$tmp/$name.$mode"; then
-            echo "$name: following declaration was lost during recovery" >&2
+# Same output from the interpreter and a native build, after a clean check.
+run_both() {
+    local name=$1 mode
+    for mode in lex parse ast check; do
+        if ! "$compiler" "$mode" "$tmp/$name.b" >"$tmp/$name.$mode" 2>&1; then
+            echo "$name: 'beansc $mode' refused a valid program" >&2
             cat "$tmp/$name.$mode" >&2
             exit 1
         fi
     done
+    "$compiler" run "$tmp/$name.b" >"$tmp/$name.interp"
+    diff -u "$tmp/$name.expected" "$tmp/$name.interp"
+    "$compiler" build "$tmp/$name.b" -o "$tmp/$name.native" >/dev/null
+    "$tmp/$name.native" >"$tmp/$name.native.out"
+    diff -u "$tmp/$name.expected" "$tmp/$name.native.out"
 }
 
-cat >"$tmp/statement.b" <<'BEANS'
+# Exactly one error, at the given place, with the given text, and exit 1.
+reject_once() {
+    local name=$1 mode=$2 where=$3 message=$4 status=0
+    "$compiler" "$mode" "$tmp/$name.b" >"$tmp/$name.$mode" 2>&1 || status=$?
+    if [ "$status" -ne 1 ] ||
+       ! grep -Fq "$name.b:$where: error: $message" "$tmp/$name.$mode" ||
+       [ "$(grep -c ': error: ' "$tmp/$name.$mode")" -ne 1 ]; then
+        echo "$name/$mode: expected one '$message' at $where and exit 1, got $status" >&2
+        cat "$tmp/$name.$mode" >&2
+        exit 1
+    fi
+}
+
+cat >"$tmp/else_layout.b" <<'BEANS'
+import std.io
+
 fn main() {
-    if true {
+    if false {
+        io.println("wrong")
     }
     else {
+        io.println("statement")
     }
-    let kept: int = 7
+    if false { io.println("wrong") }
+    else if true { io.println("chain") }
+    else { io.println("wrong") }
+    let value: int = if false { 1 }
+        else if false { 2 }
+        else { 3 }
+    io.println(value)
+    if false { } /* a comment that
+    spans lines */ else { io.println("comment") }
+    if false { } else
+    { io.println("brace") }
 }
 BEANS
-reject_else statement 4 5
+cat >"$tmp/else_layout.expected" <<'OUT'
+statement
+chain
+3
+comment
+brace
+OUT
+run_both else_layout
+# CRLF line ends are the same layout.
+sed 's/$/\r/' "$tmp/else_layout.b" >"$tmp/else_crlf.b"
+cp "$tmp/else_layout.expected" "$tmp/else_crlf.expected"
+run_both else_crlf
 
-cat >"$tmp/value.b" <<'BEANS'
-fn main() {
-    let x: int = if true { 1 }
-    else { 2 }
-    let kept: int = 7
-}
-BEANS
-reject_else value 3 5
+# A dangling `else` with no `if` before it is still one located error.
+printf 'fn main() {\n    let x: int = 1\n    else { }\n    let kept: int = x\n}\n' >"$tmp/else_dangling.b"
+reject_once else_dangling check 3:5 'expected expression'
 
-cat >"$tmp/chain.b" <<'BEANS'
-fn main() {
-    if true { }
-    else if false { } else { }
-    let kept: int = 7
-}
-BEANS
-reject_else chain 3 5
-
-cat >"$tmp/value-chain.b" <<'BEANS'
-fn main() {
-    let x: int = if true { 1 }
-    else if false { 2 } else { 3 }
-    let kept: int = 7
-}
-BEANS
-reject_else value-chain 3 5
-
-cat >"$tmp/comment.b" <<'BEANS'
-fn main() {
-    if true { } /* newline inside a comment
-    */ else { }
-    let kept: int = 7
-}
-BEANS
-reject_else comment 3 8
-
-cat >"$tmp/value-comment.b" <<'BEANS'
-fn main() {
-    let x: int = if true { 1 } /* newline inside a comment
-    */ else { 2 }
-    let kept: int = 7
-}
-BEANS
-reject_else value-comment 3 8
-
-# CRLF still records the actual else token's line.
-sed 's/$/\r/' "$tmp/statement.b" >"$tmp/crlf.b"
-reject_else crlf 4 5
-
-cat >"$tmp/issue206-valid-policy.b" <<'BEANS'
+cat >"$tmp/policy.b" <<'BEANS'
 import std.io
 
 fn id<T>(v: T) -> T { return v }
@@ -102,6 +97,8 @@ fn main() {
         1 => 10
         _ => 0
     }
+    let inline: Option<int> = some(5)
+    let unwrapped: int = match inline { some(v) => v none => 0 }
     let v: int = 7
     let continued: int = (1 +
         2)
@@ -112,22 +109,18 @@ fn main() {
     io.println(id<int,>(7))
     io.println(empty())
     io.println(matched)
+    io.println(unwrapped)
     io.println("[{v:}]")
     io.println("[{v}]")
     io.println(continued)
     io.println(1 == 1 == true)
     io.println(6 & 3 == 2)
     if (false) { io.println("wrong") } else if (true) {
-        io.println("chain")
-    } else { io.println("wrong") }
-    let selected: int = if false { 0 } else if true { 1 } else { 2 }
-    io.println(selected)
-    if false { } /* same line */ else { io.println("comment") }
-    if false { } else
-    { io.println("brace") }
+        io.println("parenthesized")
+    }
 }
 BEANS
-cat >"$tmp/valid.expected" <<'OUT'
+cat >"$tmp/policy.expected" <<'OUT'
 10
 1
 15
@@ -135,23 +128,30 @@ cat >"$tmp/valid.expected" <<'OUT'
 7
 4
 0
+5
 [7]
 [7]
 3
 true
 true
-chain
-1
-comment
-brace
+parenthesized
 OUT
-for mode in lex parse ast check; do
-    "$compiler" "$mode" "$tmp/issue206-valid-policy.b" >"$tmp/valid.$mode"
-done
-"$compiler" run "$tmp/issue206-valid-policy.b" >"$tmp/valid.interp"
-diff -u "$tmp/valid.expected" "$tmp/valid.interp"
-"$compiler" build "$tmp/issue206-valid-policy.b" -o "$tmp/valid.native" >/dev/null
-"$tmp/valid.native" >"$tmp/valid.native.out"
-diff -u "$tmp/valid.expected" "$tmp/valid.native.out"
+run_both policy
 
-echo 'ok #206: located else-line refusals, comment/CRLF recovery and settled syntax probe parity'
+# The refusals the spec now states, each as one located error.
+printf 'fn main() {\n    let x: int = (1\n        + 2)\n}\n' >"$tmp/paren_newline.b"
+"$compiler" check "$tmp/paren_newline.b" >"$tmp/paren_newline.check" 2>&1 && {
+    echo "(1 newline + 2) was accepted" >&2; exit 1; }
+grep -Fq "paren_newline.b:2:20: error: expected ')'" "$tmp/paren_newline.check" || {
+    echo "(1 newline + 2): the primary error should sit where the newline ended (1" >&2
+    cat "$tmp/paren_newline.check" >&2; exit 1; }
+printf 'fn main() {\n    let x: float = 1e1_0\n}\n' >"$tmp/exponent_separator.b"
+reject_once exponent_separator check 2:23 'expected end of statement'
+printf '\357\273\277fn main() {\n}\n' >"$tmp/bom.b"
+for mode in lex parse check; do
+    reject_once bom "$mode" 1:1 'unexpected byte-order mark (U+FEFF)'
+done
+printf 'fn id<T>(v: T) -> T { return v }\nfn main() {\n    let x: int = id<>(3)\n}\n' >"$tmp/empty_args.b"
+reject_once empty_args parse 3:20 "expected a type argument after '<'"
+
+echo 'ok #206: else after a newline, settled syntax probes and their refusals, interpreter/native parity'

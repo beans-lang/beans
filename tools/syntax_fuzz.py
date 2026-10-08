@@ -131,8 +131,12 @@ def valid_cases():
     yield case("generic_params_empty", "fn f<>() -> int { return 4 }\n" + main_body("io.println(f())"),
                "generics", "generics", output="4\n")
     yield case("match_arms_no_commas", main_body(
-        "let x: int = 2\nlet y: int = match x {\n    1 => 10\n    _ => 0\n}\nio.println(y)"),
-        "match", "if-and-match-as-values", output="0\n")
+        "let x: int = 2\nlet y: int = match x {\n    1 => 10\n    _ => 0\n}\nlet z: int = match x { 2 => 20 _ => 0 }\nio.println(y)\nio.println(z)"),
+        "match", "if-and-match-as-values", output="0\n20\n")
+    # `else` may begin the line after `}`, in statement and value forms.
+    yield case("newline_else_own_line", main_body(
+        "if false {\n    io.println(\"a\")\n}\nelse {\n    io.println(\"b\")\n}\nlet x: int = if false { 1 }\n    else if false { 2 }\n    else { 3 }\nio.println(x)"),
+        "newline-rules", "lexical", output="b\n3\n")
     yield case("format_empty_spec", main_body('let v: int = 7\nio.println("[{v:}]")\nio.println("[{v}]")'),
                "interpolation", "strings", output="[7]\n[7]\n")
     yield case("if_parenthesized_condition", main_body('if (true) { io.println("condition") }'),
@@ -195,6 +199,13 @@ def reject_cases():
                "string-delimiters", "strings", "reject", modes=LEX,
                rejection=rejection(3, "(?i)not closed|unterminated|string", col=21),
                repair={"main.b": main_body('let s: string = "ab\\ncd"')})
+    # An open string ends with its line: the next line is code, not a guess
+    # at the literal's other half, so a call with its own quotes survives.
+    yield case("string_unterminated_next_line_kept", main_body('let s: string = "oops\nio.println("hello")\nlet kept: int = 5'),
+               "string-delimiters", "strings", "reject", modes=["lex", "parse", "ast", "check"],
+               rejection=rejection(3, "not closed before end of line", col=21),
+               ast_contains=['(field "println"', '(literal "\\"hello\\"")', '(let "kept"'],
+               repair={"main.b": main_body('let s: string = "oops"\nio.println("hello")\nlet kept: int = 5')})
     yield case("string_raw_unterminated", main_body('let s: string = r#"abc"'),
                "string-delimiters", "raw-string-literals", "reject", modes=LEX,
                rejection=rejection(3, "(?i)raw string|never closed|not closed", col=21),
@@ -251,6 +262,13 @@ def reject_cases():
                "generic-delimiters", "types", "reject",
                rejection=rejection(3, "", col=31),
                repair={"main.b": main_body("let x: Map<int, List<int>> = {}")})
+    # A stray close in a signature is reported where the type ends, not as
+    # what the declaration expected next.
+    yield case("extra_generic_close_signature",
+               "fn f(xs: List<int>>) -> List<int> {\n    return []\n}\nfn main() {}\n",
+               "generic-delimiters", "types", "reject",
+               rejection=rejection(1, "unexpected '>'", col=19),
+               repair={"main.b": "fn f(xs: List<int>) -> List<int> {\n    return []\n}\nfn main() {}\n"})
     yield case("generic_empty_args", main_body("let x: List<> = []"),
                "generic-delimiters", "types", "reject", modes=CHECK, rejection=rejection(3, ""))
     yield case("generic_double_open", main_body("let x: List<<int> = []"),
@@ -275,16 +293,12 @@ def reject_cases():
     yield case("newline_before_operator", main_body("let x: int = 1\n    + 2"),
                "newline-rules", "lexical", "reject", rejection=rejection(4, "expected expression", col=9),
                repair={"main.b": main_body("let x: int = 1 +\n    2")})
-    yield case("newline_else_own_line", "fn main() {\n    if true {\n    }\n    else {\n    }\n}\n",
-               "newline-rules", "lexical", "reject",
-               rejection=rejection(4, "else must follow '}' on the same line", col=5),
-               repair={"main.b": "fn main() {\n    if true {\n    } else {\n    }\n}\n"})
     yield case("newline_inside_parentheses", main_body("let x: int = (1\n    + 2)"),
                "newline-rules", "lexical", "reject",
                rejection={"file": "main.b", "line": 3, "col": 20, "message": "expected '\\)'"},
                repair={"main.b": main_body("let x: int = (1 +\n    2)")})
     yield case("source_bom", "\ufefffn main() {\n}\n", "lexical-edges", "lexical", "reject", modes=LEX,
-               rejection=rejection(1, "unexpected byte 239", col=1),
+               rejection=rejection(1, "unexpected byte-order mark \\(U\\+FEFF\\)", col=1),
                repair={"main.b": "fn main() {\n}\n"})
     # Generics (spec Generics / Functions).
     yield case("generic_too_many_args", "fn id<T>(x: T) -> T { return x }\n" + main_body("let x: int = id<int, int>(1)"),

@@ -66,9 +66,10 @@ class Parser {
     }
 
     fn current() -> Token {
-        // Splitting `>>` for a generic close leaves one real source byte.
-        // Keep that close visible to every grammar consumer, not only the
-        // next type: otherwise an unmatched `>` vanishes after `List<int>>`.
+        // A `>>` that closed one type list leaves its second byte for the
+        // enclosing list (`List<List<int>>`). take_type_close only splits
+        // when such a list is open, and that list's own close takes this
+        // token next, so no other grammar rule ever sees it.
         if self.pending_type_closes > 0 {
             let split: Token = self.tokens[self.pos - 1]
             return Token {
@@ -144,7 +145,19 @@ class Parser {
         }
         if self.match_token(">>") {
             self.close_delimiter("<")
-            self.pending_type_closes = 1
+            // The second byte closes the enclosing type list. With none open
+            // (`List<int>>`, `fn f(x: List<int>>)`) it is a stray close:
+            // report it here, where the type ends, not as whatever the
+            // surrounding declaration expected next.
+            let split: Token = self.tokens[self.pos - 1]
+            if self.delimiters.len() != 0 &&
+               self.delimiters[self.delimiters.len() - 1].kind == "<" {
+                self.pending_type_closes = 1
+            } else {
+                self.fail(Token {
+                    kind: ">", text: ">", line: split.line, col: split.col + 1,
+                }, "unexpected '>'")
+            }
             return
         }
         self.fail(self.current(), "expected '>'")
@@ -1043,6 +1056,15 @@ class Parser {
         self.expect("\{", "expected '\{'")
         self.skip_newlines()
         for !self.check("\}") && !self.at_end() {
+            // A declaration keyword cannot begin a member: this body was
+            // never closed. Leave the keyword to the declaration it starts.
+            if parser_declaration_start(self.current().kind) { break }
+            // Each member is its own unit of recovery, like a statement:
+            // its first error is reported, and its skip stays inside it.
+            self.statement_failed = false
+            let member_start: int = self.pos
+            let saved_depth: int = self.statement_delimiter_depth
+            self.statement_delimiter_depth = self.delimiters.len()
             let annotations: List<AstNode> = self.parse_annotations()
             var modifier: string = ""
             var reading_modifiers: bool = true
@@ -1167,6 +1189,18 @@ class Parser {
                 declaration.add(field)
                 self.finish_statement()
             }
+            // A word that only starts a statement (`let`, `return`, ...)
+            // was reported above and left in place; skip it with the rest
+            // of its line so the loop always moves on.
+            if self.pos == member_start && !self.at_end() {
+                self.advance()
+                self.finish_statement()
+            }
+            // Like a statement, a member owns the brackets it opened.
+            for self.delimiters.len() > self.statement_delimiter_depth {
+                self.delimiters.pop()
+            }
+            self.statement_delimiter_depth = saved_depth
             self.skip_newlines()
         }
         let closed: bool = self.check("\}")
@@ -1361,6 +1395,12 @@ class Parser {
     }
 
     fn parse_statement_body() -> AstNode {
+        if self.check("pub") {
+            // Visibility belongs to a module's declarations; a local is
+            // never exported. Say so once, then parse what it decorated.
+            self.fail(self.advance(),
+                      "'pub' applies only to module-level declarations")
+        }
         if self.check("let") || self.check("var") {
             return self.parse_local()
         }
@@ -1484,14 +1524,14 @@ class Parser {
                 return self.node("error", "", start)
             }
             arms.push(arm)
-            let branch_end_line: int = self.tokens[self.pos - 1].line
+            // `else` may start the line after the branch's `}`: no statement
+            // can begin with `else`, so the newline cannot end the `if`. A
+            // missing `else` in the value form is reported once, and the
+            // token after the branch is left for the statement it starts.
             self.skip_newlines()
             if value && !self.check("else") {
                 self.fail(self.current(), "expected else")
                 break
-            }
-            if self.check("else") && self.current().line != branch_end_line {
-                self.fail(self.current(), "else must follow '}' on the same line")
             }
             if !self.match_token("else") { break }
             self.skip_newlines()
@@ -2316,4 +2356,12 @@ fn parser_statement_start(kind: string) -> bool {
            kind == "union" || kind == "interface" || kind == "enum" ||
            kind == "import" || kind == "extern" || kind == "defer" ||
            kind == "unsafe" || kind == "static" || kind == "override"
+}
+
+// Keywords that begin a module-level declaration and never a member of a
+// type body, so meeting one inside a body means the body was not closed.
+fn parser_declaration_start(kind: string) -> bool {
+    return kind == "class" || kind == "struct" || kind == "union" ||
+           kind == "interface" || kind == "enum" || kind == "import" ||
+           kind == "extern"
 }

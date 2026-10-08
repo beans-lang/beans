@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# #201: invalid bytes and digitless prefixes must fail in the lexer; a
-# surplus generic close must stay visible after the parser splits `>>`.
+# #201: invalid bytes and digitless prefixes fail in the lexer, and a surplus
+# generic close is one error where its type ends. Each refusal is exactly one
+# located error with exit 1; the valid forms (nested closes, shifts) run the
+# same under the interpreter and a native build.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -12,8 +14,9 @@ reject() {
     local mode=$1 source=$2 expected=$3 status
     status=0
     "$compiler" "$mode" "$source" >"$tmp/diagnostics" 2>&1 || status=$?
-    if [ "$status" -ne 1 ] || ! grep -Fq "$expected" "$tmp/diagnostics"; then
-        echo "$mode $source: expected exit 1 and '$expected', got $status" >&2
+    if [ "$status" -ne 1 ] || ! grep -Fq "$expected" "$tmp/diagnostics" ||
+       [ "$(grep -c ': error: ' "$tmp/diagnostics")" -ne 1 ]; then
+        echo "$mode $source: expected exit 1 and only '$expected', got $status" >&2
         cat "$tmp/diagnostics" >&2
         exit 1
     fi
@@ -32,9 +35,19 @@ done
 
 printf 'fn main() {\n    let x: List<int>> = []\n}\n' >"$tmp/extra.b"
 printf 'fn main() {\n    let x: Map<int, List<int>>> = {}\n}\n' >"$tmp/nested-extra.b"
+# The same stray close in a signature, a field and a function type: one
+# error where the type ends, not what the declaration expected next.
+printf 'fn f() -> List<int>> {\n    return []\n}\nfn main() {}\n' >"$tmp/result-extra.b"
+printf 'fn f(xs: List<int>>) {\n}\nfn main() {}\n' >"$tmp/param-extra.b"
+printf 'struct S {\n    xs: List<int>>\n    y: int\n}\nfn main() {}\n' >"$tmp/field-extra.b"
+printf 'fn main() {\n    let f: fn(List<int>>) -> int = g\n}\n' >"$tmp/fn-type-extra.b"
 for mode in parse ast check; do
     reject "$mode" "$tmp/extra.b" ":2:21: error: unexpected '>'"
     reject "$mode" "$tmp/nested-extra.b" ":2:31: error: unexpected '>'"
+    reject "$mode" "$tmp/result-extra.b" ":1:20: error: unexpected '>'"
+    reject "$mode" "$tmp/param-extra.b" ":1:19: error: unexpected '>'"
+    reject "$mode" "$tmp/field-extra.b" ":2:18: error: unexpected '>'"
+    reject "$mode" "$tmp/fn-type-extra.b" ":2:24: error: unexpected '>'"
 done
 
 printf 'fn main() {\n    let x: int = 1 $ 2\n}\n' >"$tmp/stray.b"
@@ -42,7 +55,10 @@ for mode in lex parse ast check; do
     reject "$mode" "$tmp/stray.b" ":2:20: error: unexpected character '$'"
 done
 printf 'fn main() {\n    let x: int = 1\000\n}\n' >"$tmp/nul.b"
-reject lex "$tmp/nul.b" ':2:19: error: unexpected byte 0'
+reject lex "$tmp/nul.b" ':2:19: error: unexpected byte 0x00'
+# A UTF-8 character outside a string is one error that names it.
+printf 'fn main() {\n    let caf\303\251: int = 1\n}\n' >"$tmp/utf8.b"
+reject check "$tmp/utf8.b" ":2:12: error: unexpected character '$(printf '\303\251')' (U+00E9)"
 
 cat >"$tmp/issue201-valid.b" <<'BEANS'
 import std.io

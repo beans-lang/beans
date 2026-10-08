@@ -34,10 +34,14 @@ fn starts_loop_condition(kind: string) -> bool {
            kind == "self" || kind == "!"
 }
 
+// `lex_error` stands where a literal or a character failed to lex, and ends a
+// line the way the literal would have: the next line stays its own statement
+// rather than being swallowed by the recovery of the broken one.
 fn ends_statement(kind: string) -> bool {
     return kind == "ident" || kind == "int" || kind == "float" ||
            kind == "string" || kind == "return" || kind == "break" ||
            kind == "continue" || kind == "self" || kind == "true" ||
            kind == "false" || kind == ")" || kind == "]" ||
-           kind == "}" || kind == "?" || kind == ">" || kind == ">>"
+           kind == "}" || kind == "?" || kind == ">" || kind == ">>" ||
+           kind == "lex_error"
 }

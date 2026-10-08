@@ -18,6 +18,19 @@ fn is_ident_byte(value: int) -> bool {
     return is_alpha(value) || is_digit(value)
 }
 
+// Upper-case hex of `value`, zero-padded to at least `width` digits.
+fn lexer_hex(value: int, width: int) -> string {
+    let digits: string = "0123456789ABCDEF"
+    var text: string = ""
+    var rest: int = value
+    for rest > 0 || text.len() < width {
+        let digit: int = rest & 15
+        text = "{digits.slice(digit, digit + 1)}{text}"
+        rest = rest >> 4
+    }
+    return text
+}
+
 class Lexer {
     source: string
     pos: int
@@ -26,7 +39,14 @@ class Lexer {
     last_kind: string
     have_token: bool
     errors: List<Diagnostic>
+    // True once a lexical error ran to the end of the source (an
+    // unterminated block comment, raw string or last-line string). The
+    // parser then reports nothing at EOF: every missing closer there is a
+    // consequence of that one error.
     source_ended_in_error: bool
+    // The line of the last reported string that ran to the end of its line,
+    // or 0. See scan_string.
+    open_string_line: int
 
     fn init(source: string) {
         self.source = source
@@ -37,6 +57,7 @@ class Lexer {
         self.have_token = false
         self.errors = []
         self.source_ended_in_error = false
+        self.open_string_line = 0
     }
 
     fn at_end() -> bool {
@@ -257,29 +278,10 @@ class Lexer {
         var ended_at_line: bool = false
         for !self.at_end() {
             let value: int = self.peek()
+            // An ordinary string ends with its line, closed or not, so the
+            // next line is always lexed as code of its own.
             if value == 10 {
-                self.error_at(
-                    line, col,
-                    "string not closed before end of line")
                 ended_at_line = true
-                // A continuation such as `cd"` on the next line belongs to
-                // this broken token, not to a second unterminated string.
-                // Keep a following declaration intact when no closer exists.
-                var tail: int = self.pos + 1
-                for tail < self.source.len() &&
-                    self.source.byte_at(tail) != 10 &&
-                    self.source.byte_at(tail) != 34 {
-                    tail += 1
-                }
-                if tail < self.source.len() && self.source.byte_at(tail) == 34 {
-                    let next_line: string = self.source.slice(self.pos + 1, tail).trim()
-                    if !next_line.starts_with("let ") &&
-                       !next_line.starts_with("var ") &&
-                       !next_line.starts_with("return ") &&
-                       !next_line.starts_with("fn ") {
-                        for self.pos <= tail { self.advance() }
-                    }
-                }
                 break
             }
             // A raw literal nested in an interpolation is bytes: its braces
@@ -325,11 +327,27 @@ class Lexer {
                 break
             }
         }
-        if !closed && !ended_at_line {
-            self.error_at(line, col, "string never closed")
-            self.source_ended_in_error = true
+        if !closed {
+            // When the line above also left a string open, this one is the
+            // second half of that literal (`"ab` newline `cd"`): one
+            // mistake, reported once, at its opening quote.
+            if self.open_string_line > 0 &&
+               self.open_string_line == line - 1 {
+                self.open_string_line = 0
+            } else {
+                self.error_at(line, col, if ended_at_line {
+                    "string not closed before end of line"
+                } else {
+                    "string never closed"
+                })
+                self.open_string_line = line
+            }
+            if !ended_at_line { self.source_ended_in_error = true }
         }
-        self.add(inout out, "string", from, line, col)
+        // A broken literal is a lexical error token: the parser treats the
+        // statement holding it as already reported and adds nothing to it.
+        self.add(inout out, if closed { "string" } else { "lex_error" },
+                 from, line, col)
     }
 
     // `r"…"` and `r#"…"#`: the body is bytes, not syntax. Nothing in it is
@@ -395,6 +413,8 @@ class Lexer {
             self.error_at(
                 line, col,
                 "raw string never closed — it ends at {closer}")
+            self.add(inout out, "lex_error", from, line, col)
+            return
         }
         self.add(inout out, "string", from, line, col)
     }
@@ -424,24 +444,46 @@ class Lexer {
         }
     }
 
+    // Outside strings and comments, source text is ASCII. `first` has just
+    // been consumed; a well-formed UTF-8 character is consumed whole, so it
+    // is one error, named by its codepoint rather than by its bytes.
+    fn unexpected_source_character(first: int) -> string {
+        if first >= 33 && first <= 126 {
+            return "unexpected character '{self.source.slice(self.pos - 1, self.pos)}'"
+        }
+        var length: int = 0
+        var codepoint: int = 0
+        if first >= 194 && first <= 223 {
+            length = 2
+            codepoint = first & 31
+        } else if first >= 224 && first <= 239 {
+            length = 3
+            codepoint = first & 15
+        } else if first >= 240 && first <= 244 {
+            length = 4
+            codepoint = first & 7
+        }
+        var index: int = 1
+        for index < length &&
+            self.peek() >= 128 && self.peek() <= 191 {
+            codepoint = (codepoint << 6) | (self.advance() & 63)
+            index += 1
+        }
+        if length == 0 || index < length {
+            return "unexpected byte 0x{lexer_hex(first, 2)}"
+        }
+        let start: int = self.pos - length
+        if codepoint == 65279 && start == 0 {
+            return "unexpected byte-order mark (U+FEFF) — save the file as UTF-8 without one"
+        }
+        return "unexpected character '{self.source.slice(start, self.pos)}' (U+{lexer_hex(codepoint, 4)}) — outside strings and comments, Beans source is ASCII"
+    }
+
     fn punctuation(inout out: List<Token>, from: int, line: int, col: int) {
         let value: int = self.advance()
         var kind: string = self.source.slice(from, self.pos)
         if !"()[]\{\}:;,.@+-*/%=!<>?&|^~".contains(kind) {
-            if value < 32 || value >= 127 {
-                self.error_at(line, col, "unexpected byte {value}")
-                // Identifiers are ASCII. An unsupported UTF-8 character is
-                // one offending source character, not one error per byte.
-                if value >= 194 && value <= 244 {
-                    var remaining: int = if value < 224 { 1 } else if value < 240 { 2 } else { 3 }
-                    for remaining > 0 && self.peek() >= 128 && self.peek() <= 191 {
-                        self.advance()
-                        remaining -= 1
-                    }
-                }
-            } else {
-                self.error_at(line, col, "unexpected character '{kind}'")
-            }
+            self.error_at(line, col, self.unexpected_source_character(value))
             self.add(inout out, "lex_error", from, line, col)
             return
         }
