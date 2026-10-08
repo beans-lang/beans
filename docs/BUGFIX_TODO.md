@@ -146,9 +146,10 @@ or replace the three-host candidate campaign.
 | [#207](https://github.com/beans-lang/beans/issues/207) | CD-16 | Fixed and verified on macOS ARM64: `compiler_campaign.py --sanitize-only` passes all nine steps, `compiler-asan-fault-reach` (chunked) included, and `make test-sanitize` passes. The new chunked leg fails with the driver change reverted and with a chunk cache key that ignores the flags. On Linux no build is chunked (CD-22), so there the leg reports itself skipped (Ubuntu 24.04 arm64 container). |
 | [#208](https://github.com/beans-lang/beans/issues/208) | CD-18 | Fixed and verified: `test/tls.sh` passes on macOS ARM64 with LibreSSL 3.3.6 and with OpenSSL 3.6.3 first on `PATH`, and in an Ubuntu 24.04 arm64 container (OpenSSL 3.0.13). The other core scripts that run `openssl` (`http2.sh`, `websocket.sh`) pass with LibreSSL. Windows TLS staging is unchanged and was not run. |
 
-**Release remains blocked:** the final combined local gates are pending, and
-no new Linux/macOS two-hour candidate soak, Windows deterministic replay, or
-complete release workflow has run for the changed compiler.
+**Combined local gates passed** on macOS ARM64, 2026-10-08, at `c29e72b` (all five
+fix branches merged; bootstrap: the 0.1.51 release binary): `make test-compiler-discovery` (325 cases, 325 passed, 0 known, 0 new, 0 changed, 0 stale; `known_failures.json` is empty), `test/issue201.sh`, `issue202.sh`, `issue202_lsp.sh`, `issue203.sh`, `issue204.sh`, `issue206.sh`, `diagnostic_context.sh`, `ci_coverage.sh`, `make test-quick` (163 s), `make test-frontend` (269 s), `make test-fixpoint` (stage 2 = stage 3), `make test-core` with the system LibreSSL 3.3.6 and `BEANS_AUTOBAHN_SKIP=1` (1 386 s, `tls.sh` included), `make test-self-host` (1 406 s, 80 examples compiled and matched), `make test-sanitize` with OpenSSL 3 first on `PATH` (468 s, one explicit skip: `-fsanitize=function`), and `tools/compiler_campaign.py --sanitize-only` (all nine steps, the chunked `compiler-asan-fault-reach` included). Logs: `build/compiler-discovery/final-gates/`.
+
+**Release remains blocked:** no new Linux/macOS two-hour candidate soak, Windows deterministic replay, or complete release workflow has run for the changed compiler; the Autobahn suite was skipped; CD-22 is open.
 
 ## Other open reports
 

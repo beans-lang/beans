@@ -263,9 +263,12 @@ Its two-hour soak and release verdict do not validate a compiler rebuilt from
 these changed sources. No issue has been closed and no release workflow has
 been dispatched by this follow-up.
 
-**Combined validation pending; release remains blocked.** Per-issue results
-will be reconciled against the final combined compiler and retained logs
-before this follow-up records its completed local gates.
+**Combined local gates passed** on macOS ARM64, 2026-10-08, at `c29e72b`, the
+merge of all five fix branches, built from the 0.1.51 release binary and then
+by itself: `make test-compiler-discovery` (325 cases, 325 passed, 0 known, 0 new, 0 changed, 0 stale; `known_failures.json` is empty), `test/issue201.sh`, `issue202.sh`, `issue202_lsp.sh`, `issue203.sh`, `issue204.sh`, `issue206.sh`, `diagnostic_context.sh`, `ci_coverage.sh`, `make test-quick` (163 s), `make test-frontend` (269 s), `make test-fixpoint` (stage 2 = stage 3), `make test-core` with the system LibreSSL 3.3.6 and `BEANS_AUTOBAHN_SKIP=1` (1 386 s, `tls.sh` included), `make test-self-host` (1 406 s, 80 examples compiled and matched), `make test-sanitize` with OpenSSL 3 first on `PATH` (468 s, one explicit skip: `-fsanitize=function`), and `tools/compiler_campaign.py --sanitize-only` (all nine steps, the chunked `compiler-asan-fault-reach` included). Logs: `build/compiler-discovery/final-gates/`. The per-issue rows below were each verified on their own
+branch; the combined run above is the evidence for the merged compiler.
+
+**Release remains blocked:** no new Linux/macOS two-hour candidate soak, Windows deterministic replay, or complete release workflow has run for the changed compiler; the Autobahn suite was skipped; CD-22 is open.
 
 | Issue | Findings | Existing owner extended | Local change and acceptance boundary |
 | --- | --- | --- | --- |
