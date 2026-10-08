@@ -174,218 +174,228 @@ partial class CliAstPrinter {
     }
 }
 
-fn cli_ast_block(node: AstNode, depth: int) -> string {
-    let printer: CliAstPrinter = new CliAstPrinter()
-    printer.block(node, depth)
-    return printer.pieces.join("")
-}
-
-fn cli_ast_function(node: AstNode, depth: int) -> string {
-    let name: string = cli_ast_name(node.value)
-    var prefix: string = ""
-    if node.value.contains("pub ") { prefix = "{prefix}pub " }
-    if node.value.contains("priv ") { prefix = "{prefix}priv " }
-    if node.value.contains("override ") {
-        prefix = "{prefix}override "
-    }
-    if node.value.contains("static ") {
-        prefix = "{prefix}static "
-    }
-    if node.value.contains("inout ") {
-        prefix = "{prefix}inout "
-    }
-    if node.value.contains("abstract ") {
-        prefix = "{prefix}abstract "
-    }
-    if node.value.contains("feature ") {
-        let parts: List<string> = node.value.split(" ")
-        for index: int in 0..parts.len() {
-            if parts[index] == "feature" &&
-               index + 1 < parts.len() {
-                prefix =
-                    "{prefix}feature {parts[index + 1]} "
-            }
-        }
-    }
-    if node.value.contains("extern ") {
-        prefix = "{prefix}extern \"C\" "
-    }
-    var parameters: string = "()"
-    var result: string = ""
-    var alias: string = ""
-    var body: string = "   [signature]"
-    for child: AstNode in node.children {
-        if child.kind == "params" {
-            parameters = cli_ast_parameters(child)
-        } else if child.kind == "result" &&
-                  child.children.len() != 0 {
-            result =
-                " -> {cli_ast_type(child.children[0])}"
-        } else if child.kind == "symbol_alias" {
-            alias = " as {child.value}"
-        } else if child.kind == "block" {
-            body = " {cli_ast_block(child, depth)}"
-        }
-    }
-    return "{cli_ast_annotations(node, depth)}{cli_ast_indent(depth)}{prefix}fn {name}{cli_ast_generics(node)}{parameters}{result}{alias}{body}\n"
-}
-
-fn cli_ast_declaration(node: AstNode) -> string {
-    if node.kind == "fn" {
-        return "{cli_ast_function(node, 0)}\n"
-    }
-    if node.kind == "const" {
-        var type: string = "?"
-        var value: string = ""
-        for child: AstNode in node.children {
-            if child.kind == "type" ||
-               child.kind == "array_type" ||
-               child.kind == "fn_type" {
-                type = cli_ast_type(child)
-            } else {
-                value = cli_ast_expression(child, 0)
-            }
-        }
-        return "{cli_ast_annotations(node, 0)}{node.value}: {type} = {value}\n\n"
-    }
-    if node.kind == "c_global" {
-        var type: string = "?"
-        var alias: string = ""
-        for child: AstNode in node.children {
-            if child.kind == "symbol_alias" {
-                alias = " as {child.value}"
-            } else {
-                type = cli_ast_type(child)
-            }
-        }
-        return "{cli_ast_annotations(node, 0)}{node.value}: {type}{alias}\n\n"
-    }
-    if node.kind == "annotation_decl" {
+// Declarations write into the same buffer as their bodies. A class used to
+// append each member to its text so far, which copied the class again per
+// member: quadratic in a class with many methods.
+partial class CliAstPrinter {
+    fn function(node: AstNode, depth: int) {
         let name: string = cli_ast_name(node.value)
-        var output: string =
-            "{cli_ast_annotations(node, 0)}{if node.value.starts_with("pub ") { "pub " } else { "" }}annotation {name} \{\n"
-        for field: AstNode in node.children {
-            if field.kind != "annotation_field" { continue }
-            var type: string = "?"
-            var value: string = ""
-            for part: AstNode in field.children {
-                if part.kind == "type" ||
-                   part.kind == "array_type" ||
-                   part.kind == "fn_type" {
-                    type = cli_ast_type(part)
-                } else {
-                    value =
-                        " = {cli_ast_expression(part, 1)}"
+        var prefix: string = ""
+        if node.value.contains("pub ") { prefix = "{prefix}pub " }
+        if node.value.contains("priv ") { prefix = "{prefix}priv " }
+        if node.value.contains("override ") {
+            prefix = "{prefix}override "
+        }
+        if node.value.contains("static ") {
+            prefix = "{prefix}static "
+        }
+        if node.value.contains("inout ") {
+            prefix = "{prefix}inout "
+        }
+        if node.value.contains("abstract ") {
+            prefix = "{prefix}abstract "
+        }
+        if node.value.contains("feature ") {
+            let parts: List<string> = node.value.split(" ")
+            for index: int in 0..parts.len() {
+                if parts[index] == "feature" &&
+                   index + 1 < parts.len() {
+                    prefix =
+                        "{prefix}feature {parts[index + 1]} "
                 }
             }
-            output =
-                "{output}  {field.value}: {type}{value}\n"
         }
-        return "{output}\}\n\n"
-    }
-    if node.kind != "class" && node.kind != "struct" &&
-       node.kind != "union" && node.kind != "interface" &&
-       node.kind != "enum" {
-        return ""
-    }
-    let name: string = cli_ast_name(node.value)
-    var prefix: string = ""
-    if node.value.contains("pub ") { prefix = "{prefix}pub " }
-    if node.value.contains("unique ") {
-        prefix = "{prefix}unique "
-    }
-    if node.value.contains("abstract ") {
-        prefix = "{prefix}abstract "
-    }
-    if node.value.contains("singleton ") {
-        prefix = "{prefix}singleton "
-    }
-    if node.value.contains("extern ") {
-        prefix = "{prefix}extern \"C\" "
-    } else if node.kind == "union" {
-        prefix = "{prefix}extern \"C\" "
-    }
-    if node.value.contains("opaque ") {
-        prefix = "{prefix}opaque "
-    }
-    if node.value.contains("packed ") {
-        prefix = "{prefix}packed "
-    }
-    for part: string in node.value.split(" ") {
-        if part.starts_with("align(") {
-            prefix = "{prefix}{part} "
+        if node.value.contains("extern ") {
+            prefix = "{prefix}extern \"C\" "
         }
-    }
-    var output: string =
-        "{cli_ast_annotations(node, 0)}{prefix}{node.kind} {name}{cli_ast_generics(node)}"
-    if node.value.contains("opaque ") {
-        return "{output}\n\n"
-    }
-    var bases: List<string> = []
-    var interfaces: List<string> = []
-    for child: AstNode in node.children {
-        if child.kind == "extends" &&
-           child.children.len() != 0 {
-            bases.push(cli_ast_type(child.children[0]))
-        } else if child.kind == "implements" &&
-                  child.children.len() != 0 {
-            interfaces.push(
-                cli_ast_type(child.children[0]))
+        var parameters: string = "()"
+        var result: string = ""
+        var alias: string = ""
+        var body: Option<AstNode> = none
+        for child: AstNode in node.children {
+            if child.kind == "params" {
+                parameters = cli_ast_parameters(child)
+            } else if child.kind == "result" &&
+                      child.children.len() != 0 {
+                result =
+                    " -> {cli_ast_type(child.children[0])}"
+            } else if child.kind == "symbol_alias" {
+                alias = " as {child.value}"
+            } else if child.kind == "block" {
+                body = some(child)
+            }
         }
+        self.pieces.push("{cli_ast_annotations(node, depth)}{self.indent(depth)}{prefix}fn {name}{cli_ast_generics(node)}{parameters}{result}{alias}")
+        match body {
+            some(block) => {
+                self.pieces.push(" ")
+                self.block(block, depth)
+            }
+            none => { self.pieces.push("   [signature]") }
+        }
+        self.pieces.push("\n")
     }
-    if bases.len() != 0 {
-        output = "{output} extends {bases.join(", ")}"
-    }
-    if interfaces.len() != 0 {
-        output =
-            "{output} {if node.kind == "interface" { "extends" } else { "implements" }} {interfaces.join(", ")}"
-    }
-    output = "{output} \{\n"
-    for child: AstNode in node.children {
-        if child.kind == "field" {
+
+    fn declaration(node: AstNode) {
+        if node.kind == "fn" {
+            self.function(node, 0)
+            self.pieces.push("\n")
+            return
+        }
+        if node.kind == "const" {
             var type: string = "?"
             var value: string = ""
-            for part: AstNode in child.children {
-                if part.kind == "type" ||
-                   part.kind == "array_type" ||
-                   part.kind == "fn_type" {
-                    type = cli_ast_type(part)
+            for child: AstNode in node.children {
+                if child.kind == "type" ||
+                   child.kind == "array_type" ||
+                   child.kind == "fn_type" {
+                    type = cli_ast_type(child)
                 } else {
-                    value =
-                        " = {cli_ast_expression(part, 1)}"
+                    value = cli_ast_expression(child, 0)
                 }
             }
-            output =
-                "{output}{cli_ast_annotations(child, 1)}  {child.value}: {type}{value}\n"
-        } else if child.kind == "variant" {
-            var payloads: List<string> = []
-            for part: AstNode in child.children {
-                if part.kind != "payload" { continue }
-                payloads.push(cli_ast_parameter(part))
-            }
-            output =
-                "{output}{cli_ast_annotations(child, 1)}  {child.value}"
-            if payloads.len() != 0 {
-                output =
-                    "{output}({payloads.join(", ")})"
-            }
-            output = "{output}\n"
-        } else if child.kind == "fn" {
-            output =
-                "{output}{cli_ast_function(child, 1)}"
+            self.pieces.push("{cli_ast_annotations(node, 0)}{node.value}: {type} = {value}\n\n")
+            return
         }
+        if node.kind == "c_global" {
+            var type: string = "?"
+            var alias: string = ""
+            for child: AstNode in node.children {
+                if child.kind == "symbol_alias" {
+                    alias = " as {child.value}"
+                } else {
+                    type = cli_ast_type(child)
+                }
+            }
+            self.pieces.push("{cli_ast_annotations(node, 0)}{node.value}: {type}{alias}\n\n")
+            return
+        }
+        if node.kind == "annotation_decl" {
+            let name: string = cli_ast_name(node.value)
+            self.pieces.push(
+                "{cli_ast_annotations(node, 0)}{if node.value.starts_with("pub ") { "pub " } else { "" }}annotation {name} \{\n")
+            for field: AstNode in node.children {
+                if field.kind != "annotation_field" { continue }
+                var type: string = "?"
+                var value: string = ""
+                for part: AstNode in field.children {
+                    if part.kind == "type" ||
+                       part.kind == "array_type" ||
+                       part.kind == "fn_type" {
+                        type = cli_ast_type(part)
+                    } else {
+                        value =
+                            " = {cli_ast_expression(part, 1)}"
+                    }
+                }
+                self.pieces.push("  {field.value}: {type}{value}\n")
+            }
+            self.pieces.push("\}\n\n")
+            return
+        }
+        if node.kind != "class" && node.kind != "struct" &&
+           node.kind != "union" && node.kind != "interface" &&
+           node.kind != "enum" {
+            return
+        }
+        let name: string = cli_ast_name(node.value)
+        var prefix: string = ""
+        if node.value.contains("pub ") { prefix = "{prefix}pub " }
+        if node.value.contains("unique ") {
+            prefix = "{prefix}unique "
+        }
+        if node.value.contains("abstract ") {
+            prefix = "{prefix}abstract "
+        }
+        if node.value.contains("singleton ") {
+            prefix = "{prefix}singleton "
+        }
+        if node.value.contains("extern ") {
+            prefix = "{prefix}extern \"C\" "
+        } else if node.kind == "union" {
+            prefix = "{prefix}extern \"C\" "
+        }
+        if node.value.contains("opaque ") {
+            prefix = "{prefix}opaque "
+        }
+        if node.value.contains("packed ") {
+            prefix = "{prefix}packed "
+        }
+        for part: string in node.value.split(" ") {
+            if part.starts_with("align(") {
+                prefix = "{prefix}{part} "
+            }
+        }
+        self.pieces.push(
+            "{cli_ast_annotations(node, 0)}{prefix}{node.kind} {name}{cli_ast_generics(node)}")
+        if node.value.contains("opaque ") {
+            self.pieces.push("\n\n")
+            return
+        }
+        var bases: List<string> = []
+        var interfaces: List<string> = []
+        for child: AstNode in node.children {
+            if child.kind == "extends" &&
+               child.children.len() != 0 {
+                bases.push(cli_ast_type(child.children[0]))
+            } else if child.kind == "implements" &&
+                      child.children.len() != 0 {
+                interfaces.push(
+                    cli_ast_type(child.children[0]))
+            }
+        }
+        if bases.len() != 0 {
+            self.pieces.push(" extends {bases.join(", ")}")
+        }
+        if interfaces.len() != 0 {
+            self.pieces.push(
+                " {if node.kind == "interface" { "extends" } else { "implements" }} {interfaces.join(", ")}")
+        }
+        self.pieces.push(" \{\n")
+        for child: AstNode in node.children {
+            if child.kind == "field" {
+                var type: string = "?"
+                var value: string = ""
+                for part: AstNode in child.children {
+                    if part.kind == "type" ||
+                       part.kind == "array_type" ||
+                       part.kind == "fn_type" {
+                        type = cli_ast_type(part)
+                    } else {
+                        value =
+                            " = {cli_ast_expression(part, 1)}"
+                    }
+                }
+                self.pieces.push(
+                    "{cli_ast_annotations(child, 1)}  {child.value}: {type}{value}\n")
+            } else if child.kind == "variant" {
+                var payloads: List<string> = []
+                for part: AstNode in child.children {
+                    if part.kind != "payload" { continue }
+                    payloads.push(cli_ast_parameter(part))
+                }
+                self.pieces.push(
+                    "{cli_ast_annotations(child, 1)}  {child.value}")
+                if payloads.len() != 0 {
+                    self.pieces.push("({payloads.join(", ")})")
+                }
+                self.pieces.push("\n")
+            } else if child.kind == "fn" {
+                self.function(child, 1)
+            }
+        }
+        self.pieces.push("\}\n\n")
     }
-    return "{output}\}\n\n"
 }
 
 fn render_cli_ast(node: AstNode) -> string {
     if node.kind != "module" {
         return cli_ast_expression(node, 0)
     }
-    var output: List<string> = []
+    let printer: CliAstPrinter = new CliAstPrinter()
     for child: AstNode in node.children {
         if child.kind != "package" { continue }
-        output.push("package {child.value}\n\n")
+        printer.pieces.push("package {child.value}\n\n")
     }
     var import_count: int = 0
     for child: AstNode in node.children {
@@ -406,23 +416,23 @@ fn render_cli_ast(node: AstNode) -> string {
             }
         }
         if named != "" {
-            output.push("import \{{named}\} from {child.value}\n")
+            printer.pieces.push("import \{{named}\} from {child.value}\n")
             import_count += 1
             continue
         }
-        output.push("import {child.value}")
+        printer.pieces.push("import {child.value}")
         for part: AstNode in child.children {
             if part.kind == "alias" {
-                output.push(" as {part.value}")
+                printer.pieces.push(" as {part.value}")
             }
         }
-        output.push("\n")
+        printer.pieces.push("\n")
         import_count += 1
     }
-    if import_count != 0 { output.push("\n") }
+    if import_count != 0 { printer.pieces.push("\n") }
     for child: AstNode in node.children {
         if child.kind == "import" || child.kind == "package" { continue }
-        output.push(cli_ast_declaration(child))
+        printer.declaration(child)
     }
-    return output.join("")
+    return printer.pieces.join("")
 }
