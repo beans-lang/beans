@@ -374,8 +374,11 @@ fn break_document(label: string, doc: string, stats: Stats, kind: int) {
     for cut: int in 0..n {
         let text: string = bytes.slice(0, cut).to_string()
         var outcome: Outcome = new Outcome()
-        if kind == 0 { outcome = check_scalars("{label}.t{cut}", text, stats) }
-        else { outcome = check_nest("{label}.t{cut}", text, stats) }
+        if kind == 0 {
+            outcome = check_scalars("{label}.t{cut}", text, stats)
+        } else {
+            outcome = check_nest("{label}.t{cut}", text, stats)
+        }
         stats.truncations += 1
         expect(!outcome.accepted,
                "{label}.t{cut} a truncated document was accepted", stats)
@@ -387,12 +390,18 @@ fn break_document(label: string, doc: string, stats: Stats, kind: int) {
         let flipped: Bytes = new Bytes(0)
         flipped.reserve(n)
         for i: int in 0..n {
-            if i == at { flipped.push((bytes.get(i) + 1) % 256) }
-            else { flipped.push(bytes.get(i)) }
+            if i == at {
+                flipped.push((bytes.get(i) + 1) % 256)
+            } else {
+                flipped.push(bytes.get(i))
+            }
         }
         let text: string = flipped.to_string()
-        if kind == 0 { check_scalars("{label}.f{at}", text, stats) }
-        else { check_nest("{label}.f{at}", text, stats) }
+        if kind == 0 {
+            check_scalars("{label}.f{at}", text, stats)
+        } else {
+            check_nest("{label}.f{at}", text, stats)
+        }
         at += step
     }
 }

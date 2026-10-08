@@ -203,8 +203,11 @@ partial class LlvmTextEmitter {
                 continue
             }
             let entry: string =
-                if name == "Brew" { "beans_brew_cancel" }
-                else { "beans_taskgroup_request_cancel" }
+                if name == "Brew" {
+                    "beans_brew_cancel"
+                } else {
+                    "beans_taskgroup_request_cancel"
+                }
             self.require_declare(entry, "void @{entry}(ptr)")
             let id: int = self.fresh()
             let guard: string =
@@ -214,8 +217,11 @@ partial class LlvmTextEmitter {
                     "  %cancel.live{id} = load i1, ptr %l{local.id}.live\n"
                 }
             let slot: string =
-                if self.cell_local(local) { "%cancel.cell{id}" }
-                else { "%l{local.id}" }
+                if self.cell_local(local) {
+                    "%cancel.cell{id}"
+                } else {
+                    "%l{local.id}"
+                }
             body = "{body}{guard}  br i1 %cancel.live{id}, label %cancel.child{id}, label %cancel.next{id}\ncancel.child{id}:\n  %cancel.handle{id} = load ptr, ptr {slot}\n  call void @{entry}(ptr %cancel.handle{id})\n  br label %cancel.next{id}\ncancel.next{id}:\n"
         }
         if body == "" { return "" }

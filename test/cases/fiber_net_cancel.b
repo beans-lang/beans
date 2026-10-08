@@ -33,8 +33,11 @@ fn waiting_read(stream: net.TcpStream, ready: Gate, mode: int) -> int {
     }
     ready.open()
     let bytes: Bytes = if mode == 0 { stream.read(1).expect("read") } else {
-        if mode == 1 { stream.read_exact(65536).expect("read exact") }
-        else { stream.read_to_end(65536).expect("read to end") }
+        if mode == 1 {
+            stream.read_exact(65536).expect("read exact")
+        } else {
+            stream.read_to_end(65536).expect("read to end")
+        }
     }
     io.println("unexpected read returned")
     return bytes.len()
