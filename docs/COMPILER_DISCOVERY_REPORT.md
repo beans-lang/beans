@@ -27,6 +27,8 @@ bug-free.
 | CD-26 | invalid acceptance | A closure that reads an outer binding only inside a loop or a returning branch does not borrow it, so the binding can be moved away; a native reproduction segfaults. A closure made in a loop has the same hole. Found later, while fixing CD-15. Fixed locally on `fix/cd26-capture-borrow`: see [CD-26 verified locally](#cd-26-verified-locally--2026-10-08). | none |
 | CD-28 | wrong code | A `move(...)` closure over a `var` still shares the variable: assigning it afterwards releases the value the closure owns and hands the closure the new one, and a `send fn` made this way shares it with the worker thread. Found while fixing CD-25. Fixed locally on branch `fix/cd28-moved-var-capture`: the closure takes the variable's cell; see its BUGFIX_TODO row. | none |
 | CD-29 | wrong code | A `move(...)` capture of a borrowed parameter or a match binding shares the caller's value; with a `send fn` that is a data race under TSan. Found while fixing CD-28; needs an owner decision because latte relies on the accepted form. | none |
+| CD-31 | invalid IR | `==` on a nested boxed `Result` fails the native build with a phi whose entries do not match its predecessors; the interpreter prints `true`. Found while fixing CD-27. | none |
+| CD-32 | invalid IR | `==` on `Option<` × 255 fails the native build with a duplicate local value name; 128 levels build. Found while fixing CD-27. | none |
 
 Decisions needed from owners before the remaining red gates can turn green:
 CD-4 (adopt the 256-level nesting contract, #202), CD-11 (diagnostic context
