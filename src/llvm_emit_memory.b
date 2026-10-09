@@ -217,41 +217,10 @@ partial class LlvmTextEmitter {
                 "  call void @beans_release(ptr {value})\n"
             }
         }
-        // a wide Option owns whatever its payload owns. Every
-        // producer keeps the none payload zeroinitializer (the
-        // none literal, pop's none arm, map.get's pre-zeroed
-        // slot) and both count ops null-guard, so the payload is
-        // walked without branching on the flag.
-        if canonical_hir_name(type.name) == "Option" &&
-           type.args.len() == 1 {
-            let payload: HirType = type.args[0]
-            if !self.type_has_owned_refs(payload) {
-                return ""
-            }
-            let id: int = self.fresh()
-            let extracted: string = "%arc.option{id}"
-            return "  {extracted} = extractvalue {self.type_text(type)} {value}, 1\n{self.emit_arc_value(payload, extracted, retaining)}"
-        }
-        if self.result_is_inline(type) {
-            let okay: HirType = type.args[0]
-            let failed: HirType =
-                self.result_error_type(type)
-            var output: string = ""
-            if self.type_has_owned_refs(okay) {
-                let id: int = self.fresh()
-                let extracted: string =
-                    "%arc.result.ok{id}"
-                output =
-                    "  {extracted} = extractvalue {self.type_text(type)} {value}, 1\n{self.emit_arc_value(okay, extracted, retaining)}"
-            }
-            if self.type_has_owned_refs(failed) {
-                let id: int = self.fresh()
-                let extracted: string =
-                    "%arc.result.err{id}"
-                output =
-                    "{output}  {extracted} = extractvalue {self.type_text(type)} {value}, 2\n{self.emit_arc_value(failed, extracted, retaining)}"
-            }
-            return output
+        if type_is_nested_level(type) {
+            return self.emit_arc_nested(
+                type, self.reference_tree(type),
+                value, retaining)
         }
         if canonical_hir_name(type.name) == "array" &&
            type.args.len() == 1 &&
@@ -319,6 +288,62 @@ partial class LlvmTextEmitter {
             }
             none => { return "" }
         }
+    }
+
+    // emit_arc_value of an Option or Result level, its levels' reference
+    // questions answered by `tree`. Asking type_is_reference and
+    // result_is_inline at each level walked the chain below it again
+    // (CD-27).
+    fn emit_arc_nested(type: HirType,
+                       tree: LlvmReferenceTree,
+                       value: string,
+                       retaining: bool) -> string {
+        if !type_is_nested_level(type) {
+            return self.emit_arc_value(
+                type, value, retaining)
+        }
+        if tree.reference {
+            return if retaining {
+                "  call void @beans_retain(ptr {value})\n"
+            } else {
+                "  call void @beans_release(ptr {value})\n"
+            }
+        }
+        // a wide Option owns whatever its payload owns. Every
+        // producer keeps the none payload zeroinitializer (the
+        // none literal, pop's none arm, map.get's pre-zeroed
+        // slot) and both count ops null-guard, so the payload is
+        // walked without branching on the flag.
+        if canonical_hir_name(type.name) == "Option" {
+            let payload: HirType = type.args[0]
+            if !self.nested_owned_refs(
+                   payload, tree.below[0]) {
+                return ""
+            }
+            let id: int = self.fresh()
+            let extracted: string = "%arc.option{id}"
+            return "  {extracted} = extractvalue {self.type_text(type)} {value}, 1\n{self.emit_arc_nested(payload, tree.below[0], extracted, retaining)}"
+        }
+        // a Result that is not a reference is inline
+        let okay: HirType = type.args[0]
+        let failed: HirType =
+            self.result_error_type(type)
+        var output: string = ""
+        if self.nested_owned_refs(okay, tree.below[0]) {
+            let id: int = self.fresh()
+            let extracted: string =
+                "%arc.result.ok{id}"
+            output =
+                "  {extracted} = extractvalue {self.type_text(type)} {value}, 1\n{self.emit_arc_nested(okay, tree.below[0], extracted, retaining)}"
+        }
+        if self.nested_owned_refs(failed, tree.below[1]) {
+            let id: int = self.fresh()
+            let extracted: string =
+                "%arc.result.err{id}"
+            output =
+                "{output}  {extracted} = extractvalue {self.type_text(type)} {value}, 2\n{self.emit_arc_nested(failed, tree.below[1], extracted, retaining)}"
+        }
+        return output
     }
 
     fn emit_release(function: MirFunction,

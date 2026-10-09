@@ -391,4 +391,37 @@ fn main() {
                 ratios.append("%.1fx" % ratio)
     print("ok nested List/Map types of int, a record, a class and an enum build at the nesting limit on both "
           "backends; IR emission CPU for 8x the depth: %s" % " ".join(ratios))
+
+    # CD-27: each level of a nested Result or Option asked type_is_reference
+    # or result_is_inline about the whole chain below it every time its type
+    # was spelled, and the emitter spells the type for each level's value, so
+    # IR emission cost the cube of the depth: a Result 255 deep took 1.7 s,
+    # an Option of a record 0.5 s. Both build at the limit and show every
+    # level the way the interpreter does, and 8x the depth costs at most 24x
+    # the CPU, as for CD-24.
+    def result_nest(n, shown):
+        return (wrap("let x: " + "Result<" * n + "int" + ">" * n + " = " + "ok(" * n + "1" + ")" * n +
+                     "\n    io.println(\"{x" + ("" if shown else ".is_ok()") + "}\")"),
+                ("ok(" * n + "1" + ")" * n if shown else "true") + "\n")
+
+    def option_nest(n, shown):
+        return (wrap("let x: " + "Option<" * n + "P" + ">" * n + " = " + "some(" * n + "P { v: 7 }" + ")" * n +
+                     "\n    io.println(\"{x" + ("" if shown else ".is_some()") + "}\")", "struct P {\n    v: int\n}\n"),
+                ("some(" * n + "P { v: 7 }" + ")" * n if shown else "true") + "\n")
+
+    for label, source, output in (("results", ) + result_nest(NESTING_LIMIT, True),
+                                  ("options of a record", ) + option_nest(NESTING_LIMIT - 1, True)):
+        for mode in ("run", "native"):
+            accepted(work, mode, source, output, label=label)
+    ratios = []
+    for label, nest_of, pairs in (("results", result_nest, ((3, 24), (32, 256))),
+                                  ("options of a record", option_nest, ((3, 24), (31, 248)))):
+        for small, large in pairs:
+            name = "%s, depth %d -> %d" % (label, small, large)
+            ratio = (emit_seconds(work, nest_of(large, False)[0], name) /
+                     max(emit_seconds(work, nest_of(small, False)[0], name), 0.005))
+            assert ratio <= 3 * 8, "%s: %.1fx CPU for 8x the depth; a linear step stays under 24x" % (name, ratio)
+            ratios.append("%.1fx" % ratio)
+    print("ok nested Result and Option-of-record types build at the nesting limit on both backends; "
+          "IR emission CPU for 8x the depth: %s" % " ".join(ratios))
 PY

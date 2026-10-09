@@ -119,34 +119,8 @@ partial class LlvmTextEmitter {
             }
             return ""
         }
-        if name == "Option" && type.args.len() == 1 {
-            let element: string =
-                self.type_text(type.args[0])
-            if element == "" || element == "void" {
-                return ""
-            }
-            if self.type_is_reference(type.args[0]) {
-                return "ptr"
-            }
-            return "\{ i1, {element} \}"
-        }
-        if name == "Result" &&
-           type.args.len() >= 1 &&
-           type.args.len() <= 2 {
-            let error: HirType =
-                self.result_error_type(type)
-            let okay: string =
-                self.type_text(type.args[0])
-            let failed: string =
-                self.type_text(error)
-            if okay == "" || okay == "void" ||
-               failed == "" || failed == "void" {
-                return ""
-            }
-            if self.result_is_inline(type) {
-                return "\{ i1, {okay}, {failed} \}"
-            }
-            return "ptr"
+        if type_is_nested_level(type) {
+            return self.nested_text(type)
         }
         match self.declaration_for(type) {
             some(declaration) => {
@@ -173,6 +147,109 @@ partial class LlvmTextEmitter {
             none => {}
         }
         return ""
+    }
+
+    // type_text of an Option or Result level that llvm_type refused. An
+    // Option is unsupported when its payload is, a pointer when its payload
+    // is a reference, and otherwise {i1, payload}; a Result is unsupported
+    // when an arm is, {i1, okay, failed} when result_is_inline, and
+    // otherwise a pointer. Asking type_is_reference of the payload or
+    // result_is_inline of the Result walked the whole chain below the level
+    // again, and the emitter spells a nested type for each level's value,
+    // so nested Result and Option types cost the cube of their depth
+    // (CD-27). A level spelled here, when it has a spelling at all, is "ptr"
+    // exactly when it is a reference, so the level above reads that from its
+    // spelling (spelled_here).
+    fn nested_text(type: HirType) -> string {
+        if canonical_hir_name(type.name) == "Option" {
+            // llvm_type refused this Option, so it refused the payload too
+            let payload: HirType = type.args[0]
+            let element: string =
+                self.type_text_refused(payload)
+            if !llvm_type_is_value(element) { return "" }
+            let reference: bool =
+                if type_is_nested_level(payload) {
+                    element == "ptr"
+                } else {
+                    self.type_is_reference(payload)
+                }
+            if reference { return "ptr" }
+            return "\{ i1, {element} \}"
+        }
+        let okay_type: HirType = type.args[0]
+        let failed_type: HirType =
+            self.result_error_type(type)
+        let okay: string =
+            self.result_arm_text(okay_type)
+        let failed: string =
+            self.result_arm_text(failed_type)
+        if !llvm_type_is_value(okay) ||
+           !llvm_type_is_value(failed) {
+            return ""
+        }
+        let okay_here: bool = self.spelled_here(okay_type)
+        let failed_here: bool =
+            self.spelled_here(failed_type)
+        if self.result_is_inline_known(
+               type, failed_type,
+               okay_here, okay_here && okay == "ptr",
+               failed_here,
+               failed_here && failed == "ptr") {
+            return "\{ i1, {okay}, {failed} \}"
+        }
+        return "ptr"
+    }
+
+    // type_text of a Result's arm. llvm_type spells no Result, so a
+    // Result arm goes straight to nested_text.
+    fn result_arm_text(type: HirType) -> string {
+        if canonical_hir_name(type.name) == "Result" &&
+           type_is_nested_level(type) {
+            return self.nested_text(type)
+        }
+        return self.type_text(type)
+    }
+
+    // Whether type_text spells this type through nested_text: a Result
+    // with one or two arguments, or an Option llvm_type refuses.
+    fn spelled_here(type: HirType) -> bool {
+        if !type_is_nested_level(type) { return false }
+        return canonical_hir_name(type.name) == "Result" ||
+               llvm_type(type) == ""
+    }
+
+    // type_is_reference of a type and of each Option and Result level in
+    // it, from the innermost level up, in one walk. Walks over the levels
+    // of an inline Option or Result (type_has_owned_refs, emit_arc_value)
+    // read their answers here: asking type_is_reference at each level
+    // walked the chain below it again (CD-27). The answers depend only on
+    // the declarations, never on what the emitter is building.
+    fn reference_tree(type: HirType) -> LlvmReferenceTree {
+        if !type_is_nested_level(type) {
+            return new LlvmReferenceTree(
+                self.type_is_reference(type), [])
+        }
+        if canonical_hir_name(type.name) == "Option" {
+            let payload: LlvmReferenceTree =
+                self.reference_tree(type.args[0])
+            return new LlvmReferenceTree(
+                payload.reference, [payload])
+        }
+        let failed_type: HirType =
+            self.result_error_type(type)
+        let okay: LlvmReferenceTree =
+            self.reference_tree(type.args[0])
+        let failed: LlvmReferenceTree =
+            self.reference_tree(failed_type)
+        let inline: bool =
+            self.result_is_inline_known(
+                type, failed_type,
+                type_is_nested_level(type.args[0]),
+                okay.reference,
+                type_is_nested_level(failed_type),
+                failed.reference)
+        return new LlvmReferenceTree(
+            !inline, [okay, failed])
     }
 
     fn type_supported(type: HirType) -> bool {
@@ -465,22 +542,15 @@ partial class LlvmTextEmitter {
         if self.type_is_reference(type) {
             return true
         }
+        if type_is_nested_level(type) {
+            return self.nested_owned_refs(
+                type, self.reference_tree(type))
+        }
         let name: string =
             canonical_hir_name(type.name)
         // Inline aggregates are retained and released field by field.
         // Do not use pointer_mask_at as the ownership test: -1 means the
         // layout cannot fit runtime metadata, not that it owns no refs.
-        if name == "Option" &&
-           type.args.len() == 1 {
-            return self.type_has_owned_refs(
-                type.args[0])
-        }
-        if self.result_is_inline(type) {
-            return self.type_has_owned_refs(
-                       type.args[0]) ||
-                   self.type_has_owned_refs(
-                       self.result_error_type(type))
-        }
         if name == "array" &&
            type.args.len() == 1 &&
            type.array_length > 0 {
@@ -509,6 +579,29 @@ partial class LlvmTextEmitter {
             none => {}
         }
         return false
+    }
+
+    // type_has_owned_refs of an Option or Result level, its levels'
+    // reference questions answered by `tree`: a reference owns one, an
+    // Option what its payload owns, and an inline Result what its arms own.
+    // Asking type_is_reference at each level walked the chain below it again
+    // (CD-27).
+    fn nested_owned_refs(type: HirType,
+                         tree: LlvmReferenceTree) -> bool {
+        if !type_is_nested_level(type) {
+            return self.type_has_owned_refs(type)
+        }
+        if tree.reference { return true }
+        if canonical_hir_name(type.name) == "Option" {
+            return self.nested_owned_refs(
+                type.args[0], tree.below[0])
+        }
+        // a Result that is not a reference is inline
+        return self.nested_owned_refs(
+                   type.args[0], tree.below[0]) ||
+               self.nested_owned_refs(
+                   self.result_error_type(type),
+                   tree.below[1])
     }
 
     fn substitute_open(

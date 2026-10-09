@@ -79,16 +79,40 @@ fn llvm_type(type: HirType) -> string {
         return "ptr"
     }
     if name == "Option" && type.args.len() == 1 {
-        let element: string = llvm_type(type.args[0])
-        if element == "" || element == "void" {
-            return ""
-        }
-        if llvm_type_is_reference(type.args[0]) {
-            return "ptr"
-        }
-        return "\{ i1, {element} \}"
+        return llvm_option_type(type)
     }
     return ""
+}
+
+// An Option is unsupported when its payload is, a pointer when its payload
+// is a reference, and otherwise {i1, payload}. An Option of an Option asks
+// the same reference question of the same innermost payload, so a chain of
+// them is spelled from that payload once. Spelling each level and asking at
+// each level about the whole chain below it cost the square of the depth
+// per spelling (CD-27).
+fn llvm_option_type(type: HirType) -> string {
+    var levels: int = 0
+    var payload: HirType = type
+    for canonical_hir_name(payload.name) == "Option" &&
+        payload.args.len() == 1 {
+        levels += 1
+        payload = payload.args[0]
+    }
+    let element: string = llvm_type(payload)
+    if !llvm_type_is_value(element) { return "" }
+    if llvm_type_is_reference(payload) { return "ptr" }
+    return "{"\{ i1, ".repeat(levels)}{element}{" \}".repeat(levels)}"
+}
+
+// The levels LlvmTextEmitter.reference_tree answers level by level: an
+// Option, and a Result with one or two arguments.
+fn type_is_nested_level(type: HirType) -> bool {
+    let name: string = canonical_hir_name(type.name)
+    return (name == "Option" &&
+            type.args.len() == 1) ||
+           (name == "Result" &&
+            type.args.len() >= 1 &&
+            type.args.len() <= 2)
 }
 
 // A spelling a value can have: not unsupported, not unit.

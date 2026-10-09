@@ -13,21 +13,50 @@ partial class LlvmTextEmitter {
            type.args.len() > 2 {
             return false
         }
+        return self.result_is_inline_known(
+            type, self.result_error_type(type),
+            false, false, false, false)
+    }
+
+    // result_is_inline of a Result with one or two arguments. A caller
+    // that already knows whether an arm is a reference says so with
+    // `okay_known` and `okay_reference` (`failed_known`, `failed_reference`),
+    // and then only for an Option or a Result arm, which is a wide inline
+    // value exactly when it is not a reference; a reference is slot
+    // compatible. Asking the arm instead walks the whole chain below it,
+    // and asking that at every level of a nested type cost the square of
+    // its depth (CD-27).
+    fn result_is_inline_known(type: HirType,
+                              failed: HirType,
+                              okay_known: bool,
+                              okay_reference: bool,
+                              failed_known: bool,
+                              failed_reference: bool) -> bool {
         let okay: HirType = type.args[0]
-        let failed: HirType =
-            self.result_error_type(type)
-        if self.wide_inline_value(okay) ||
-           self.wide_inline_value(failed) {
-            return true
-        }
+        let okay_wide: bool =
+            if okay_known {
+                !okay_reference
+            } else {
+                self.wide_inline_value(okay)
+            }
+        if okay_wide { return true }
+        let failed_wide: bool =
+            if failed_known {
+                !failed_reference
+            } else {
+                self.wide_inline_value(failed)
+            }
+        if failed_wide { return true }
         // Keep the default Error ABI boxed. An explicit custom error whose
         // two arms each fit one runtime slot can use the same inline shape as
         // wide Results: {is_error, okay, failed}. Inactive arms stay zero, so
         // the existing aggregate ARC walk remains safe.
         return type.args.len() == 2 &&
                canonical_hir_name(failed.name) != "Error" &&
-               self.slot_compatible(okay) &&
-               self.slot_compatible(failed)
+               ((okay_known && okay_reference) ||
+                self.slot_compatible(okay)) &&
+               ((failed_known && failed_reference) ||
+                self.slot_compatible(failed))
     }
 
     // A wide payload without references is stored whole after the

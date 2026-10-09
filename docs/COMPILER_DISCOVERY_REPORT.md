@@ -524,6 +524,55 @@ Not run: Linux, Windows, `make test-sanitize` and any candidate soak;
 `make test-quick`, `make test-frontend`, `make test-self-host` and
 `make test-core` were not rerun after the rebase.
 
+### CD-27 verified locally — 2026-10-09
+
+IR emission for a nested `Result` or `Option` type cost the cube of its
+depth. Every level asked about the whole chain below it each time its type
+was spelled: `type_text` asked `type_is_reference` of an `Option`'s payload
+and `result_is_inline` of a `Result`, `llvm_type` asked
+`llvm_type_is_reference` under each `Option`, and `type_has_owned_refs` and
+`emit_arc_value` asked `type_is_reference` at each level of an inline nest.
+The emitter spells a type for each level's value. Now each level is answered
+from the level below it: a level `nested_text` spells is "ptr" exactly when it
+is a reference, and `reference_tree` answers `type_is_reference` for every
+level of an inline nest in one walk. There is no cache. Branch
+`fix/cd27-result-option-emission`, on `7664772`. macOS ARM64, Apple clang.
+"Before" is `7664772` built by itself; "after" is the change built by that
+compiler and then by itself.
+
+CPU seconds, best of five (`--release` builds: best of three, clang
+included):
+
+| Shape | `beansc llvm`, n = 32 / 64 / 128 / 255, before | after | `--release` build at 255, before / after |
+| --- | --- | --- | --- |
+| `Result<` × n `int` | 0.007 / 0.033 / 0.21 / 1.58 | 0.004 / 0.008 / 0.022 / 0.069 | 1.69 / 0.16 |
+| `Option<` × n of a struct | 0.004 / 0.013 / 0.066 / 0.45 | 0.003 / 0.005 / 0.010 / 0.025 | 0.55 / 0.11 |
+
+Behaviour is unchanged. Before against after:
+
+| Corpus | Programs | Result |
+| --- | --- | --- |
+| `--emit ir` and `--release --emit ir` of `examples/`, every `.b` under `test/` and `src/main.b` | 534 built, 238 refused by both with the same message | byte-identical IR |
+| Generated nests at 8, 16, 32, 64, 128 and 255 levels: 22 shapes (a `Result` of `int`, a string, a struct or a class; `Result<…, int>`; an `err` value; an `Option` of `int`, a string, `decimal`, an enum, a class, a struct or a two-field struct; `Result`/`Option`, `Result<…, P>`/`Option` and `Result`/`Option`/`List`/`Map` mixes), and 11 shapes used 11 ways (shown, `==`, `match`, through a function, a generic function, a field, a list, reassignment, `?`, a closure, plain) | 780 built, 36 refused alike | byte-identical IR |
+| The same programs built natively and run, against the interpreter | 764 | same exit status and output on both compilers and in the interpreter; 52 more refused by both alike |
+| Native debug builds run: `examples/` and the 182 `test/cases` programs with goldens | 256 | same exit status and stdout; 7 FFI cases fail to link with both without their test's C helper |
+| Native `--release` builds run: `examples/` | 81 | same exit status and stdout |
+
+| Run | Result |
+| --- | --- |
+| `test/issue202.sh`: `Result<` × 256 `int` and `Option<` × 255 of a struct shown on both backends, IR-emission CPU for 3 → 24 and 32 → 256 (31 → 248) levels | **passed** in 27 s, 1.3x to 14.3x for 8x the depth. The unfixed compiler **fails** at 198x (`Result`); measured alone, the `Option` check gives it 89x |
+| `make test-fixpoint` | **passed** in 11 s |
+| `make test-quick` / `make test-frontend` | **passed** in 213 s / 420 s |
+| `test/issue203.sh`, `cd28_captures.sh`, `backend_parity.sh`, `generic_calls.sh`, `generic_interfaces.sh`, `reflect_generics.sh`, `interpolated_types.sh`, `inline_options.sh`, `inline_results.sh`, `result_representation.sh`, `reflection.sh`, `map_inline.sh`, `wide_lists.sh`, `wide_maps.sh`, `wide_owners.sh`, `wide_enums.sh`, `wide_sync.sh`, `wide_concurrency.sh`, `c_wide_args.sh`, `panic_position_parity.sh`, `ci_coverage.sh` | **passed** |
+| Before the rebase onto `7664772`, on `d6a7d72`: `make test-self-host`; `make test-core` with `BEANS_AUTOBAHN_SKIP=1` | **passed**: 1 329 s, 80 examples compiled and matched; 1 685 s. Skipped by the scripts themselves: Autobahn, `nghttpd`, the sqlite3 system package, wasmtime, the Android NDK, the iOS simulator, the Linux arm64 emulator and five cross targets the host clang cannot build |
+
+The change was made on `d6a7d72` and rebased onto `7664772` (CD-28 changed
+closure emission). Every comparison above was then redone against `7664772`
+built by itself; against `d6a7d72` the counts were the same.
+
+Not run: Linux, Windows, `make test-sanitize` and any candidate soak;
+`make test-self-host` and `make test-core` were not rerun after the rebase.
+
 ### Evidence required before a release verdict changes
 
 - Record the final combined compiler identity and the focused discovery,
