@@ -26,6 +26,8 @@ tag=$(basename "$tmp")
 # behaviour, which is worse than a machine that cannot run this suite saying so.
 seed_links() { # <root>
     mkdir -p "$1/links/adir"
+    printf 'retained\n' >"$1/readonly.txt"
+    chmod 444 "$1/readonly.txt"
     printf 'target\n' >"$1/links/target.txt"
     printf 'doomed\n' >"$1/links/broken_target.txt"
     ln -s "$1/links/target.txt" "$1/links/live.link"      # a link to a file
@@ -60,6 +62,9 @@ assert_defined() {
 assert_defined std.fs.read_bytes
 assert_defined std.fs.read
 assert_defined std.fs.write_bytes
+assert_defined std.fs.write_durable
+assert_defined std.fs.write_bytes_durable
+assert_defined std.fs.sync
 assert_defined std.fs.copy
 assert_defined std.fs.exists
 assert_defined std.fs.size
@@ -71,6 +76,7 @@ if grep -Eq 'beans_file_(read_all|read_all_b|write_all|append_all|write_all_b|ap
     echo "migrated file helpers still exist in the native runtime" >&2
     exit 1
 fi
+grep -q 'call i64 @beans_file_sync_out' build/fs_source.ll
 grep -q 'call i64 @beans_file_copy_out' build/fs_source.ll
 grep -q 'call i64 @beans_file_remove_out' build/fs_source.ll
 grep -q 'call i64 @beans_file_exists' build/fs_source.ll
@@ -86,8 +92,8 @@ grep -q 'call ptr @beans_dir_temp' build/fs_source.ll
 # This reads the statics out of the compiler's own table rather than a list
 # kept here, so a static added later without its fs spelling fails right here
 # instead of being found by the next person who concludes it cannot be done.
-# Directories are deliberately not covered: Dir.* is its own documented
-# surface, and whether std.fs should absorb it is a separate decision.
+# Directories deliberately remain on Dir.*, as specified in SYNTAX.md.
+# Durability wrappers above must remain Beans functions over File primitives.
 awk '/^pub fn runtime_builtin_static/ { on = 1; next }
      /^pub fn / { on = 0 }
      on' src/runtime_abi.b |
@@ -173,5 +179,20 @@ if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer' \
     exit 1
 fi
 diff -u test/cases/fs_source.out "$tmp/asan.out"
+
+# Root bypasses POSIX mode bits, so report permission coverage separately.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  (permission checks skipped: root bypasses read-only mode bits)"
+else
+    ./build/beansc build test/cases/fs_durable_permission.b -o "$tmp/permission" >"$tmp/permission.build"
+    printf '%s\n' 'fs durable permission permission' \
+        'fs durable bytes permission permission' \
+        'fs sync permission permission true' >"$tmp/permission.want"
+    ./build/beansc run test/cases/fs_durable_permission.b -- "$tmp/interp/readonly.txt" >"$tmp/permission.interp"
+    "$tmp/permission" "$tmp/native/readonly.txt" >"$tmp/permission.native"
+    diff -u "$tmp/permission.want" "$tmp/permission.interp"
+    diff -u "$tmp/permission.want" "$tmp/permission.native"
+    echo "  (read-only write and sync errors preserve contents on both backends)"
+fi
 
 echo "ok File.open/read_at/write_at primitives with Beans policy code"

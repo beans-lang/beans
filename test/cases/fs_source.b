@@ -37,6 +37,44 @@ fn main() {
     io.println("fs text {text_count} {text_append} {source_text}")
     io.println("fs direct {same_count} {same_text == source_text} {binary_back.len()} {binary_back.byte_at(1)}")
 
+    // Durable writes reuse the same File handle and preserve binary strings.
+    let durable_text: int = fs.write_durable(text, binary_text).expect("durable text")
+    let durable_binary: int = fs.write_bytes_durable(source, binary_data).expect("durable bytes")
+    let synced: bool = fs.sync(text).expect("path sync")
+    let text_equal: bool = fs.read(text).expect("durable read") == binary_text
+    let bytes_equal: bool = fs.read_bytes(source).expect("durable bytes read") == binary_data
+    let empty_count: int = fs.write_durable(copied, "").expect("empty durable")
+    let empty_size: int = fs.size(copied).expect("empty size")
+    io.println("fs durable {durable_text} {durable_binary} {synced} {text_equal} {bytes_equal} {empty_count} {empty_size}")
+    let empty_bytes: int = fs.write_bytes_durable(copied, new Bytes(0)).expect("empty bytes durable")
+    let replacement: string = "{root}/replacement.tmp"
+    fs.write_durable(replacement, "replacement").expect("replacement write")
+    fs.rename(replacement, text).expect("replacement rename")
+    let entries_synced: bool = Dir.sync(root).expect("replacement directory sync")
+    io.println("fs durable commit {empty_bytes} {entries_synced} {fs.read(text).expect("replacement read") == "replacement"} {fs.exists(replacement)}")
+    match fs.sync("{root}/missing") {
+        ok(_) => { panic("sync created missing file") }
+        err(e) => { io.println("fs sync missing {e.kind} {fs.exists("{root}/missing")}") }
+    }
+    match fs.write_durable("{root}/missing/child", "x") {
+        ok(_) => { panic("write without parent succeeded") }
+        err(e) => { io.println("fs durable missing {e.kind}") }
+    }
+    match fs.write_bytes_durable(root, binary_data) {
+        ok(_) => { panic("directory write succeeded") }
+        err(e) => { io.println("fs durable directory {e.kind}") }
+    }
+    match fs.sync("{text}/child") {
+        ok(_) => { panic("sync through file succeeded") }
+        err(e) => { io.println("fs sync bad parent {e.kind}") }
+    }
+    let closed: File = File.open(text, "rw").expect("closed file")
+    closed.close().expect("close before sync")
+    match closed.sync() {
+        ok(_) => { panic("closed sync succeeded") }
+        err(e) => { io.println("fs sync closed {e.kind}") }
+    }
+
     fs.remove(text).expect("remove text")
     fs.remove(copied).expect("remove copy")
     fs.remove(source).expect("remove source")

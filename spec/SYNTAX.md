@@ -624,6 +624,37 @@ Class-first, like everything builtin. Errors are `Result<T>`; `Error.kind` carri
   other failure is still `err` with its kind. It never asks `exists` first, so
   there is no check-then-act window. Directories keep their own surface on
   `Dir`.
+- **Path durability**: `fs.write_durable(path, text)` and
+  `fs.write_bytes_durable(path, bytes)` return `Result<int>` with the byte count.
+  They open once in `"create"` mode, truncate, write all bytes, call `File.sync`
+  on that same handle, and close. Empty input still truncates and syncs.
+  `fs.sync(path)` returns `Result<bool>` and opens an existing file in `"rw"`
+  mode, syncs and closes without truncating or creating it. It requires
+  read/write permission, including on POSIX, for a portable Windows contract.
+  All three propagate open, truncate, write, sync, and successful-path close
+  errors as applicable. After an earlier failure they attempt close and retain
+  the original error. An error may leave a created, truncated or partly written
+  file; it does not imply rollback. Existing modes, permissions and symlink
+  following are inherited from `File.open`.
+  Durability means the existing OS flush request (`fsync` on POSIX,
+  `FlushFileBuffers` on Windows), subject to filesystem and device guarantees.
+  These calls sync file contents, not the containing directory entry, and
+  `write_durable` truncates in place rather than atomically replacing a file.
+  For replacement: write a distinct temporary file in the destination directory
+  with `write_durable`, rename it over the destination, then `Dir.sync` the
+  containing directory. If moving between directories, sync both directories.
+  Concurrent writers require caller coordination. This is no transaction or
+  power-loss guarantee: directory sync on Windows is currently best effort,
+  and its success does not prove metadata was flushed.
+  Compared with `write`, durable writes add one flush and no reopen;
+  `fs.sync` performs one open, one flush and one close (no data read/write).
+- **Directory ownership**: use `Dir.create`/`create_all`/`list`/`walk`,
+  `remove`/`remove_all`, `exists`, `current`, `temp_path` and `sync` directly.
+  `Dir` remains the directory API rather than becoming an internal boundary
+  behind ten `fs` aliases. `fs.remove` retains its existing POSIX remove
+  semantics for empty directories; prefer `Dir.remove` when expressing
+  directory intent. `fs.temp_dir` is the existing convenience spelling of
+  `Dir.temp_path`. Handle-specific operations remain on `File`.
 - **File methods**: positional I/O first - `read_at(pos, n)` → `Result<Bytes>` (short read at
   EOF returns what's there), `write_at(pos, b)`; cursor `read(n)`/`write(b)`; `seek`/`seek_from_end`
   (return the new position, panic on a closed file), `tell`, `size`, `truncate`, `sync` (fsync -
