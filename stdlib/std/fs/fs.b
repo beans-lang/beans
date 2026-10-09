@@ -47,6 +47,60 @@ pub fn write(path: string, data: string) -> Result<int> {
     return file.write_text_at(0, data)
 }
 
+/// Writes and syncs file contents on the same handle before closing it.
+/// This truncates in place; sync the parent with Dir.sync for entry durability.
+/// Errors can leave the file changed. This is not atomic replacement.
+pub fn write_durable(path: string, data: string) -> Result<int> {
+    let file: File = File.open(path, "create")?
+    match file.truncate(0) {
+        ok(_) => {}
+        err(e) => { file.close(); return err(e) }
+    }
+    var count: int = 0
+    match file.write_text_at(0, data) {
+        ok(n) => { count = n }
+        err(e) => { file.close(); return err(e) }
+    }
+    match file.sync() {
+        ok(_) => {}
+        err(e) => { file.close(); return err(e) }
+    }
+    file.close()?
+    return ok(count)
+}
+
+/// The binary counterpart of write_durable, preserving every byte.
+pub fn write_bytes_durable(path: string, data: Bytes) -> Result<int> {
+    let file: File = File.open(path, "create")?
+    match file.truncate(0) {
+        ok(_) => {}
+        err(e) => { file.close(); return err(e) }
+    }
+    var count: int = 0
+    match file.write_at(0, data) {
+        ok(n) => { count = n }
+        err(e) => { file.close(); return err(e) }
+    }
+    match file.sync() {
+        ok(_) => {}
+        err(e) => { file.close(); return err(e) }
+    }
+    file.close()?
+    return ok(count)
+}
+
+/// Syncs an existing file without changing its contents or creating it.
+/// Requires read/write access for portable File.sync behavior on Windows.
+/// Directories and directory entries remain the responsibility of Dir.sync.
+pub fn sync(path: string) -> Result<bool> {
+    let file: File = File.open(path, "rw")?
+    match file.sync() {
+        ok(_) => {}
+        err(e) => { file.close(); return err(e) }
+    }
+    return file.close()
+}
+
 pub fn append(path: string, data: string) -> Result<int> {
     let file: File = File.open(path, "append")?
     defer file.close()
