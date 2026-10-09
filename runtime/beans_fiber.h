@@ -35,6 +35,12 @@ enum {
 // One worker per OS thread. Created on the thread that will run it.
 BeansWorker* beans_worker_new(void);
 
+// Runs a root on a fixed guarded stack on the calling OS thread, then releases it.
+int beans_fiber_run_root(void (*entry)(void*), void* context, size_t stack_reserve);
+
+// Gives the active mapped stack to the runtime fault reporter, or returns zero.
+int beans_fiber_stack_bounds(void** low, void** high);
+
 // The compiled runtime's entry: promotes the calling thread to a worker
 // whose ROOT FIBER is the code that is already running, on the thread's own
 // stack, and gives the scheduler a small carved stack of its own. The first

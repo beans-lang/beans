@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Issue #202: the 256-level nesting contract and the 4096-node syntax-tree
-# depth contract (spec/SYNTAX.md, Lexical), under the 8 MiB stack the shells
-# give every compiler. Each construct that opens a level is driven to the
+# Issue #202: the 256-level nesting contract and the 16384-node syntax-tree
+# depth contract on the fixed compiler stack. Each construct is driven to the
 # boundary and past it; flat chains are driven to the depth limit and past
 # it. Accepted programs must run with the same output on both backends;
 # refused ones must give exactly one located error and exit 1, never a fault.
@@ -12,13 +11,13 @@ python3 - "${BEANSC:-$PWD/build/beansc}" <<'PY'
 import pathlib, re, subprocess, sys, tempfile
 
 sys.path.insert(0, "tools")
-from syntax_fuzz import (CHAIN_LIMIT, NESTED_SHAPES, NESTING_LIMIT, chain_depth, limit_stack,
+from syntax_fuzz import (CHAIN_LIMIT, CHAIN_MESSAGE, NESTED_SHAPES, NESTING_LIMIT, chain_depth, limit_stack,
                          nested_case)
 
 BIN = str(pathlib.Path(sys.argv[1]).resolve())
 STACK = limit_stack()
 NEST = re.escape("nesting deeper than %d levels" % NESTING_LIMIT)
-CHAIN = re.escape("syntax chain deeper than %d levels" % CHAIN_LIMIT)
+CHAIN = re.escape(CHAIN_MESSAGE)
 LOCATED = re.compile(r"main\.b:(\d+):(\d+): error: ([^\n]*)")
 
 
@@ -265,7 +264,7 @@ with tempfile.TemporaryDirectory(prefix="beans-issue202-") as directory:
         source, output = else_if(1000, value)
         accepted(work, "native", source, output, label="else-if native")
         for mode in ("parse", "check"):
-            refused(work, mode, else_if(4200, value)[0], CHAIN, label="else-if 4200")
+            refused(work, mode, else_if(CHAIN_LIMIT + 100, value)[0], CHAIN, label="else-if over limit")
     print("ok else-if chains: one nesting level, bounded by the chain limit")
 
     # Flat chains: accepted up to the depth limit on both backends, refused
@@ -276,8 +275,8 @@ with tempfile.TemporaryDirectory(prefix="beans-issue202-") as directory:
             accepted(work, mode, source, label=shape)
         for mode in ("run", "native"):
             accepted(work, mode, source, output, label=shape)
-    for shape, depths in (("flat_operators", (4093, 4094, 4095, 4096, 4097)),
-                          ("flat_members", (2044, 2045, 2046))):
+    for shape, depths in (("flat_operators", tuple(CHAIN_LIMIT + n for n in (-3, -2, -1, 0, 1))),
+                          ("flat_members", tuple(CHAIN_LIMIT // 2 + n for n in (-4, -3, -2)))):
         for depth in depths:
             case = nested_case(shape, depth)
             source = case["files"]["main.b"]
@@ -313,7 +312,7 @@ with tempfile.TemporaryDirectory(prefix="beans-issue202-") as directory:
         column = line.index("(") + 1 + NESTING_LIMIT
         for mode in ("parse", "check"):
             refused(work, mode, program, NEST, label="piece after %r" % earlier, at=(2, column))
-    refused(work, "check", 'fn main() {\n    let x: string = "{' + " + ".join(["1"] * 5000) + '}"\n}\n',
+    refused(work, "check", 'fn main() {\n    let x: string = "{' + " + ".join(["1"] * (CHAIN_LIMIT + 100)) + '}"\n}\n',
             CHAIN, label="chain in a piece")
     # Pieces parsed with the literal carry their own nested pieces' positions.
     code, out, err = lane(work, "check", 'fn main() {\n    let s: string = "x{"y{missing}"}"\n}\n')

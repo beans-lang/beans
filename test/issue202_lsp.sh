@@ -9,7 +9,7 @@ python3 - "${BEANSC:-$PWD/build/beansc}" <<'PY'
 import json, pathlib, re, subprocess, sys, tempfile
 
 sys.path.insert(0, "tools")
-from syntax_fuzz import limit_stack, nested_case
+from syntax_fuzz import CHAIN_LIMIT, CHAIN_MESSAGE, limit_stack, nested_case
 
 BIN = str(pathlib.Path(sys.argv[1]).resolve())
 def frame(message):
@@ -33,7 +33,7 @@ with tempfile.TemporaryDirectory(prefix="beans-issue202-lsp-") as directory:
                 " else { return -1 }\n}\nfn main() {\n    let r: int = pick(3)\n}\n")
     hostile = [nested_case(shape, depth)["files"]["main.b"] for shape, depth in
                (("parentheses", 32768), ("calls", 8192), ("blocks", 32768),
-                ("flat_members", 16384), ("flat_operators", 32768))] + [else_if(5000)]
+                ("flat_members", 16384), ("flat_operators", 32768))] + [else_if(CHAIN_LIMIT + 100)]
     inside = [nested_case(shape, depth)["files"]["main.b"] for shape, depth in
               (("parentheses", 256), ("calls", 256), ("flat_operators", 4000),
                ("flat_members", 2000))] + [else_if(300)]
@@ -80,7 +80,7 @@ with tempfile.TemporaryDirectory(prefix="beans-issue202-lsp-") as directory:
         if refused:
             diagnostics = notes.get(version, [])
             assert len(diagnostics) == 1, (version, diagnostics)
-            assert re.fullmatch(r"nesting deeper than 256 levels|syntax chain deeper than 4096 levels",
+            assert re.fullmatch(r"nesting deeper than 256 levels|" + re.escape(CHAIN_MESSAGE),
                                 diagnostics[0]["message"]), diagnostics
             start = diagnostics[0]["range"]["start"]
             lines = texts[version].split("\n")

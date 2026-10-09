@@ -699,7 +699,25 @@ fn cli_token_line(token: Token) -> string {
     return "{position}{token.kind}{ " ".repeat(if token.kind.len() < 10 { 10 - token.kind.len() } else { 0 }) } {token.text}"
 }
 
+extern "C" fn beans_compiler_stack_run(
+    entry: CFunctionPtr<fn(RawPtr<u8>)>, context: RawPtr<u8>) -> i32
+
 fn main() {
+    // All commands share the same stack, including editor servers and self-hosting.
+    let entry: LocalStoredCallback<fn(RawPtr<u8>)> =
+        LocalStoredCallback.create(0, fn() { compiler_main() })
+    var status: i32 = 0
+    unsafe {
+        status = beans_compiler_stack_run(entry.function_pointer(), entry.context())
+    }
+    if status != 0 {
+        io.eprintln("beansc: cannot create or run the 256 MiB compiler stack (error {status})")
+        os.exit(1)
+    }
+    entry.close()
+}
+
+fn compiler_main() {
     let args: List<string> = os.args()
     if args.len() == 0 {
         print_usage()

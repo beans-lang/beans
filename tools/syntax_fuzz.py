@@ -3,7 +3,7 @@
 
 No compiler fix or new language semantics lives here. Known-invalid cases have
 authored expectations taken from spec/SYNTAX.md; arbitrary mutations assert
-process safety only. The 256-layer nesting contract and the 4096-node chain
+process safety only. The 256-layer nesting contract and the 16384-node chain
 depth contract (spec/SYNTAX.md, Lexical) pin both acceptance at each limit and
 a located refusal above it. Saved sources are portable and can be replayed.
 
@@ -27,9 +27,11 @@ import time
 import differential_fuzz as df
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-GENERATOR_VERSION = "2"
+GENERATOR_VERSION = "3"
 NESTING_LIMIT = 256
-CHAIN_LIMIT = 4096
+CHAIN_LIMIT = 16384
+CHAIN_MESSAGE = ("syntax chain deeper than {} levels; split the expression into intermediate let bindings "
+                 "or split the else-if ladder into functions".format(CHAIN_LIMIT))
 BASELINE = ROOT / "test/cases/discovery/known_failures.json"
 SPEC = ROOT / "spec/SYNTAX.md"
 IO = "import std.io\n"
@@ -113,12 +115,12 @@ def valid_cases():
         "scoping", "variables", output="2\n1\n")
     yield case("empty_file", "", "lexical-edges", "lexical", modes=CHECK)
     yield case("only_comment", "// nothing here\n", "lexical-edges", "lexical", modes=CHECK)
-    # A 20 000-term sum is 20 002 syntax nodes deep, past the 4 096-node chain
+    # A 20 000-term sum is 20 002 syntax nodes deep, past the 16 384-node chain
     # limit (spec Lexical): refused once in the parser. It stays in this list
     # so the seeded mutation corpus derived from it does not shift.
     yield case("long_line", "fn main() {\n    let x: int = " + " + ".join(["1"] * 20000) + "\n}\n",
                "shallow-long-chains", "lexical", "reject", modes=PARSE,
-               rejection=rejection(2, re.escape("syntax chain deeper than {} levels".format(CHAIN_LIMIT))))
+               rejection=rejection(2, re.escape(CHAIN_MESSAGE)))
     # #206: settled language contracts, with values authored from the rules.
     for name, literal, output in (("literal_double_separator", "1__0", "10\n"),
                                   ("literal_trailing_separator", "1_", "1\n"),
@@ -525,7 +527,7 @@ def nested_case(shape, depth):
     # nested, so it follows the syntax-tree depth limit instead.
     if flat:
         disposition = "valid" if chain_depth(shape, depth) <= CHAIN_LIMIT else "reject"
-        message = "syntax chain deeper than {} levels".format(CHAIN_LIMIT)
+        message = CHAIN_MESSAGE
     else:
         disposition = "valid" if depth <= NESTING_LIMIT else "reject"
         message = "nesting deeper than {} levels".format(NESTING_LIMIT)
@@ -587,9 +589,8 @@ def spec_anchors():
 
 # GNU make raises the soft stack limit to the hard limit for everything it
 # runs, so a depth that faults from a shell survives under `make`. Every
-# compiler invocation here gets the same 8 MiB main-thread stack, which is the
-# Linux and macOS shell default, so a crash witness means the same thing on
-# every host and in every runner. Windows sizes the stack in the executable.
+# Pin the process main stack independently of the compiler's 256 MiB worker stack.
+# This keeps the launcher stress repeatable across shells and make invocations.
 STACK_LIMIT_BYTES = 8 * 1024 * 1024
 
 
@@ -821,9 +822,10 @@ def self_test():
     checks.append(("nesting-boundaries", [nested_case("parentheses", n)["disposition"]
                    for n in (255, 256, 257)] == ["valid", "valid", "reject"]))
     checks.append(("chain-boundaries", [nested_case(shape, n)["disposition"]
-                   for shape, n in (("flat_operators", 4094), ("flat_operators", 4095),
-                                    ("flat_members", 2045), ("flat_members", 2046),
-                                    ("else_if", 4092), ("else_if", 4093))]
+                   for shape, n in (("flat_operators", CHAIN_LIMIT - 2), ("flat_operators", CHAIN_LIMIT - 1),
+                                    ("flat_members", CHAIN_LIMIT // 2 - 3),
+                                    ("flat_members", CHAIN_LIMIT // 2 - 2),
+                                    ("else_if", CHAIN_LIMIT - 4), ("else_if", CHAIN_LIMIT - 3))]
                    == ["valid", "reject", "valid", "reject", "valid", "reject"]))
     extreme = list(corpus(11, extreme=True))
     checks.append(("unique-case-names", len({c["name"] for c in first}) == len(first) and

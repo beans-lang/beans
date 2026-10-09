@@ -388,17 +388,25 @@ fn main() {
   that file stops there.
 - A chain is not nested but is still deep: in `a + b + c`, `x.f().g()`, a run
   of `as` casts or an `else if` chain, each step hangs one syntax node below
-  the last. The syntax tree of one declaration may be at most **4096 nodes
+  the last. The syntax tree of one declaration may be at most **16384 nodes
   deep** along any path. Every operator, call, member access, index, cast,
   `?`, literal, name, statement, block and `else if` arm on the path counts
   one; parentheses add no node. Siblings count from the same level, so the
   limit does not restrict how many statements, list elements, arguments or
-  `match` arms there are. One statement holds a flat chain of about 4,000
-  binary operators or 2,000 method calls; split a longer one across
+  `match` arms there are. One statement holds a flat chain of about 16,000
+  binary operators or 8,000 method calls; split a longer one across
   statements. A deeper tree produces one located `syntax chain deeper than
-  4096 levels` error and exit status 1; parsing that file stops there. Both
-  limits are checked before any later compiler stage or the language server
-  walks the tree, which keeps those recursive walks inside an 8 MiB stack.
+  16384 levels; split the expression into intermediate let bindings or split
+  the else-if ladder into functions` error and exit status 1; parsing that file
+  stops there. Every native compiler command, including the language server,
+  debugger and self-host build, runs on a guarded **256 MiB root-fiber stack**
+  on POSIX and Windows hosts on the original OS thread, independent of the
+  shell's main-thread stack size. Stack creation failure is reported instead
+  of falling back to a smaller stack.
+  Both limits are checked before later recursive walks. The chain bound is
+  deliberately conservative; chains still use their original tree shape and
+  evaluation order. An iterative representation for unbounded chains remains
+  future work.
 - No semicolons. Newline ends a statement (Go-style: only after a token that can end one).
   This rule also applies inside parentheses: `(1` followed by a newline and
   `+ 2)` is refused, while `(1 +` followed by a newline and `2)` continues.

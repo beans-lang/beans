@@ -110,13 +110,15 @@ about the compiler.
 
 ## Stack limit
 
-Every compiler invocation in `syntax_fuzz.py` runs with an 8 MiB main-thread
-stack (`RLIMIT_STACK`), the Linux and macOS shell default. GNU make raises the
-soft limit to the hard limit for everything it runs, so without this pin a
-depth that faults from a shell survives under `make test-…` and a crash
-witness would flip between hosts and runners. The limit is recorded in
-`report.json` and in every failure's `meta.json`. Windows sizes the stack in
-the executable and records `null`.
+Every compiler invocation in `syntax_fuzz.py` pins the process main-thread
+stack (`RLIMIT_STACK`) to 8 MiB on POSIX, independently of the guarded
+256 MiB compiler root-fiber stack. This keeps launcher conditions repeatable across
+shells and make invocations. The process limit is recorded in `report.json`
+and every failure's `meta.json`; Windows records `null` for this POSIX limit
+and uses an explicit 256 MiB fiber-stack reservation. `test/issue212.sh`
+further stresses the POSIX launcher with a 1 MiB process stack. These checks
+exercise the 16384-node chain guard without changing expression evaluation
+order. Real Windows execution is owned by the existing hosted target CI jobs.
 
 ## Known-failure baseline
 
@@ -155,7 +157,7 @@ modes exercised, the expectation and the result. The authored matrix covers:
 | Delimiters and recovery | `delimiter_*`, `missing_operand`, `incomplete_member`, `independent_errors_kept` | parse, ast, check |
 | Diagnostic context chains | `test/cases/discovery/*.json` | check |
 | Nesting contract (256) | `nest_<shape>_<depth>` for parentheses, types, blocks, interpolation, prefix, mixed, calls, match_arms, if_else_blocks at 1/32/255/256/257 (+4096/8192/32768 with `--extreme`): valid to 256, refused once above | parse, check |
-| Chain-depth contract (4096 nodes) | `nest_else_if_*` (an `else if` chain is one nesting level), `nest_flat_operators_*`, `nest_flat_members_*`, `long_line` (a 20 000-term sum): valid while the syntax tree is at most 4096 nodes deep (`chain_depth`), refused once deeper; `long_line_wide` (20 000 list elements) is valid, since siblings do not add depth | parse, check |
+| Chain-depth contract (16384 nodes) | `nest_else_if_*` (an `else if` chain is one nesting level), `nest_flat_operators_*`, `nest_flat_members_*`, `long_line` (a 20 000-term sum): valid while the syntax tree is at most 16384 nodes deep (`chain_depth`), refused once deeper; `long_line_wide` (20 000 list elements) is valid, since siblings do not add depth | parse, check |
 | Process safety | `*_truncate_*`, `*_insert` mutations from every valid case; the same edits are opened unsaved in `test/lsp_navigation.sh`, which requires the server to answer and every diagnostic to lie inside its document | parse, check, lsp |
 
 Wrong-answer coverage lives in `differential_fuzz.py` groups (`core`, `widths`,

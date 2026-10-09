@@ -155,6 +155,8 @@ BEANS
         # nothing. 20,000 sits 1.85x under the measured ceiling, so it cannot
         # flake, and any regression of 1.85x or worse in stack per frame drops
         # the ceiling below it and fails here.
+        # The native executable uses this process limit; beansc's interpreter now uses its fixed 256 MiB root stack.
+        # The 20,000-frame floor still checks successful recursion, but no longer measures a 1.85x interpreter margin.
         fault_stack_kb=32768
         if ! ( ulimit -s "$fault_stack_kb" ) 2>/dev/null; then
             echo "fault report SKIPPED: cannot raise the stack limit to" \
@@ -227,7 +229,7 @@ BEANS
                 exit 1
             fi
         done
-        echo "fault report ok (stack pinned to ${fault_stack_kb} KiB;" \
+        echo "fault report ok (process stack pinned to ${fault_stack_kb} KiB;" \
              "10,000-frame precondition and 20,000-frame floor both met)"
         fi
         ;;

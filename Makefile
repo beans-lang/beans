@@ -117,6 +117,7 @@ test-frontend: $(BIN)
 	BEANSC="./$(BIN)" bash ./test/compiler_discovery.sh self-test
 	bash ./test/issue201.sh
 	bash ./test/issue202.sh
+	bash ./test/issue212.sh
 	bash ./test/issue202_lsp.sh
 	bash ./test/issue203.sh
 	bash ./test/checker_width.sh
@@ -318,6 +319,7 @@ test-core: $(BIN)
 	BEANSC="./$(BIN)" bash ./test/compiler_discovery.sh self-test
 	bash ./test/issue201.sh
 	bash ./test/issue202.sh
+	bash ./test/issue212.sh
 	bash ./test/issue202_lsp.sh
 	bash ./test/issue203.sh
 	bash ./test/checker_width.sh

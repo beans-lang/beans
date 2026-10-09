@@ -3961,6 +3961,15 @@ static _Thread_local char rt_fault_stack[RT_FAULT_STACK_BYTES];
 static void rt_fault_stack_bounds(char** low, char** high) {
     *low = NULL;
     *high = NULL;
+#if BEANS_RT_FIBERS
+    void* fiber_low = NULL;
+    void* fiber_high = NULL;
+    if (beans_fiber_stack_bounds(&fiber_low, &fiber_high)) {
+        *low = fiber_low;
+        *high = fiber_high;
+        return;
+    }
+#endif
 #if defined(__APPLE__)
     char* top = (char*)pthread_get_stackaddr_np(pthread_self());
     size_t size = pthread_get_stacksize_np(pthread_self());
@@ -14221,6 +14230,13 @@ typedef struct {
 } BHostEntry;
 
 #if BEANS_RT_FIBERS
+int32_t beans_compiler_stack_run(void (*entry)(void*), void* context);
+
+static long long host_call_compiler_stack_run(const unsigned long long* w) {
+    return beans_compiler_stack_run((void (*)(void*))(uintptr_t)w[0],
+                                    (void*)(uintptr_t)w[1]);
+}
+
 // Database packages use the same readiness owner as std.net. These entries
 // must be hosted explicitly: an ELF compiler executable exports no symbols.
 static long long host_call_fiber_wait_io(const unsigned long long* w) {
@@ -14345,6 +14361,8 @@ static const BHostEntry rt_host_table[] = {
     {"beans_rt_host_invoke", (void*)&beans_rt_host_invoke, 4,
      host_call_rt_host_invoke},
 #if BEANS_RT_FIBERS
+    {"beans_compiler_stack_run", (void*)&beans_compiler_stack_run, 2,
+     host_call_compiler_stack_run},
     {"beans_fiber_wait_io", (void*)&beans_fiber_wait_io, 3,
      host_call_fiber_wait_io},
     {"beans_fiber_netpoll", (void*)&beans_fiber_netpoll, 0,
@@ -16293,6 +16311,11 @@ static void* thread_main(void* arg) {
     cc_threads -= 1;
     return NULL;
 }
+// Compiler dispatch keeps signal and TLS ownership on its original OS thread.
+int32_t beans_compiler_stack_run(void (*entry)(void*), void* context) {
+    return beans_fiber_run_root(entry, context, (size_t)256 * 1024 * 1024);
+}
+
 BThread* beans_thread_spawn(void* thunk, void* env, long long result_ptr) {
     long long result_mask =
         result_ptr ? RT_I64_SLOT_MASK_AT(offsetof(BThread, result)) : 0;
