@@ -139,6 +139,8 @@ jobs:
       # running codegen. It reports a semantic break in under a minute, long
       # before any job that emits code.
       - name: The compiler checks itself
+        env:
+          BEANS_STDLIB: stdlib/std
         run: |
           beansc check src/main.b
           beansc parse examples/hello.b examples/tour.b
@@ -617,6 +619,12 @@ jobs:
           platforms: arm
 
       - name: Emit compiler IR for ARMv6 hard-float
+        env:
+          BEANS_RUNTIME: runtime/beans_rt.c
+          BEANS_STDLIB: stdlib/std
+          BEANS_ENCODING: runtime/encoding
+          BEANS_NET: runtime/net
+          BEANS_LOG: runtime/log
         run: |
           mkdir -p build/bootstrap-ir
           beansc build src/main.b --target arm-unknown-linux-gnueabihf \

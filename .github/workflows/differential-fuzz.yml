@@ -182,6 +182,12 @@ jobs:
       - name: Build Windows compiler
         if: runner.os == 'Windows'
         shell: bash
+        env:
+          BEANS_RUNTIME: runtime/beans_rt.c
+          BEANS_STDLIB: stdlib/std
+          BEANS_ENCODING: runtime/encoding
+          BEANS_NET: runtime/net
+          BEANS_LOG: runtime/log
         run: |
           mkdir -p build
           beansc build --release src/main.b --target x86_64-pc-windows-gnullvm -o build/beansc.exe
@@ -238,6 +244,12 @@ jobs:
       - name: Build Windows compiler
         if: runner.os == 'Windows'
         shell: bash
+        env:
+          BEANS_RUNTIME: runtime/beans_rt.c
+          BEANS_STDLIB: stdlib/std
+          BEANS_ENCODING: runtime/encoding
+          BEANS_NET: runtime/net
+          BEANS_LOG: runtime/log
         run: |
           mkdir -p build
           beansc build --release src/main.b --target x86_64-pc-windows-gnullvm -o build/beansc.exe

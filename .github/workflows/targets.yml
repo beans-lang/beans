@@ -81,6 +81,12 @@ jobs:
       - uses: ./.github/actions/setup-beansc
 
       - name: Emit compiler IR for Alpine
+        env:
+          BEANS_RUNTIME: runtime/beans_rt.c
+          BEANS_STDLIB: stdlib/std
+          BEANS_ENCODING: runtime/encoding
+          BEANS_NET: runtime/net
+          BEANS_LOG: runtime/log
         run: |
           mkdir -p build/bootstrap-ir
           beansc build src/main.b --target x86_64-unknown-linux-musl \
@@ -147,6 +153,12 @@ jobs:
           platforms: all
 
       - name: Emit compiler IR for the target host
+        env:
+          BEANS_RUNTIME: runtime/beans_rt.c
+          BEANS_STDLIB: stdlib/std
+          BEANS_ENCODING: runtime/encoding
+          BEANS_NET: runtime/net
+          BEANS_LOG: runtime/log
         run: |
           mkdir -p build/bootstrap-ir
           beansc build src/main.b --target '${{ matrix.target }}' \

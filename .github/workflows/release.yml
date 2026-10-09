@@ -223,6 +223,12 @@ jobs:
 
       - name: Build the Windows compiler to ship
         shell: bash
+        env:
+          BEANS_RUNTIME: runtime/beans_rt.c
+          BEANS_STDLIB: stdlib/std
+          BEANS_ENCODING: runtime/encoding
+          BEANS_NET: runtime/net
+          BEANS_LOG: runtime/log
         run: |
           mkdir -p build/windows_release
           beansc build --release src/main.b \
@@ -305,6 +311,12 @@ jobs:
           platforms: all
 
       - name: Emit compiler IR for the target host
+        env:
+          BEANS_RUNTIME: runtime/beans_rt.c
+          BEANS_STDLIB: stdlib/std
+          BEANS_ENCODING: runtime/encoding
+          BEANS_NET: runtime/net
+          BEANS_LOG: runtime/log
         run: |
           mkdir -p build/bootstrap-ir
           beansc build src/main.b --target '${{ matrix.target }}' \
@@ -467,6 +479,12 @@ jobs:
           platforms: arm
 
       - name: Emit compiler IR for ARMv6 hard-float
+        env:
+          BEANS_RUNTIME: runtime/beans_rt.c
+          BEANS_STDLIB: stdlib/std
+          BEANS_ENCODING: runtime/encoding
+          BEANS_NET: runtime/net
+          BEANS_LOG: runtime/log
         run: |
           mkdir -p build/bootstrap-ir
           beansc build src/main.b --target arm-unknown-linux-gnueabihf \
