@@ -20,6 +20,10 @@ on:
         description: "Skip Autobahn in the release gate; keep the other WebSocket tests"
         type: boolean
         default: false
+      fast:
+        description: "Short gate: skip the discovery soak, full make test and hosted fixpoint/differential runs; still build, package, install-test and smoke-test every target"
+        type: boolean
+        default: false
 
 # Least privilege by default. Only `publish` widens this, and only for itself.
 permissions:
@@ -30,8 +34,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # A fast dispatch skips the two-hour candidate soak. Tag pushes never set
+  # `fast`, so a tag always runs it.
   compiler-discovery:
     name: compiler discovery and candidate acceptance
+    if: ${{ !inputs.fast }}
     uses: ./.github/workflows/differential-fuzz.yml
     with:
       candidate: true
@@ -105,7 +112,8 @@ jobs:
       - name: Run release gate
         env:
           BEANS_AUTOBAHN_SKIP: ${{ inputs.skip_autobahn && '1' || '0' }}
-        run: make test
+        # A fast dispatch runs the quick gate here; the full gate otherwise.
+        run: make ${{ inputs.fast && 'test-quick' || 'test' }}
 
       - name: Build pinned Linux sysroot
         if: runner.os == 'Linux'
@@ -318,7 +326,8 @@ jobs:
                 build/bootstrap-ir/beansc.ll \
                 build/bootstrap-ir/beansc_ffi.c build/beansc
               export BEANSC_BOOT="$PWD/build/beansc"
-              BEANS_MUSL_REQUIRE=1 bash test/musl_hosted.sh ${{ matrix.arch }}
+              BEANS_HOSTED_BUILD_ONLY=${{ inputs.fast && '1' || '0' }} \
+                BEANS_MUSL_REQUIRE=1 bash test/musl_hosted.sh ${{ matrix.arch }}
               BEANS_RELEASE_CLASS=slim bash test/install_release.sh
               BEANS_RELEASE_CLASS=slim \
                 tools/package_release.sh "${{ env.VERSION }}" \
@@ -394,6 +403,7 @@ jobs:
             "$PPC64_MUSL_ROOT/bin/powerpc64-linux-musl-" "$PPC64_MUSL_SYSROOT"
 
       - name: Hosted compiler gate under qemu
+        if: ${{ !inputs.fast }}
         env:
           BEANS_LINUX_ARCH_REQUIRE: "1"
         run: |
@@ -482,7 +492,8 @@ jobs:
                 build/bootstrap-ir/beansc.ll \
                 build/bootstrap-ir/beansc_ffi.c build/beansc
               export BEANSC_BOOT="$PWD/build/beansc"
-              BEANS_ARMV6HF_REQUIRE=1 bash test/armv6hf_hosted.sh
+              BEANS_HOSTED_BUILD_ONLY=${{ inputs.fast && '1' || '0' }} \
+                BEANS_ARMV6HF_REQUIRE=1 bash test/armv6hf_hosted.sh
               BEANS_RELEASE_CLASS=slim \
                 tools/package_release.sh "${{ env.VERSION }}" \
                   arm-unknown-linux-gnueabihf /artifacts/dist
@@ -598,6 +609,7 @@ jobs:
         run: make -j2
 
       - name: Hosted gate under qemu
+        if: ${{ !inputs.fast }}
         env:
           BEANS_LINUX_ARCH_REQUIRE: "1"
         run: bash test/linux_hosted.sh '${{ matrix.arch }}'
@@ -656,6 +668,10 @@ jobs:
   # ---------------------------------------------------------------- publishing
   publish:
     name: publish release
+    # Runs when every job it needs succeeded, or was skipped by a fast
+    # dispatch (only compiler-discovery can be). Any failure still stops it, and
+    # release_completeness.sh below still refuses a release missing a target.
+    if: ${{ !cancelled() && !failure() }}
     needs:
       - version
       - compiler-discovery

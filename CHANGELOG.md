@@ -2,6 +2,70 @@
 
 This file records user-facing changes in each Beans release.
 
+## [0.1.52] - 2026-10-09
+
+Release contract: language=1.0, runtime_abi=22.
+
+This release fixes the findings of the 0.1.51 compiler discovery campaign
+(#209). The owner chose the release workflow's fast gate for it: the two-hour
+discovery soak and the hosted fixed-point and differential runs under qemu did
+not run, and the Unix packages ran `make test-quick` instead of `make test`.
+The full gates ran locally on macOS ARM64.
+
+Breaking changes:
+
+- `move(...)` takes only a binding the function owns: a local or a `move`
+  parameter. A borrowed parameter, a match binding, a loop variable or a
+  closure parameter is refused with one located error, because the closure
+  would share the caller's value; with a `send fn` that was a data race
+  (#217). Take the value into a local first, for example with `expect` or `?`.
+  latte's `circuit.b` needs a one-line change (beans-lang/latte#1).
+- Nesting is limited to 256 levels and a declaration's syntax tree to 4 096
+  nodes deep. Deep input that used to crash the compiler with a stack overflow
+  now gets one located error (#202). This also refuses expression chains that
+  0.1.51 compiled, roughly 4 100 to 16 000 terms of one sum, about 2 000
+  chained calls, or about 4 090 `else if` branches; #212 tracks lifting it.
+- A closure that reads an outer binding keeps it borrowed past loops and
+  returning branches, so a later `move` of that binding is refused. Before, the
+  program was accepted and then read a moved value: the interpreter panicked
+  and native code crashed (#217).
+
+Fixes:
+
+- `0x` and `0b` with no digits, a stray `>` such as `List<int>>`, unknown
+  bytes, a leading byte-order mark and an unterminated `/*` are refused with
+  one error that names the problem (#201).
+- One defect gives one error: following statements and members are kept,
+  an unterminated string ends with its line, and errors inside interpolation
+  point at the expression (#204).
+- Diagnostics show the source line, a caret that counts wide characters, and
+  `note:` lines for the opening bracket, the enclosing function, the generic
+  parameter and the import. `beansc lsp` sends them as `relatedInformation`.
+  The first `file:line:col: error:` line and the exit status are unchanged
+  (#205).
+- `else` may begin the line after the branch's `}`; `} else {` stays the house
+  style (#206).
+- Checking, `beansc parse` and `beansc ast` are linear in depth and width.
+  Nested generic types that took 70 s to check at 8 192 levels check in
+  0.03 s, and a function with thousands of `let`/`if` pairs no longer checks
+  in quadratic time (#203).
+- A `move(...)` closure owns the `var` it takes: assigning the variable later
+  no longer frees the closure's value, and a `send fn` no longer shares it with
+  the spawning thread. Branching closures spend their captures, and
+  reassigning a moved local from an `if` value works (#217).
+- Native IR emission is linear in the depth of nested `List`, `Map`, `Result`
+  and `Option` types; 24 nested lists took about 20 s to build (#216).
+- Sanitizer flags reach release builds whose IR is 4 MiB or more (#207).
+- Linux release builds use the chunked parallel backend again; since 0.1.30
+  every Linux build compiled as one module (#215).
+- The release workflow has an opt-in `fast` dispatch input. Tag pushes still
+  run the full gate.
+
+Known issues: native `==` on a nested boxed `Result` or a 255-deep `Option`
+fails to build (#210); sizing very deep inline `Result`/`Option` types is slow
+(#211); dependency fetches have no timeout (#213); two small parser
+diagnostics (#214).
+
 ## [0.1.51] - 2026-10-06
 
 Release contract: language=1.0, runtime_abi=22.
