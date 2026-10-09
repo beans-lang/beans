@@ -1,2 +1,3 @@
 tls server pem sni true
 tls server pkcs12 true
+tls server clean close true

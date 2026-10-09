@@ -127,6 +127,38 @@ fn string_literal_body(source: string) -> string {
         string_literal_body_end(source))
 }
 
+// One past the closing brace of a string piece, or -1 when it is open.
+// `start` is the byte after its opening brace. Parser caching and semantic
+// checking share this scanner so nested/raw strings keep one meaning.
+fn string_interpolation_end(raw: string, start: int, end: int) -> int {
+    var cursor: int = start
+    var depth: int = 1
+    var in_string: bool = false
+    for cursor < end && depth > 0 {
+        let current: int = raw.byte_at(cursor)
+        if current == 92 {
+            cursor += string_escape_length(raw, cursor, end)
+            continue
+        }
+        if !in_string && raw_open_at(raw, cursor, end) {
+            cursor = raw_literal_end(raw, cursor, end)
+            continue
+        }
+        if in_string {
+            if current == 34 { in_string = false }
+        } else if current == 34 {
+            in_string = true
+        } else if current == 123 {
+            depth += 1
+        } else if current == 125 {
+            depth -= 1
+        }
+        cursor += 1
+    }
+    if depth != 0 { return -1 }
+    return cursor
+}
+
 // ---- escapes ---------------------------------------------------------------
 
 fn hex_digit_at(source: string, index: int, end: int) -> int {

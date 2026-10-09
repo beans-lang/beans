@@ -487,7 +487,7 @@ fn run_pot_lock(lock_mode: string, update_module: string,
     let loaded: bool = loader.load(entry)
     if loaded && announce { io.println("wrote beans.lock") }
     for diagnostic: Diagnostic in loader.errors {
-        io.eprintln(render_diagnostic(diagnostic))
+        io.eprintln(render_loaded_diagnostic(diagnostic, loader))
     }
     return if loaded { 0 } else { 1 }
 }
@@ -1164,9 +1164,9 @@ fn main() {
         if command == "load" { io.println(render_module_graph(loader)) }
         for diagnostic: Diagnostic in loader.errors {
             if public_diagnostics {
-                io.eprintln(render_diagnostic(diagnostic))
+                io.eprintln(render_loaded_diagnostic(diagnostic, loader))
             } else {
-                io.println(render_diagnostic(diagnostic))
+                io.println(render_loaded_diagnostic(diagnostic, loader))
             }
         }
         if !loaded && command == "check" {
@@ -1208,9 +1208,9 @@ fn main() {
             }
             for diagnostic: Diagnostic in resolver.errors {
                 if public_diagnostics {
-                    io.eprintln(render_diagnostic(diagnostic))
+                    io.eprintln(render_loaded_diagnostic(diagnostic, loader))
                 } else {
-                    io.println(render_diagnostic(diagnostic))
+                    io.println(render_loaded_diagnostic(diagnostic, loader))
                 }
             }
             if !resolved && command == "resolve" { os.exit(1) }
@@ -1257,9 +1257,9 @@ fn main() {
                 }
                 for diagnostic: Diagnostic in checker.hir.errors {
                     if public_diagnostics {
-                        io.eprintln(render_diagnostic(diagnostic))
+                        io.eprintln(render_loaded_diagnostic(diagnostic, loader))
                     } else {
-                        io.println(render_diagnostic(diagnostic))
+                        io.println(render_loaded_diagnostic(diagnostic, loader))
                     }
                 }
                 if (!resolved || !checked) &&
@@ -1309,9 +1309,9 @@ fn main() {
                         layouts.validate_for_check()
                     for diagnostic: Diagnostic in layouts.errors {
                         if public_diagnostics {
-                            io.eprintln(render_diagnostic(diagnostic))
+                            io.eprintln(render_loaded_diagnostic(diagnostic, loader))
                         } else {
-                            io.println(render_diagnostic(diagnostic))
+                            io.println(render_loaded_diagnostic(diagnostic, loader))
                         }
                     }
                     let expressions: ExpressionChecker =
@@ -1319,9 +1319,9 @@ fn main() {
                     let expressions_ok: bool = expressions.run()
                     for diagnostic: Diagnostic in expressions.errors {
                         if public_diagnostics {
-                            io.eprintln(render_diagnostic(diagnostic))
+                            io.eprintln(render_loaded_diagnostic(diagnostic, loader))
                         } else {
-                            io.println(render_diagnostic(diagnostic))
+                            io.println(render_loaded_diagnostic(diagnostic, loader))
                         }
                     }
                     if !resolved || !checked || !layouts_ok ||
@@ -1376,7 +1376,7 @@ fn main() {
                             new MirLowerer(checker.hir)
                         let mir: MirProgram = lowerer.run()
                         for diagnostic: Diagnostic in mir.errors {
-                            io.eprintln(render_diagnostic(diagnostic))
+                            io.eprintln(render_loaded_diagnostic(diagnostic, loader))
                         }
                         if mir.errors.len() != 0 {
                             os.exit(1)
@@ -1397,8 +1397,8 @@ fn main() {
                             for diagnostic: Diagnostic in
                                 emitter.errors {
                                 io.eprintln(
-                                    render_diagnostic(
-                                        diagnostic))
+                                    render_loaded_diagnostic(
+                                        diagnostic, loader))
                             }
                             if emitter.errors.len() != 0 {
                                 os.exit(1)
@@ -1464,8 +1464,8 @@ fn main() {
                                 for diagnostic: Diagnostic in
                                     driver.errors {
                                     io.eprintln(
-                                        render_diagnostic(
-                                            diagnostic))
+                                        render_loaded_diagnostic(
+                                            diagnostic, loader))
                                 }
                                 if !built { os.exit(1) }
                             }
@@ -1495,7 +1495,7 @@ fn main() {
                     }
                     if rendered != "" { io.println(rendered) }
                     for diagnostic: Diagnostic in engine.errors {
-                        io.println(render_diagnostic(diagnostic))
+                        io.println(render_loaded_diagnostic(diagnostic, loader))
                     }
                     if !valid_layouts || engine.errors.len() != 0 {
                         os.exit(1)
@@ -1531,13 +1531,8 @@ fn main() {
                 io.println(cli_token_line(token))
             }
             for diagnostic: Diagnostic in lexer.errors {
-                io.eprintln(render_diagnostic(Diagnostic {
-                    severity: diagnostic.severity,
-                    file: source.path,
-                    line: diagnostic.line,
-                    col: diagnostic.col,
-                    message: diagnostic.message,
-                }))
+                io.eprintln(render_source_diagnostic(
+                    diagnostic_in_file(diagnostic, source.path), sources))
             }
             io.println(
                 "-- {token_count} tokens, {lexer.errors.len()} errors")
@@ -1546,7 +1541,7 @@ fn main() {
                 frontend_failed = true
             }
         } else {
-            let parser: Parser = new Parser(move tokens)
+            let parser: Parser = new Parser(move tokens, lexer.source_ended_in_error)
             let module: AstNode = parser.parse_module()
             if command == "parse" {
                 io.print(render_cli_ast(module))
@@ -1555,40 +1550,20 @@ fn main() {
             }
             for diagnostic: Diagnostic in lexer.errors {
                 if command == "parse" {
-                    io.eprintln(render_diagnostic(Diagnostic {
-                        severity: diagnostic.severity,
-                        file: source.path,
-                        line: diagnostic.line,
-                        col: diagnostic.col,
-                        message: diagnostic.message,
-                    }))
+                    io.eprintln(render_source_diagnostic(
+                        diagnostic_in_file(diagnostic, source.path), sources))
                 } else {
-                    io.println(render_diagnostic(Diagnostic {
-                        severity: diagnostic.severity,
-                        file: source.path,
-                        line: diagnostic.line,
-                        col: diagnostic.col,
-                        message: diagnostic.message,
-                    }))
+                    io.println(render_source_diagnostic(
+                        diagnostic_in_file(diagnostic, source.path), sources))
                 }
             }
             for diagnostic: Diagnostic in parser.errors {
                 if command == "parse" {
-                    io.eprintln(render_diagnostic(Diagnostic {
-                        severity: diagnostic.severity,
-                        file: source.path,
-                        line: diagnostic.line,
-                        col: diagnostic.col,
-                        message: diagnostic.message,
-                    }))
+                    io.eprintln(render_source_diagnostic(
+                        diagnostic_in_file(diagnostic, source.path), sources))
                 } else {
-                    io.println(render_diagnostic(Diagnostic {
-                        severity: diagnostic.severity,
-                        file: source.path,
-                        line: diagnostic.line,
-                        col: diagnostic.col,
-                        message: diagnostic.message,
-                    }))
+                    io.println(render_source_diagnostic(
+                        diagnostic_in_file(diagnostic, source.path), sources))
                 }
             }
             if command == "parse" {

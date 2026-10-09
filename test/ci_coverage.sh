@@ -166,6 +166,21 @@ if os.path.isdir(".github/workflows"):
             fail.append(g + " runs zero tests")
 
     fuzz = open(".github/workflows/differential-fuzz.yml").read()
+    release = open(".github/workflows/release.yml").read()
+    discovery = re.search(r"(?ms)^  compiler-discovery:\n(.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", release)
+    publish = re.search(r"(?ms)^  publish:\n(.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", release)
+    if not discovery or "candidate: true" not in discovery.group(1) or "seconds: 7200" not in discovery.group(1):
+        fail.append("release lost the two-hour compiler candidate gate")
+    if not publish or not re.search(r"^\s+- compiler-discovery\s*$", publish.group(1), re.M):
+        fail.append("publish no longer depends on compiler discovery")
+    candidate = re.search(r"(?ms)^  candidate:\n(.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", fuzz)
+    retained = re.search(r"(?ms)^  replay-retained:\n(.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", fuzz)
+    for name, section in (("candidate", candidate), ("replay-retained", retained)):
+        if not section or any(host not in section.group(1) for host in
+                              ("ubuntu-24.04", "macos-latest", "windows-latest")):
+            fail.append("compiler discovery lost its three-host " + name + " matrix")
+    if not retained or "--replay-root build/retained" not in retained.group(1):
+        fail.append("candidate failures are not replayed across hosts")
     seeds = re.findall(r"seed:\s*\"?(\d+)\"?", fuzz)
     if len(seeds) != len(set(seeds)):
         fail.append("differential-fuzz.yml shards share a seed: " + ",".join(seeds))

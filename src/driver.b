@@ -1974,6 +1974,9 @@ class NativeBuildDriver {
         for flag: string in self.debug_flags() {
             flags.push(flag)
         }
+        for flag: string in sanitizer_flags() {
+            flags.push(flag)
+        }
         if self.runtime_profile == "freestanding" {
             flags.push("-ffreestanding")
             flags.push("-fno-stack-protector")

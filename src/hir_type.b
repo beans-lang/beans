@@ -31,34 +31,50 @@ fn hir_fn_result(type: HirType) -> HirType {
     return new HirType("unit")
 }
 
-fn hir_type_key(type: HirType) -> string {
+// A key is a flat spelling. Append its fragments to one buffer: returning
+// a rendered child at every layer copies the entire child again, and callers
+// that walk nested types multiply that cost by their own traversal.
+fn append_hir_type_key(type: HirType, inout pieces: List<string>) {
     if type.name == "array" {
-        return "[{hir_type_key(type.args[0])};{type.array_length}]"
+        pieces.push("[")
+        append_hir_type_key(type.args[0], inout pieces)
+        pieces.push(";{type.array_length}]")
+        return
     }
     if type.name == "fn" {
-        var parameters: List<string> = []
+        if type.fn_sendable { pieces.push("send ") }
+        pieces.push("fn(")
         for index: int in 0..type.fn_parameter_count {
-            parameters.push(hir_type_key(type.args[index]))
+            if index != 0 { pieces.push(",") }
+            append_hir_type_key(type.args[index], inout pieces)
         }
-        var result: string = "unit"
+        pieces.push(")->")
         if type.fn_parameter_count < type.args.len() {
-            result =
-                hir_type_key(type.args[type.fn_parameter_count])
+            append_hir_type_key(
+                type.args[type.fn_parameter_count], inout pieces)
+        } else {
+            pieces.push("unit")
         }
-        let prefix: string =
-            if type.fn_sendable { "send " } else { "" }
-        return "{prefix}fn({parameters.join(",")})->{result}"
+        return
     }
     let name: string = canonical_hir_name(type.name)
+    pieces.push(name)
+    if type.args.len() == 0 { return }
+    pieces.push("<")
+    for index: int in 0..type.args.len() {
+        if index != 0 { pieces.push(",") }
+        append_hir_type_key(type.args[index], inout pieces)
+    }
     if name == "Result" && type.args.len() == 1 {
-        return "Result<{hir_type_key(type.args[0])},Error>"
+        pieces.push(",Error")
     }
-    if type.args.len() == 0 { return name }
-    var arguments: List<string> = []
-    for argument: HirType in type.args {
-        arguments.push(hir_type_key(argument))
-    }
-    return "{name}<{arguments.join(",")}>"
+    pieces.push(">")
+}
+
+fn hir_type_key(type: HirType) -> string {
+    var pieces: List<string> = []
+    append_hir_type_key(type, inout pieces)
+    return pieces.join("")
 }
 
 // Same *representation*, which is the emitter's question. hir_types_equal
@@ -88,7 +104,44 @@ fn hir_types_equal(left: HirType, right: HirType) -> bool {
     if left.name == "poison" || right.name == "poison" {
         return true
     }
-    return hir_type_key(left) == hir_type_key(right)
+    return hir_type_keys_equal(left, right)
+}
+
+// Compare the same normalized shape as hir_type_key, without materializing
+// both spellings. Only the outer poison marker is a wildcard; a poison
+// argument used to be a literal part of the key, and keeps that meaning.
+fn hir_type_keys_equal(left: HirType, right: HirType) -> bool {
+    let name: string = canonical_hir_name(left.name)
+    if name != canonical_hir_name(right.name) { return false }
+    if name == "array" {
+        return left.array_length == right.array_length &&
+               hir_type_keys_equal(left.args[0], right.args[0])
+    }
+    if name == "fn" {
+        if left.fn_parameter_count != right.fn_parameter_count ||
+           left.fn_sendable != right.fn_sendable {
+            return false
+        }
+        for index: int in 0..left.fn_parameter_count {
+            if !hir_type_keys_equal(left.args[index], right.args[index]) {
+                return false
+            }
+        }
+        return hir_type_keys_equal(hir_fn_result(left), hir_fn_result(right))
+    }
+    if name == "Result" &&
+       left.args.len() >= 1 && left.args.len() <= 2 &&
+       right.args.len() >= 1 && right.args.len() <= 2 {
+        return hir_type_keys_equal(left.args[0], right.args[0]) &&
+               hir_type_keys_equal(hir_result_error(left), hir_result_error(right))
+    }
+    if left.args.len() != right.args.len() { return false }
+    for index: int in 0..left.args.len() {
+        if !hir_type_keys_equal(left.args[index], right.args[index]) {
+            return false
+        }
+    }
+    return true
 }
 
 // A value whose type is poison was already refused, at the place it went

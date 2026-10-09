@@ -38,6 +38,19 @@ class LlvmSlotConversion {
     }
 }
 
+// type_is_reference of a type, and below an Option or a Result level the
+// same for its payload or its two arms (LlvmTextEmitter.reference_tree).
+class LlvmReferenceTree {
+    reference: bool
+    below: List<LlvmReferenceTree>
+
+    fn init(reference: bool,
+            move below: List<LlvmReferenceTree>) {
+        self.reference = reference
+        self.below = move below
+    }
+}
+
 // The stack slots a loop holds one list's header in. `data` and `cap` are
 // read-only mirrors — only the runtime's grow path writes them, and the
 // cache reloads all five behind it — so leaving the loop writes back `len`

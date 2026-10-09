@@ -18,8 +18,11 @@ pub class SubDeep extends lib.Deep {
 }
 
 fn report(what: string, got: bool, want: bool) {
-    if got == want { io.println("ok   {what} = {got}") }
-    else { io.println("BAD  {what} = {got}, want {want}") }
+    if got == want {
+        io.println("ok   {what} = {got}")
+    } else {
+        io.println("BAD  {what} = {got}, want {want}")
+    }
 }
 
 fn main() {

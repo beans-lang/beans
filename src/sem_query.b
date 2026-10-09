@@ -3,7 +3,8 @@ package main
 fn semantic_copy_diagnostics(from: List<Diagnostic>,
                              snapshot: SemanticSnapshot) {
     for diagnostic: Diagnostic in from {
-        snapshot.diagnostics.push(diagnostic)
+        snapshot.diagnostics.push(
+            snapshot.loader.contextual_diagnostic(diagnostic))
     }
 }
 

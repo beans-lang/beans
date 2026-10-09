@@ -6,7 +6,7 @@ import std.net
 import std.os
 import std.tls
 
-fn serve_pem(listener: net.TcpListener) -> bool {
+fn serve_pem(listener: net.TcpListener, require_close: bool) -> bool {
     let args: List<string> = os.args()
     let socket: net.TcpStream = listener.accept_timeout(5000).expect("accept pem")
     var identities: List<tls.TlsIdentity> = []
@@ -27,7 +27,7 @@ fn serve_pem(listener: net.TcpListener) -> bool {
                 err(_) => { return false }
             }
             let closed: Result<bool> = stream.close()
-            return true
+            return !require_close || closed.or(false)
         }
         err(e) => { io.println("pem accept {e.kind}"); return false }
     }
@@ -60,10 +60,18 @@ fn main() {
     match net.TcpListener.bind("127.0.0.1", port) {
         ok(listener) => {
             io.eprintln("listening")
-            let pem_ok: bool = serve_pem(listener)
+            let pem_ok: bool = serve_pem(listener, false)
             let p12_ok: bool = serve_pkcs12(listener)
             io.println("tls server pem sni {pem_ok}")
             io.println("tls server pkcs12 {p12_ok}")
+            // test/tls.sh asks for a third connection: the honest control of
+            // test/cases/tls_truncation.b, which needs a peer that really
+            // sends close_notify (#208). test/windows_native_run.sh opens
+            // only the first two and does not ask.
+            if args.len() > 10 && args[10] == "clean-close" {
+                let close_ok: bool = serve_pem(listener, true)
+                io.println("tls server clean close {close_ok}")
+            }
         }
         err(e) => { io.println("bind {e.kind}") }
     }

@@ -37,8 +37,14 @@ done
 ./build/beansc build --emit ir examples/hello.b -o build/armv6hf-self.ll >/dev/null
 grep -q "target triple = \"$triple\"" build/armv6hf-self.ll
 
-make test-fixpoint
-BEANS_DIFFERENTIAL_ENCODING_GOLDENS=1 bash test/differential.sh
+if [[ ${BEANS_HOSTED_BUILD_ONLY:-0} == 1 ]]; then
+    # A fast release dispatch: keep the self-hosted build and the hello
+    # smoke below, skip the fixed point and the differential loop.
+    echo "hosted gate: BEANS_HOSTED_BUILD_ONLY=1, skipping the fixed point and the differential loop"
+else
+    make test-fixpoint
+    BEANS_DIFFERENTIAL_ENCODING_GOLDENS=1 bash test/differential.sh
+fi
 
 ./build/beansc build examples/hello.b -o build/armv6hf-hello
 [[ $(./build/armv6hf-hello) == "hello from beans" ]]

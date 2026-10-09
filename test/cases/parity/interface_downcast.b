@@ -111,8 +111,11 @@ class DeepBoxed<T> implements Leaf {
 }
 
 fn report(what: string, got: bool, want: bool) {
-    if got == want { io.println("ok   {what} = {got}") }
-    else { io.println("BAD  {what} = {got}, want {want}") }
+    if got == want {
+        io.println("ok   {what} = {got}")
+    } else {
+        io.println("BAD  {what} = {got}, want {want}")
+    }
 }
 
 fn probe_leaf(v: Root, what: string, want: bool) {

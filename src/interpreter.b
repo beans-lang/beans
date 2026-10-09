@@ -1860,10 +1860,15 @@ class TreeInterpreter {
                 index += 1
             } else {
                 var need: int = 0
-                if byte >= 194 && byte <= 223 { need = 2 }
-                else if byte >= 224 && byte <= 239 { need = 3 }
-                else if byte >= 240 && byte <= 244 { need = 4 }
-                else { return none }
+                if byte >= 194 && byte <= 223 {
+                    need = 2
+                } else if byte >= 224 && byte <= 239 {
+                    need = 3
+                } else if byte >= 240 && byte <= 244 {
+                    need = 4
+                } else {
+                    return none
+                }
                 if index + need > length { return none }
                 let c1: int = source.get(index + 1)
                 if (c1 & 192) != 128 { return none }
@@ -2602,9 +2607,13 @@ class TreeInterpreter {
             }
         }
         let wanted_kind: int =
-            if name == "method_call_handle" { 0 }
-            else if name == "initializer_call_handle" { 1 }
-            else { 2 }
+            if name == "method_call_handle" {
+                0
+            } else if name == "initializer_call_handle" {
+                1
+            } else {
+                2
+            }
         let handle: int = arguments[0].int_data
         if handle <= 0 || handle > self.reflect_handle_kinds.len() ||
            self.reflect_handle_kinds[handle - 1] != wanted_kind {
@@ -2625,8 +2634,7 @@ class TreeInterpreter {
             TreeValue.string(owner), arguments[1], arguments[2]]
         return self.reflection_builtin_named(
             node,
-            if wanted_kind == 1 { "initializer_call" }
-            else { "function_call" },
+            if wanted_kind == 1 { "initializer_call" } else { "function_call" },
             rewritten)
     }
 
@@ -5773,28 +5781,50 @@ class TreeInterpreter {
 
     fn binary(node: HirNode,
               frame: TreeFrame) -> TreeValue {
-        let left: TreeValue =
-            self.expression(node.children[0], frame)
-        if left.kind == "propagate" { return left }
-        if node.value == "&&" {
-            if !self.truth(node, left) {
-                return TreeValue.boolean(false)
-            }
-            return TreeValue.boolean(self.truth(
-                node,
-                self.expression(node.children[1], frame)))
+        // Flat left-associative input creates a deep left spine. Walk it
+        // iteratively while preserving the original operand order and each
+        // node's short-circuit decision. Recursive right operands are bounded
+        // by the parser's grammar/path limits.
+        var pending: List<HirNode> = []
+        var cursor: HirNode = node
+        for cursor.kind == "binary" {
+            pending.push(cursor)
+            cursor = cursor.children[0]
         }
-        if node.value == "||" {
-            if self.truth(node, left) {
-                return TreeValue.boolean(true)
+        var left: TreeValue = self.expression(cursor, frame)
+        if left.kind == "propagate" || self.failed { return left }
+        for pending.len() != 0 {
+            let current: HirNode = pending.pop().expect("pending binary node")
+            if current.value == "&&" {
+                if !self.truth(current, left) {
+                    left = TreeValue.boolean(false)
+                    if self.failed { return left }
+                    continue
+                }
+                left = TreeValue.boolean(self.truth(
+                    current, self.expression(current.children[1], frame)))
+            } else if current.value == "||" {
+                if self.truth(current, left) {
+                    left = TreeValue.boolean(true)
+                    if self.failed { return left }
+                    continue
+                }
+                left = TreeValue.boolean(self.truth(
+                    current, self.expression(current.children[1], frame)))
+            } else {
+                let right: TreeValue = self.expression(current.children[1], frame)
+                if right.kind == "propagate" { return right }
+                if self.failed { return right }
+                left = self.binary_values(current, left, right)
             }
-            return TreeValue.boolean(self.truth(
-                node,
-                self.expression(node.children[1], frame)))
+            if self.failed { return left }
         }
-        let right: TreeValue =
-            self.expression(node.children[1], frame)
-        if right.kind == "propagate" { return right }
+        return left
+    }
+
+    fn binary_values(node: HirNode,
+                     left: TreeValue,
+                     right: TreeValue) -> TreeValue {
         if node.value == "==" || node.value == "!=" {
             // A comparison over a type parameter is the `Eq` interface, not
             // the operators of whatever the instantiation bound: a float
@@ -11494,6 +11524,18 @@ class TreeInterpreter {
             new TreeValue("closure")
         result.closure_node = some(node)
         let captured: TreeFrame = new TreeFrame()
+        for child: HirNode in node.children {
+            if child.kind == "move_capture" &&
+               !captured.values.contains_key(child.binding_id) {
+                match self.take_capture_cell(
+                        frame, child.binding_id) {
+                    some(cell) => {
+                        captured.values[child.binding_id] = cell
+                    }
+                    none => {}
+                }
+            }
+        }
         self.collect_closure_captures(
             node, frame, captured)
         result.closure_frame = some(captured)
@@ -11546,6 +11588,34 @@ class TreeInterpreter {
         match frame.parent {
             some(outer) => {
                 return self.capture_cell(
+                    outer, binding)
+            }
+            none => { return none }
+        }
+    }
+
+    // A move(...) capture: the closure takes the binding's cell, made
+    // here if it has none yet, and the owner's slot is left spent with no
+    // cell. An assignment then lands in the slot, not in what the closure
+    // owns, and the frame no longer keeps that value alive (CD-28). The
+    // native backend does the same with its heap cells.
+    fn take_capture_cell(frame: TreeFrame,
+                         binding: int) -> Option<TreeValue> {
+        if frame.values.contains_key(binding) {
+            let current: TreeValue =
+                frame.values[binding]
+            var cell: TreeValue = current
+            if current.kind != "reference" {
+                let holder: TreeFrame = new TreeFrame()
+                holder.values[-1] = current
+                cell = TreeValue.reference(holder, -1)
+            }
+            frame.values[binding] = TreeValue.unset()
+            return some(cell)
+        }
+        match frame.parent {
+            some(outer) => {
+                return self.take_capture_cell(
                     outer, binding)
             }
             none => { return none }
@@ -13996,17 +14066,29 @@ class TreeInterpreter {
             // Return constant operator spellings; slicing off '=' allocated
             // another string at every iteration of an otherwise scalar loop.
             let operation: string =
-                if node.value == "+=" { "+" }
-                else if node.value == "-=" { "-" }
-                else if node.value == "*=" { "*" }
-                else if node.value == "/=" { "/" }
-                else if node.value == "%=" { "%" }
-                else if node.value == "&=" { "&" }
-                else if node.value == "|=" { "|" }
-                else if node.value == "^=" { "^" }
-                else if node.value == "<<=" { "<<" }
-                else if node.value == ">>=" { ">>" }
-                else { node.value.slice(0, node.value.len() - 1) }
+                if node.value == "+=" {
+                    "+"
+                } else if node.value == "-=" {
+                    "-"
+                } else if node.value == "*=" {
+                    "*"
+                } else if node.value == "/=" {
+                    "/"
+                } else if node.value == "%=" {
+                    "%"
+                } else if node.value == "&=" {
+                    "&"
+                } else if node.value == "|=" {
+                    "|"
+                } else if node.value == "^=" {
+                    "^"
+                } else if node.value == "<<=" {
+                    "<<"
+                } else if node.value == ">>=" {
+                    ">>"
+                } else {
+                    node.value.slice(0, node.value.len() - 1)
+                }
             if current.kind == "int" &&
                written.kind == "int" {
                 value = self.integer_binary(

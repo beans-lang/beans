@@ -34,6 +34,13 @@ change:
 make test-core
 ```
 
+`make test-compiler-discovery` is the per-change syntax and diagnostic
+discovery gate: a spec-linked matrix of valid and must-reject programs, nesting
+stress and authored diagnostic targets. It stays green on the failures tracked
+in `test/cases/discovery/known_failures.json` and blocks on anything new,
+changed, or no longer reproducing. See
+[docs/COMPILER_DISCOVERY.md](docs/COMPILER_DISCOVERY.md).
+
 `make test-core` is every behavioural gate. `make test` adds `make
 test-self-host`, the fixed point: the compiler rebuilt by itself must answer
 identically and re-emit the compiler byte for byte. That fixed point is what a
@@ -186,15 +193,18 @@ platform works or publish a release. Record any toolchain, TLS, sanitizer,
 container, Windows, or network test skip separately from a passing gate.
 
 On macOS, record `command -v openssl` and `openssl version` before the TLS gate.
-The local run with system LibreSSL 3.3.6 failed the orderly-close check; the same
-source passed with OpenSSL 3.6.3. If using Homebrew OpenSSL, select its executable
-for the test server explicitly:
+The discovery baseline failed the orderly-close check with system LibreSSL
+3.3.6 because its `s_server` closed without `close_notify`. The revised
+`test/tls.sh` uses the existing Beans TLS server for that control and retains
+the raw proxy cuts against `s_server`; it does not skip the honest-close check
+under LibreSSL. If selecting Homebrew OpenSSL for the other local test peers,
+put its executable first on `PATH`:
 
 ```sh
 PATH="/opt/homebrew/opt/openssl@3/bin:$PATH" make test
 ```
 
-This selects the test server tool; the native macOS client still uses
+This selects the OpenSSL test tools; the native macOS client still uses
 SecureTransport. Do not treat an initial aggregate failure as a passing run
 because its failing suite later passed separately.
 

@@ -1,0 +1,42 @@
+{
+  "name": "diagnostic_eof",
+  "feature": "diagnostic-eof-context",
+  "spec": "spec/SYNTAX.md#lexical",
+  "disposition": "reject",
+  "modes": [
+    "check"
+  ],
+  "source_files": {
+    "main.b": "eof.b"
+  },
+  "snapshot_files": {
+    "stdout": "eof.stdout",
+    "stderr": "eof.stderr"
+  },
+  "rejection": {
+    "file": "main.b",
+    "line": 3,
+    "col": 1,
+    "message": "expected '\\}'",
+    "count": 1
+  },
+  "context": [
+    {
+      "file": "main.b",
+      "line": 1,
+      "col": 11,
+      "message": "opened"
+    },
+    {
+      "file": "main.b",
+      "line": 1,
+      "col": 4,
+      "message": "in function"
+    }
+  ],
+  "caret": true,
+  "repair": {
+    "main.b": "fn main() {\n    let x: int = 1\n}\n"
+  },
+  "snapshot_contract": "authored context-chain target; current output is retained in evidence, not blessed"
+}

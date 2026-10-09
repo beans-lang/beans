@@ -114,6 +114,19 @@ fn render_mir(program: MirProgram) -> string {
                     detail =
                         "{detail} captures=({captures.join(",")})"
                 }
+                if instruction.capture_move_mask != 0 {
+                    var moves: List<string> = []
+                    for index: int in
+                        0..instruction.capture_locals.len() {
+                        if index < 63 &&
+                           (instruction.capture_move_mask &
+                            (1 << index)) != 0 {
+                            moves.push(
+                                "l{instruction.capture_locals[index]}")
+                        }
+                    }
+                    detail = "{detail} moves=({moves.join(",")})"
+                }
                 if instruction.operands.len() != 0 {
                     detail =
                         "{detail} ({render_mir_operands(instruction.operands)})"

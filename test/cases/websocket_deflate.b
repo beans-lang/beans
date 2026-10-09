@@ -615,10 +615,15 @@ fn server_probe(offer: string, frames: Bytes, limit: int, finish: bool,
                 }
             }
             err(problem) => {
-                if problem.kind == "protocol" { kind = 1 }
-                else if problem.kind == "too_large" { kind = 2 }
-                else if problem.kind == "eof" { kind = 3 }
-                else { kind = 4 }
+                if problem.kind == "protocol" {
+                    kind = 1
+                } else if problem.kind == "too_large" {
+                    kind = 2
+                } else if problem.kind == "eof" {
+                    kind = 3
+                } else {
+                    kind = 4
+                }
                 open = false
             }
         }
@@ -689,8 +694,11 @@ fn run_server_probe(label: string, offer: string, frames: Bytes,
         ok(_) => {
             var joined: string = ""
             for item: string in delivered {
-                if joined.len() == 0 { joined = item }
-                else { joined = "{joined},{item}" }
+                if joined.len() == 0 {
+                    joined = item
+                } else {
+                    joined = "{joined},{item}"
+                }
             }
             io.println("{label}: got [{joined}] error={report[2]} close={report[3]} answered_extension={report[1] == 1}")
         }

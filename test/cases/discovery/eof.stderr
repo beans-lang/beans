@@ -1,0 +1,6 @@
+main.b:3:1: error: expected '}'
+
+^
+note: '{' opened at main.b:1:11
+note: in function main, declared at main.b:1:4
+main.b: stopped before type checking

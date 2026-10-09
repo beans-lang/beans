@@ -73,6 +73,21 @@ class ExpressionChecker {
     named_imports: Map<string, string>
     errors: List<Diagnostic>
     scopes: List<LocalScope>
+    // Branches keep move and borrow state by undoing writes, not by
+    // copying scopes. Copying every visible binding several times per
+    // `if`, `match` and loop made checking quadratic in the bindings a
+    // function holds (#203, CD-15). Every declaration and every write to a
+    // binding's state is logged here; a branch notes the log's length,
+    // reads back what it changed and undoes to that length, so a branch
+    // costs what it changed.
+    scope_log: List<ScopeUndo>
+    // Counts the points where the old checker replaced every binding with
+    // a copy. A LocalBinding from an older epoch is one it would have left
+    // behind, still held by a caller that looked it up before a branch.
+    // Such a binding is copied into its slot before the slot changes, and
+    // a caller reads and writes state through the slot's object
+    // (current_binding, write_binding_state), not the old one (CD-25).
+    scope_epoch: int
     current: HirFunction
     current_constraints: List<HirGeneric>
     // check_field_defaults resolves each declaration's
@@ -99,6 +114,14 @@ class ExpressionChecker {
     feature_guards: List<string>
     take_floor_depth: int
     capture_floor_depth: int
+    // A closure's captures borrow what they read, but joins undo branch
+    // state, and a closure value outlives every branch of its body and the
+    // loop it is made in (CD-26). So each capture is logged here as it is
+    // read, and the closure borrows them again once its body is checked;
+    // what it borrowed then goes to closure_borrows, which a loop borrows
+    // again after it undoes its own state.
+    capture_uses: List<LocalBinding>
+    closure_borrows: List<LocalBinding>
     // The map a match subject reads its value from, while that match's arm
     // patterns are being declared. -1 when the subject is anything else.
     pattern_borrow_owner: int
@@ -169,6 +192,8 @@ class ExpressionChecker {
         self.named_imports = {}
         self.errors = []
         self.scopes = []
+        self.scope_log = []
+        self.scope_epoch = 0
         self.current = new HirFunction(
             "", "", "", false, false, "", 0, 0)
         self.current_constraints = []
@@ -185,6 +210,8 @@ class ExpressionChecker {
         self.take_floor_depth = -1
         self.pattern_borrow_owner = -1
         self.capture_floor_depth = -1
+        self.capture_uses = []
+        self.closure_borrows = []
         self.closure_depth = 0
         self.require_send_captures = false
         self.require_sync_captures = false
@@ -255,13 +282,45 @@ class ExpressionChecker {
         }
     }
 
-    fn fail(node: AstNode, message: string) {
+    // The function a diagnostic's body belongs to, as a note. The checker
+    // also runs constant initializers, field defaults and annotation
+    // arguments inside synthesized `$` functions that no one declared;
+    // those get no note rather than one naming `$defaults` at 1:1.
+    fn enclosing_function_note() -> Option<DiagnosticNote> {
+        let name: string = self.current.name
+        if name == "" || name.starts_with("$") { return none }
+        return some(DiagnosticNote {
+            file: self.current.file,
+            line: self.current.syntax.name_line,
+            col: self.current.syntax.name_col,
+            end_line: self.current.syntax.name_line,
+            end_col: self.current.syntax.name_col + name.len(),
+            message: "in function {name}, declared",
+        })
+    }
+
+    fn fail(node: AstNode, message: string,
+            context: Option<DiagnosticNote> = none) {
+        let related: DiagnosticNotes = new DiagnosticNotes()
+        match context {
+            some(note) => { related.items.push(note) }
+            none => {}
+        }
+        match self.enclosing_function_note() {
+            some(note) => { related.items.push(note) }
+            none => {}
+        }
         self.errors.push(Diagnostic {
             severity: Severity.error,
             file: self.current.file,
             line: node.line,
             col: node.col,
+            end_line: node.line,
+            end_col: node.col + if node.kind == "name" {
+                node.value.len()
+            } else { 1 },
             message: message,
+            related: related,
         })
     }
 
@@ -486,7 +545,8 @@ class ExpressionChecker {
     // end of its scope exactly like a named binding, once and not twice.
     // Only the name goes away.
     fn declare(node: AstNode, type: HirType, mutable: bool,
-               borrowed: bool, inout_parameter: bool) -> int {
+               borrowed: bool, inout_parameter: bool,
+               lent: string = "") -> int {
         let at: int = self.scopes.len() - 1
         let discard: bool = is_discard_name(node.value)
         if !discard &&
@@ -498,10 +558,15 @@ class ExpressionChecker {
         let id: int = self.next_binding_id
         self.next_binding_id += 1
         if discard { return id }
-        self.scopes[at].bindings[node.value] =
+        let binding: LocalBinding =
             new LocalBinding(
                 id, node.value, type, mutable,
                 borrowed, inout_parameter)
+        binding.depth = at
+        binding.epoch = self.scope_epoch
+        binding.lent = lent
+        self.scopes[at].bindings[node.value] = binding
+        self.scope_log.push(new ScopeUndo(binding, true))
         return id
     }
 
@@ -517,14 +582,8 @@ class ExpressionChecker {
     }
 
     fn find_local(name: string) -> Option<LocalBinding> {
-        var found: Option<LocalBinding> = none
-        for scope: LocalScope in self.scopes {
-            match scope.bindings.get(name) {
-                some(binding) => { found = some(binding) }
-                none => {}
-            }
-        }
-        return found
+        return self.live_binding(
+            self.local_scope_index(name), name)
     }
 
     fn local_names() -> List<string> {
@@ -690,62 +749,215 @@ class ExpressionChecker {
         return found
     }
 
-    fn copy_scopes(source: List<LocalScope>) -> List<LocalScope> {
-        var result: List<LocalScope> = []
-        for scope: LocalScope in source {
-            let copied: LocalScope = new LocalScope()
-            for name: string in scope.bindings.keys() {
-                let binding: LocalBinding =
-                    scope.bindings[name]
-                let item: LocalBinding =
-                    new LocalBinding(
-                        binding.id, binding.name, binding.type,
-                        binding.mutable, binding.borrowed,
-                        binding.inout_parameter)
-                item.move_state = binding.move_state
-                item.borrows_owner = binding.borrows_owner
-                copied.bindings[name] = item
-            }
-            result.push(copied)
-        }
-        return move result
+    fn binding_copy(binding: LocalBinding) -> LocalBinding {
+        let item: LocalBinding =
+            new LocalBinding(
+                binding.id, binding.name, binding.type,
+                binding.mutable, binding.borrowed,
+                binding.inout_parameter)
+        item.move_state = binding.move_state
+        item.borrows_owner = binding.borrows_owner
+        item.lent = binding.lent
+        item.depth = binding.depth
+        item.epoch = self.scope_epoch
+        return item
     }
 
-    fn merge_move_states(left: List<LocalScope>,
-                         right: List<LocalScope>) {
-        for scope_index: int in 0..self.scopes.len() {
-            if scope_index >= left.len() ||
-               scope_index >= right.len() {
+    // The binding in a slot, as an object of the current epoch. An older
+    // one may still be held by a caller that looked it up before a branch,
+    // and the old checker had given the slot a copy by then, so the slot
+    // gets its own copy here before anyone can change it.
+    fn live_binding(depth: int, name: string) -> Option<LocalBinding> {
+        if depth < 0 || depth >= self.scopes.len() { return none }
+        match self.scopes[depth].bindings.get(name) {
+            some(binding) => {
+                if binding.epoch == self.scope_epoch {
+                    return some(binding)
+                }
+                let fresh: LocalBinding = self.binding_copy(binding)
+                self.scopes[depth].bindings[name] = fresh
+                return some(fresh)
+            }
+            none => { return none }
+        }
+    }
+
+    // The object in a binding's slot now. A caller that looked a binding
+    // up before a branch holds an object of an older epoch: the slot has
+    // had its own copy since, and nothing reads the old object again
+    // (CD-25). If the slot no longer holds that binding, the caller's
+    // object is all there is.
+    fn current_binding(binding: LocalBinding) -> LocalBinding {
+        if binding.epoch == self.scope_epoch { return binding }
+        match self.live_binding(binding.depth, binding.name) {
+            some(live) => {
+                if live.id == binding.id { return live }
+            }
+            none => {}
+        }
+        return binding
+    }
+
+    // Every write to a binding's state goes through here, and lands in the
+    // binding's slot: log what the slot held, then write. A write to an
+    // object of an older epoch used to reach only that object, so a
+    // `move(...)` closure whose body branched did not spend its captures,
+    // and an assignment from a branching value left the local moved
+    // (CD-25).
+    fn write_binding_state(binding: LocalBinding, move_state: string,
+                           borrowed: bool, borrows_owner: int) {
+        let slot: LocalBinding = self.current_binding(binding)
+        if slot.epoch == self.scope_epoch {
+            self.scope_log.push(new ScopeUndo(slot, false))
+        }
+        slot.move_state = move_state
+        slot.borrowed = borrowed
+        slot.borrows_owner = borrows_owner
+    }
+
+    // Where the old checker set the scopes to a copy taken when the log
+    // was `mark` long: every binding object changes epoch, and every write
+    // since then is undone, newest first.
+    fn rewind_scopes(mark: int) {
+        self.scope_epoch += 1
+        for self.scope_log.len() > mark {
+            let entry: ScopeUndo =
+                self.scope_log[self.scope_log.len() - 1]
+            self.scope_log.pop()
+            // a scope opened and closed since the mark is already gone
+            if entry.depth >= self.scopes.len() { continue }
+            if entry.declared {
+                self.scopes[entry.depth].bindings.remove(entry.name)
                 continue
             }
-            for name: string in
-                self.scopes[scope_index].bindings.keys() {
-                match left[scope_index].bindings.get(name) {
-                    some(left_binding) => {
-                        match right[scope_index].bindings.get(name) {
-                            some(right_binding) => {
-                                let merged_scope: LocalScope =
-                                    self.scopes[scope_index]
-                                let merged: LocalBinding =
-                                    merged_scope.bindings[name]
-                                merged.move_state =
-                                    if left_binding.move_state ==
-                                       right_binding.move_state {
-                                        left_binding.move_state
-                                    } else {
-                                        "maybe_moved"
-                                    }
-                                merged.borrowed =
-                                    left_binding.borrowed ||
-                                    right_binding.borrowed
-                            }
-                            none => {}
-                        }
-                    }
-                    none => {}
+            match self.live_binding(entry.depth, entry.name) {
+                some(binding) => {
+                    binding.move_state = entry.move_state
+                    binding.borrowed = entry.borrowed
+                    binding.borrows_owner = entry.borrows_owner
                 }
+                none => {}
             }
         }
+    }
+
+    // What the branch since `mark` left in the scopes that outlive it: a
+    // copy of each binding it changed or declared, in the order first
+    // touched.
+    fn branch_changes(mark: int) -> List<ScopeChange> {
+        var changes: List<ScopeChange> = []
+        var seen: Map<string, bool> = {}
+        for index: int in mark..self.scope_log.len() {
+            let entry: ScopeUndo = self.scope_log[index]
+            if entry.depth >= self.scopes.len() { continue }
+            let key: string = "{entry.depth} {entry.name}"
+            if seen.contains_key(key) { continue }
+            seen[key] = true
+            match self.scopes[entry.depth].bindings.get(entry.name) {
+                some(binding) => {
+                    changes.push(
+                        new ScopeChange(
+                            self.binding_copy(binding),
+                            entry.declared))
+                }
+                none => {}
+            }
+        }
+        return move changes
+    }
+
+    // Make the scopes hold what one branch left: its states, and the
+    // bindings it declared in scopes that outlive it.
+    fn apply_changes(changes: List<ScopeChange>) {
+        for change: ScopeChange in changes {
+            let source: LocalBinding = change.binding
+            if change.declared {
+                if source.depth < self.scopes.len() {
+                    let binding: LocalBinding =
+                        self.binding_copy(source)
+                    self.scopes[source.depth].bindings[source.name] =
+                        binding
+                    self.scope_log.push(
+                        new ScopeUndo(binding, true))
+                }
+                continue
+            }
+            match self.live_binding(source.depth, source.name) {
+                some(binding) => {
+                    self.scope_log.push(
+                        new ScopeUndo(binding, false))
+                    binding.move_state = source.move_state
+                    binding.borrowed = source.borrowed
+                    binding.borrows_owner = source.borrows_owner
+                }
+                none => {}
+            }
+        }
+    }
+
+    // Two branches that both continue, joined while the scopes hold the
+    // state from before them. A value moved on one path only may have been
+    // moved, and one borrowed on either path stays borrowed; the rest keeps
+    // the earlier state, and a binding a branch declared does not outlive
+    // the join. Only what a branch changed can differ, so only that is
+    // visited.
+    fn merge_changes(left: List<ScopeChange>,
+                     right: List<ScopeChange>) -> List<ScopeChange> {
+        var lefts: Map<string, LocalBinding> = {}
+        var rights: Map<string, LocalBinding> = {}
+        var keys: List<string> = []
+        var slots: List<LocalBinding> = []
+        for change: ScopeChange in left {
+            if change.declared { continue }
+            let key: string =
+                "{change.binding.depth} {change.binding.name}"
+            lefts[key] = change.binding
+            keys.push(key)
+            slots.push(change.binding)
+        }
+        for change: ScopeChange in right {
+            if change.declared { continue }
+            let key: string =
+                "{change.binding.depth} {change.binding.name}"
+            rights[key] = change.binding
+            if !lefts.contains_key(key) {
+                keys.push(key)
+                slots.push(change.binding)
+            }
+        }
+        var merged: List<ScopeChange> = []
+        for index: int in 0..keys.len() {
+            let slot: LocalBinding = slots[index]
+            if slot.depth >= self.scopes.len() { continue }
+            match self.scopes[slot.depth].bindings.get(slot.name) {
+                some(base) => {
+                    var left_binding: LocalBinding = base
+                    var right_binding: LocalBinding = base
+                    match lefts.get(keys[index]) {
+                        some(binding) => { left_binding = binding }
+                        none => {}
+                    }
+                    match rights.get(keys[index]) {
+                        some(binding) => { right_binding = binding }
+                        none => {}
+                    }
+                    let result: LocalBinding = self.binding_copy(base)
+                    result.move_state =
+                        if left_binding.move_state ==
+                           right_binding.move_state {
+                            left_binding.move_state
+                        } else {
+                            "maybe_moved"
+                        }
+                    result.borrowed =
+                        left_binding.borrowed ||
+                        right_binding.borrowed
+                    merged.push(new ScopeChange(result, false))
+                }
+                none => {}
+            }
+        }
+        return move merged
     }
 
     fn function_type(function: HirFunction) -> HirType {
@@ -865,14 +1077,40 @@ class ExpressionChecker {
         pattern: HirType, actual: HirType,
         generics: List<string>,
         inout inference: Map<string, HirType>,
-        at: AstNode) {
+        at: AstNode, inference_owner: Option<HirFunction> = none) {
+        if hir_already_refused(actual) { return }
         if self.generic_name_in(pattern.name, generics) {
             match inference.get(pattern.name) {
                 some(previous) => {
-                    if !hir_types_equal(previous, actual) {
+                    if !hir_already_refused(previous) &&
+                       !hir_types_equal(previous, actual) {
+                        var context: Option<DiagnosticNote> = none
+                        match inference_owner {
+                            some(function) => {
+                                for generic: AstNode in function.syntax.children {
+                                    if generic.kind != "generic" { continue }
+                                    if generic.value != pattern.name &&
+                                       !generic.value.starts_with("{pattern.name} ") {
+                                        continue
+                                    }
+                                    context = some(DiagnosticNote {
+                                        file: function.file,
+                                        line: generic.name_line,
+                                        col: generic.name_col,
+                                        end_line: generic.name_line,
+                                        end_col: generic.name_col + pattern.name.len(),
+                                        message: "generic parameter {pattern.name} declared",
+                                    })
+                                    break
+                                }
+                            }
+                            none => {}
+                        }
                         self.fail(
                             at,
-                            "generic {pattern.name} was {render_hir_type(previous)}, then {render_hir_type(actual)}")
+                            "generic {pattern.name} was {render_hir_type(previous)}, then {render_hir_type(actual)}; expected {render_hir_type(previous)}, got {render_hir_type(actual)}",
+                            context)
+                        inference[pattern.name] = poison_hir_type()
                     }
                 }
                 none => {
@@ -901,12 +1139,12 @@ class ExpressionChecker {
                 self.infer_generic_type(
                     pattern.args[index],
                     actual.args[index],
-                    generics, inout inference, at)
+                    generics, inout inference, at, inference_owner)
             }
             self.infer_generic_type(
                 hir_fn_result(pattern),
                 hir_fn_result(actual),
-                generics, inout inference, at)
+                generics, inout inference, at, inference_owner)
             return
         }
         if pattern.args.len() != actual.args.len() {
@@ -915,7 +1153,7 @@ class ExpressionChecker {
         for index: int in 0..pattern.args.len() {
             self.infer_generic_type(
                 pattern.args[index], actual.args[index],
-                generics, inout inference, at)
+                generics, inout inference, at, inference_owner)
         }
     }
 
@@ -2351,9 +2589,6 @@ class ExpressionChecker {
     fn is_move_only_seen(
         type: HirType,
         inout seen: Map<string, bool>) -> bool {
-        let key: string = hir_type_key(type)
-        if seen.contains_key(key) { return false }
-        seen[key] = true
         if type.name == "array" &&
            type.args.len() == 1 {
             return self.is_move_only_seen(
@@ -2370,7 +2605,14 @@ class ExpressionChecker {
                     return true
                 }
             }
+            return false
         }
+        // Builtin containers are an acyclic type tree. Only declaration
+        // edges can revisit a type through fields or inheritance; key those
+        // edges, rather than rendering every suffix of a nested Option.
+        let key: string = hir_type_key(type)
+        if seen.contains_key(key) { return false }
+        seen[key] = true
         match self.declaration_for(type) {
             some(declaration) => {
                 if declaration.is_unique { return true }
@@ -6103,6 +6345,12 @@ class ExpressionChecker {
         // type with a refused part carries the marker into that rendering,
         // and the part's real problem was already reported (#175).
         if hir_already_refused(type) { return }
+        self.validate_accepted_target_type(node, type)
+    }
+
+    // The wrapper established that the whole tree has no refused part.
+    // Repeating that recursive scan at each child would walk every suffix.
+    fn validate_accepted_target_type(node: AstNode, type: HirType) {
         if (type.name == "StoredCallback" ||
             type.name == "LocalStoredCallback") &&
            type.args.len() == 1 &&
@@ -6267,7 +6515,7 @@ class ExpressionChecker {
             none => {}
         }
         for argument: HirType in type.args {
-            self.validate_target_type(node, argument)
+            self.validate_accepted_target_type(node, argument)
         }
     }
 
@@ -6292,12 +6540,55 @@ class ExpressionChecker {
         return ". A Beans string keeps every byte, NULs included, so key by string and convert with Bytes.to_string()"
     }
 
+    fn report_interpolation_diagnostic(value: Diagnostic, literal: AstNode,
+                                      column_offset: int, piece: string) {
+        var located: Diagnostic = value
+        located.file = self.current.file
+        if located.line == 1 {
+            located.line = literal.line
+            located.col += column_offset
+        }
+        if located.end_line == 1 {
+            located.end_line = literal.line
+            located.end_col += column_offset
+        }
+        let notes: DiagnosticNotes = new DiagnosticNotes()
+        for note: DiagnosticNote in value.related.items {
+            var related: DiagnosticNote = note
+            if related.file == "" { related.file = self.current.file }
+            if related.line == 1 {
+                related.line = literal.line
+                related.col += column_offset
+            }
+            if related.end_line == 1 {
+                related.end_line = literal.line
+                related.end_col += column_offset
+            }
+            notes.items.push(related)
+        }
+        notes.items.push(DiagnosticNote {
+            file: self.current.file,
+            line: literal.line,
+            col: literal.col,
+            end_line: literal.line,
+            end_col: literal.col + 1,
+            message: "in string piece \{{piece}\}",
+        })
+        match self.enclosing_function_note() {
+            some(note) => { notes.items.push(note) }
+            none => {}
+        }
+        located.related = notes
+        self.errors.push(located)
+    }
+
     fn check_interpolations(node: AstNode) -> List<HirNode> {
         var lowered: List<HirNode> = []
         let raw: string = node.value
         if raw.len() < 2 { return move lowered }
         // A raw literal is bytes: `{` in it is a brace, not a slot.
         if string_literal_is_raw(raw) { return move lowered }
+        var piece_index: int = 0
         var index: int = string_literal_body_start(raw)
         let end: int = string_literal_body_end(raw)
         for index < end {
@@ -6311,41 +6602,8 @@ class ExpressionChecker {
                 continue
             }
             let start: int = index + 1
-            var cursor: int = start
-            var depth: int = 1
-            var in_string: bool = false
-            for cursor < end && depth > 0 {
-                let current: int = raw.byte_at(cursor)
-                if current == 92 {
-                    cursor += string_escape_length(
-                        raw, cursor, end)
-                    continue
-                }
-                // A raw literal nested in the slot is bytes: its braces do
-                // not nest the slot and its quotes do not open a string.
-                // Step over it whole, the way the lexer did, so the slot
-                // ends at its own `}` and not at a brace inside a route
-                // template or a hashed raw body.
-                if !in_string &&
-                   raw_open_at(raw, cursor, end) {
-                    cursor = raw_literal_end(
-                        raw, cursor, end)
-                    continue
-                }
-                if in_string {
-                    if current == 34 {
-                        in_string = false
-                    }
-                } else if current == 34 {
-                    in_string = true
-                } else if current == 123 {
-                    depth += 1
-                } else if current == 125 {
-                    depth -= 1
-                }
-                cursor += 1
-            }
-            if depth != 0 { break }
+            let cursor: int = string_interpolation_end(raw, start, end)
+            if cursor < 0 { break }
             let segment: string =
                 raw.slice(start, cursor - 1)
             index = cursor
@@ -6363,13 +6621,17 @@ class ExpressionChecker {
             let errors_before: int = self.errors.len()
             let expression_source: string =
                 interpolation_expression_source(segment)
-            let lexer: Lexer =
-                new Lexer(expression_source)
-            let tokens: List<Token> = lexer.scan()
-            let parser: Parser =
-                new Parser(move tokens)
-            let expression: AstNode =
+            let lexer: Lexer = new Lexer(expression_source)
+            var tokens: List<Token> = []
+            if !node.interpolation_syntax_ready { tokens = lexer.scan() }
+            let parser: Parser = new Parser(move tokens, lexer.source_ended_in_error)
+            let cached: bool = node.interpolation_syntax_ready
+            let expression: AstNode = if cached {
+                node.interpolations[piece_index]
+            } else {
                 parser.parse_standalone_expression()
+            }
+            piece_index += 1
             // Every parse error inside a piece that opens with '{' is
             // downstream of the same mistake, and each one points between
             // the braces rather than at them. Burying the one line that
@@ -6383,24 +6645,22 @@ class ExpressionChecker {
                 continue
             }
             for diagnostic: Diagnostic in lexer.errors {
-                self.fail(
-                    node,
-                    "in string piece \{{segment}\}: {diagnostic.message}")
+                self.report_interpolation_diagnostic(diagnostic, node, node.col + start - 1, segment)
             }
             for diagnostic: Diagnostic in parser.errors {
-                self.fail(
-                    node,
-                    "in string piece \{{segment}\}: {diagnostic.message}")
+                self.report_interpolation_diagnostic(diagnostic, node, node.col + start - 1, segment)
             }
             if lexer.errors.len() == 0 &&
                parser.errors.len() == 0 {
                 // The piece was parsed as a tiny source starting at 1:1.
                 // Move it onto the literal before checking so semantic
                 // errors point at the bytes the user wrote.
-                ast_place_interpolation(
-                    expression, node.line, node.col + start - 1)
+                if !cached {
+                    ast_place_interpolation(
+                        expression, node.line, node.col + start - 1)
+                    node.interpolations.push(expression)
+                }
                 self.qualify_unresolved_types(expression)
-                node.interpolations.push(expression)
                 let piece_errors: int = self.errors.len()
                 let piece: HirNode = self.check_expression(
                     expression, no_hir_type())
@@ -6452,6 +6712,7 @@ class ExpressionChecker {
             }
             if brace_opened &&
                self.errors.len() > errors_before {
+                for self.errors.len() > errors_before { self.errors.pop() }
                 self.fail(
                     node,
                     "'\{\{' is not an escape — it starts an interpolation whose expression begins with '\{'; for a literal brace write \\\{ or \\\}")
@@ -6723,7 +6984,10 @@ class ExpressionChecker {
             self.local_scope_index(binding.name) <
                 self.capture_floor_depth
         if !captured { return }
-        binding.borrowed = true
+        self.write_binding_state(
+            binding, binding.move_state, true,
+            binding.borrows_owner)
+        self.capture_uses.push(binding)
         let capture_key: string = "{binding.id}"
         if binding.inout_parameter &&
            !self.bad_inout_captures.contains_key(capture_key) {
@@ -6775,6 +7039,52 @@ class ExpressionChecker {
             self.fail(
                 node,
                 "stored callback cannot capture '{binding.name}' of non-Sync type {render_hir_type(binding.type)}")
+        }
+    }
+
+    // Once a closure's body is checked: borrow every binding it captured
+    // from `mark` on that is still in scope, whichever path of the body
+    // read it, and log it for the loops around the closure. A binding the
+    // closure owns through move(...) is spent instead; send_move_captures
+    // still names this closure's own until the caller restores it.
+    fn borrow_captures(mark: int) {
+        var seen: Map<int, bool> = {}
+        for index: int in mark..self.capture_uses.len() {
+            let capture: LocalBinding = self.capture_uses[index]
+            if seen.contains_key(capture.id) ||
+               self.send_move_captures.contains_key(capture.id) {
+                continue
+            }
+            seen[capture.id] = true
+            if self.borrow_capture(capture) {
+                self.closure_borrows.push(capture)
+            }
+        }
+    }
+
+    // After a loop undoes its state: a closure made in it may still be
+    // alive, so what it captured stays borrowed.
+    fn keep_closure_borrows(mark: int) {
+        for index: int in mark..self.closure_borrows.len() {
+            self.borrow_capture(self.closure_borrows[index])
+        }
+    }
+
+    // Borrow the binding in the capture's slot, if it is still the one
+    // captured: a scope may have closed, or another binding of that name
+    // may sit there now.
+    fn borrow_capture(capture: LocalBinding) -> bool {
+        match self.live_binding(capture.depth, capture.name) {
+            some(binding) => {
+                if binding.id != capture.id { return false }
+                if !binding.borrowed {
+                    self.write_binding_state(
+                        binding, binding.move_state, true,
+                        binding.borrows_owner)
+                }
+                return true
+            }
+            none => { return false }
         }
     }
 
@@ -7086,7 +7396,9 @@ class ExpressionChecker {
                         node,
                         "move is not allowed inside defer")
                 } else {
-                    binding.move_state = "moved"
+                    self.write_binding_state(
+                        binding, "moved", binding.borrowed,
+                        binding.borrows_owner)
                 }
                 self.expect_type(
                     node, binding.type, expected)
@@ -7179,10 +7491,15 @@ class ExpressionChecker {
         if signed_literal {
             self.literal_sign = -self.literal_sign
         }
+        let errors_before: int = self.errors.len()
         let operand: HirNode =
-            self.check_expression(node.children[0], expected)
+            self.check_expression(node.children[0],
+                if node.value == "!" { no_hir_type() } else { expected })
         if signed_literal {
             self.literal_sign = -self.literal_sign
+        }
+        if self.errors.len() > errors_before || hir_already_refused(operand.type) {
+            return self.make_node(node, "error", node.value, poison_hir_type())
         }
         let result: HirNode =
             self.make_node(node, "unary", node.value, operand.type)
@@ -7214,6 +7531,7 @@ class ExpressionChecker {
                   node.value != "inout" {
             self.fail(node, "unknown unary operator '{node.value}'")
         }
+        if self.errors.len() > errors_before { result.type = poison_hir_type() }
         self.expect_type(node, result.type, expected)
         return result
     }
@@ -7248,6 +7566,7 @@ class ExpressionChecker {
 
     fn check_binary(node: AstNode,
                     expected: HirType) -> HirNode {
+        let errors_before: int = self.errors.len()
         let operation: string = node.value
         var operand_expected: HirType = no_hir_type()
         if operation == "&&" || operation == "||" {
@@ -7262,8 +7581,30 @@ class ExpressionChecker {
         let left: HirNode =
             self.check_expression(
                 node.children[0], operand_expected)
+        let hint: HirType =
+            if hir_already_refused(left.type) { no_hir_type() } else { left.type }
+        let right_errors: int = self.errors.len()
         let right: HirNode =
-            self.check_expression(node.children[1], left.type)
+            self.check_expression(node.children[1], hint)
+        // The left type is a hint that gives a bare literal on the right its
+        // type (`x + 1` with `x: u8`). When the right side simply has another
+        // type, the operator rule below says why in its own terms ("'+' is
+        // not defined for string", "needs matching numbers"), so the plain
+        // mismatch the hint produced is dropped rather than reported first.
+        if self.errors.len() == right_errors + 1 &&
+           !hir_already_refused(right.type) {
+            let mismatch: Diagnostic = self.errors[right_errors]
+            if mismatch.line == node.children[1].line &&
+               mismatch.col == node.children[1].col &&
+               mismatch.message ==
+                   "expected {render_hir_type(hint)}, got {render_hir_type(right.type)}" {
+                self.errors.pop()
+            }
+        }
+        if self.errors.len() > errors_before ||
+           hir_already_refused(left.type) || hir_already_refused(right.type) {
+            return self.make_node(node, "error", node.value, poison_hir_type())
+        }
         var type: HirType = left.type
         if simd_description(left.type.name).is_some() ||
            simd_description(right.type.name).is_some() {
@@ -7371,6 +7712,7 @@ class ExpressionChecker {
         } else {
             self.fail(node, "operator '{operation}' is not checked yet")
         }
+        if self.errors.len() > errors_before { type = poison_hir_type() }
         self.expect_type(node, type, expected)
         let result: HirNode =
             self.make_node(node, "binary", operation, type)
@@ -8113,7 +8455,7 @@ class ExpressionChecker {
             }
             self.infer_generic_type(
                 result_pattern, expected,
-                function.generics, inout inference, node)
+                function.generics, inout inference, node, some(function))
         }
         let count: int = node.children.len() - first
         let required: int =
@@ -8192,6 +8534,7 @@ class ExpressionChecker {
                 self.substitute_generic_type(
                     pattern, function.generics,
                     inference)
+            let argument_errors: int = self.errors.len()
             let actual: HirNode =
                 self.check_argument(
                     node.children[index + first],
@@ -8205,11 +8548,25 @@ class ExpressionChecker {
                     function.parameters[index].passing,
                     "'{function.name}'", index,
                     inout inout_names)
+            // A bound generic's expectation is useful to contextual literals,
+            // but the inference owner must explain a conflicting binding.
+            // Replace that one provisional mismatch with its causal report.
+            if self.errors.len() == argument_errors + 1 &&
+               self.errors[argument_errors].message.starts_with("expected ") {
+                var generic_pattern: bool = false
+                for generic: string in function.generics {
+                    if self.type_mentions_generic(pattern, generic) {
+                        generic_pattern = true
+                        break
+                    }
+                }
+                if generic_pattern { self.errors.pop() }
+            }
             self.infer_generic_type(
                 pattern, actual.type,
                 function.generics,
                 inout inference,
-                node.children[index + first])
+                node.children[index + first], some(function))
             let wanted: HirType =
                 self.substitute_generic_type(
                     pattern, function.generics,
@@ -8225,9 +8582,10 @@ class ExpressionChecker {
                    node.children[index + first], wanted, false) {
                 unit_refused = true
             }
-            self.expect_type(
-                node.children[index + first],
-                actual.type, wanted)
+            if self.errors.len() == argument_errors {
+                self.expect_type(
+                    node.children[index + first], actual.type, wanted)
+            }
             result.children.push(actual)
             result.argument_passing.push(
                 function.parameters[index].passing)
@@ -10467,8 +10825,10 @@ class ExpressionChecker {
                                             callee.children[0],
                                             "cannot close borrowed {receiver.type.name} '{callee.children[0].value}'")
                                     } else {
-                                        binding.move_state =
-                                            "moved"
+                                        self.write_binding_state(
+                                            binding, "moved",
+                                            binding.borrowed,
+                                            binding.borrows_owner)
                                     }
                                 }
                                 none => {}
@@ -12058,6 +12418,9 @@ class ExpressionChecker {
         // move captures are validated against the enclosing scope before
         // the closure's own scope opens
         var moved_captures: List<LocalBinding> = []
+        var moved_borrowed: List<bool> = []
+        var moved_nodes: List<HirNode> = []
+        var refused_moves: List<int> = []
         var moved_names: Map<string, bool> = {}
         match move_captures {
             some(list) => {
@@ -12081,8 +12444,43 @@ class ExpressionChecker {
                                 self.fail(
                                     name_node,
                                     "use of moved value '{name_node.value}'")
+                            } else if self.capture_floor_depth >= 0 &&
+                                      self.local_scope_index(
+                                          name_node.value) <
+                                          self.capture_floor_depth {
+                                // a capture of the closure around this
+                                // one: that closure only borrows it
+                                // (CD-28)
+                                self.fail(
+                                    name_node,
+                                    "can't move outer value '{name_node.value}' from a loop or escaping closure")
+                                refused_moves.push(binding.id)
+                            } else if self.borrowed_by_closure(
+                                          binding) {
+                                // an earlier closure reads it through
+                                // the same storage for as long as that
+                                // closure lives (CD-28)
+                                self.fail(
+                                    name_node,
+                                    "can't move borrowed binding '{name_node.value}'")
+                                refused_moves.push(binding.id)
+                            } else if binding.lent != "" {
+                                // the function does not own it, so the
+                                // closure would share the value its
+                                // owner still holds (CD-29)
+                                self.fail(
+                                    name_node,
+                                    self.lent_move_message(binding))
+                                refused_moves.push(binding.id)
                             } else {
                                 moved_captures.push(binding)
+                                moved_borrowed.push(binding.borrowed)
+                                let moved: HirNode =
+                                    self.make_node(
+                                        name_node, "move_capture",
+                                        name_node.value, binding.type)
+                                moved.binding_id = binding.id
+                                moved_nodes.push(moved)
                             }
                         }
                         none => {
@@ -12113,7 +12511,14 @@ class ExpressionChecker {
         for binding: LocalBinding in moved_captures {
             self.send_move_captures[binding.id] = true
         }
+        // a refused move(...) is reported once, not again at each use in
+        // a send fn's body
+        for binding_id: int in refused_moves {
+            self.send_move_captures[binding_id] = true
+        }
         let capture_floor: int = self.scopes.len()
+        let capture_mark: int = self.capture_uses.len()
+        let borrow_mark: int = self.closure_borrows.len()
         self.capture_floor_depth = capture_floor
         self.closure_depth += 1
         if self.take_floor_depth < capture_floor {
@@ -12123,9 +12528,15 @@ class ExpressionChecker {
         self.current.body_result = result_type
         self.push_scope()
         for index: int in 0..parameter_nodes.len() {
+            // borrowed; one written `move` or `inout` is refused above,
+            // and not again at a move(...) of it
+            var lent: string = "binding"
+            for part: AstNode in parameter_nodes[index].children {
+                if part.kind == "passing" { lent = "" }
+            }
             let binding_id: int = self.declare(
                 parameter_nodes[index],
-                parameters[index], false, true, false)
+                parameters[index], false, true, false, lent)
             let lowered: HirNode = self.make_node(
                 parameter_nodes[index], "closure_parameter",
                 parameter_nodes[index].value,
@@ -12168,6 +12579,8 @@ class ExpressionChecker {
             }
         }
         self.pop_scope()
+        self.borrow_captures(capture_mark)
+        self.drop_owned_borrows(borrow_mark)
         self.current.result = saved_result
         self.current.body_result = saved_body_result
         self.closure_depth -= 1
@@ -12187,11 +12600,63 @@ class ExpressionChecker {
         }
         // the closure owns the listed captures now: the enclosing
         // bindings are spent, exactly as if each was passed to a move
-        // parameter
-        for binding: LocalBinding in moved_captures {
-            binding.move_state = "moved"
+        // parameter. The body's reads borrowed them; that borrow goes
+        // too, because the closure takes the storage with it and a
+        // `var` assigned again starts in storage of its own (CD-28).
+        for index: int in 0..moved_captures.len() {
+            let spent: LocalBinding =
+                self.current_binding(moved_captures[index])
+            self.write_binding_state(
+                spent, "moved", moved_borrowed[index],
+                spent.borrows_owner)
+        }
+        // both backends read these to give each moved capture to the
+        // closure alone
+        for moved: HirNode in moved_nodes {
+            result.children.push(moved)
         }
         return result
+    }
+
+    // move(...) of a binding the function does not own. A borrowed
+    // parameter can be declared `move`; a match binding is a borrow of
+    // the matched value whatever was matched (CD-29).
+    fn lent_move_message(binding: LocalBinding) -> string {
+        if binding.lent == "parameter" {
+            return "can't move borrowed parameter '{binding.name}'; declare it `move {binding.name}`"
+        }
+        if binding.lent == "match" {
+            return "can't move match binding '{binding.name}'; it borrows the matched value"
+        }
+        return "can't move borrowed binding '{binding.name}'"
+    }
+
+    // A closure made earlier that reads this binding without owning it
+    // shares its storage while that closure lives, so the binding cannot
+    // be moved into another closure (CD-28). closure_borrows lists what
+    // each closure borrowed once its body was checked.
+    fn borrowed_by_closure(binding: LocalBinding) -> bool {
+        for capture: LocalBinding in self.closure_borrows {
+            if capture.id == binding.id { return true }
+        }
+        return false
+    }
+
+    // A closure nested in a `move(...)` closure reads the captures the
+    // outer one owns, not the enclosing bindings, so it borrows nothing
+    // of theirs. Called while send_move_captures still names the outer
+    // closure's own captures.
+    fn drop_owned_borrows(mark: int) {
+        if self.send_move_captures.len() == 0 { return }
+        var kept: List<LocalBinding> = []
+        for index: int in 0..self.closure_borrows.len() {
+            let capture: LocalBinding = self.closure_borrows[index]
+            if index < mark ||
+               !self.send_move_captures.contains_key(capture.id) {
+                kept.push(capture)
+            }
+        }
+        self.closure_borrows = move kept
     }
 
     fn closure_names_local(node: HirNode,
@@ -12296,13 +12761,12 @@ class ExpressionChecker {
         let guard_mark: int =
             self.feature_guards.len()
         self.collect_feature_guards(node.children[0])
-        let base: List<LocalScope> =
-            self.copy_scopes(self.scopes)
+        let scope_mark: int = self.scope_log.len()
         let then_branch: HirNode =
             self.check_expression_block(
                 node.children[1], expected)
-        let yes: List<LocalScope> =
-            self.copy_scopes(self.scopes)
+        let yes: List<ScopeChange> =
+            self.branch_changes(scope_mark)
         result.children.push(then_branch)
         for self.feature_guards.len() > guard_mark {
             self.feature_guards.pop()
@@ -12313,7 +12777,7 @@ class ExpressionChecker {
             } else {
                 expected
             }
-        self.scopes = self.copy_scopes(base)
+        self.rewind_scopes(scope_mark)
         let else_branch: HirNode =
             if node.children[2].kind == "block" {
                 self.check_expression_block(
@@ -12322,10 +12786,10 @@ class ExpressionChecker {
                 self.check_if_expression(
                     node.children[2], branch_expected)
             }
-        let no: List<LocalScope> =
-            self.copy_scopes(self.scopes)
-        self.scopes = self.copy_scopes(base)
-        self.merge_move_states(yes, no)
+        let no: List<ScopeChange> =
+            self.branch_changes(scope_mark)
+        self.rewind_scopes(scope_mark)
+        self.apply_changes(self.merge_changes(yes, no))
         result.children.push(else_branch)
         if !hir_types_equal(
             then_branch.type, else_branch.type) {
@@ -12594,12 +13058,15 @@ class ExpressionChecker {
                 none => {}
             }
             let binding_id: int = self.declare(
-                binding, binding_type, false, true, false)
+                binding, binding_type, false, true, false,
+                "match")
             if self.pattern_borrow_owner >= 0 {
                 match self.find_local(binding.value) {
                     some(declared) => {
-                        declared.borrows_owner =
-                            self.pattern_borrow_owner
+                        self.write_binding_state(
+                            declared, declared.move_state,
+                            declared.borrowed,
+                            self.pattern_borrow_owner)
                     }
                     none => {}
                 }
@@ -12754,10 +13221,8 @@ class ExpressionChecker {
         result.children.push(subject)
         let borrow_owner: int =
             self.map_borrow_owner(subject)
-        let move_base: List<LocalScope> =
-            self.copy_scopes(self.scopes)
-        var merged: List<LocalScope> =
-            self.copy_scopes(move_base)
+        let scope_mark: int = self.scope_log.len()
+        var merged: List<ScopeChange> = []
         var has_continuing_arm: bool = false
         var covered: Map<string, bool> = {}
         var has_wildcard: bool = false
@@ -12771,7 +13236,7 @@ class ExpressionChecker {
             }
         for index: int in 1..node.children.len() {
             let arm: AstNode = node.children[index]
-            self.scopes = self.copy_scopes(move_base)
+            self.rewind_scopes(scope_mark)
             let lowered: HirNode =
                 self.make_node(
                     arm, "arm", "", new HirType("unit"))
@@ -12797,6 +13262,7 @@ class ExpressionChecker {
             // a statement match discards arm values, and its block arms
             // must keep discarding: a trailing call or nested match in
             // the block is a statement, never the arm's value
+            let arm_errors: int = self.errors.len()
             let value: HirNode =
                 if arm.children[1].kind == "block" {
                     self.check_expression_block(
@@ -12817,24 +13283,25 @@ class ExpressionChecker {
                 self.block_always_returns(
                     arm.children[1])
             if !arm_returns {
-                let arm_state: List<LocalScope> =
-                    self.copy_scopes(self.scopes)
+                let arm_state: List<ScopeChange> =
+                    self.branch_changes(scope_mark)
                 if !has_continuing_arm {
                     merged = move arm_state
                     has_continuing_arm = true
                 } else {
-                    self.scopes =
-                        self.copy_scopes(move_base)
-                    self.merge_move_states(
+                    self.rewind_scopes(scope_mark)
+                    merged = self.merge_changes(
                         merged, arm_state)
-                    merged = self.copy_scopes(self.scopes)
                 }
             }
             if !discard {
                 if arm_type.name == "" {
                     arm_type = value.type
                 }
-                if !hir_types_equal(value.type, arm_type) {
+                if self.errors.len() == arm_errors &&
+                   !hir_already_refused(value.type) &&
+                   !hir_already_refused(arm_type) &&
+                   !hir_types_equal(value.type, arm_type) {
                     self.fail(
                         arm,
                         "match arms have different types: {render_hir_type(arm_type)} and {render_hir_type(value.type)}")
@@ -12843,12 +13310,10 @@ class ExpressionChecker {
             lowered.type = value.type
             result.children.push(lowered)
         }
-        self.scopes =
-            if has_continuing_arm {
-                move merged
-            } else {
-                move move_base
-            }
+        self.rewind_scopes(scope_mark)
+        if has_continuing_arm {
+            self.apply_changes(merged)
+        }
         self.check_match_exhaustive(
             node, subject.type, covered,
             has_wildcard, saw_true, saw_false)
@@ -12868,7 +13333,8 @@ class ExpressionChecker {
                         expected: HirType) -> HirNode {
         // The declaration that supplied this expected type already failed.
         // Do not turn its initializer into a second, misleading error.
-        if expected.name == "poison" {
+        if expected.name == "poison" || node.kind == "error" ||
+           node.note == "parse_error" {
             return self.make_node(
                 node, "error", node.value, poison_hir_type())
         }
@@ -13603,18 +14069,24 @@ class ExpressionChecker {
                 place.binding_id = binding.id
                 let value: HirNode = self.check_expression(
                     node.children[1], binding.type)
+                // the value may branch, and then the state is in the
+                // slot's object, not this one (CD-25)
+                let state: LocalBinding = self.current_binding(binding)
                 if node.value == "=" {
                     self.require_move_source(
                         node.children[1], value.type,
                         "assignment")
                     if binding.mutable {
-                        binding.move_state = "available"
+                        self.write_binding_state(
+                            state, "available",
+                            state.borrowed,
+                            state.borrows_owner)
                     }
-                } else if binding.move_state == "moved" {
+                } else if state.move_state == "moved" {
                     self.fail(
                         target,
                         "use of moved value '{target.value}'")
-                } else if binding.move_state ==
+                } else if state.move_state ==
                           "maybe_moved" {
                     self.fail(
                         target,
@@ -13694,15 +14166,14 @@ class ExpressionChecker {
         self.loop_depth += 1
         if node.children.len() == 1 &&
            node.children[0].kind == "block" {
-            let base: List<LocalScope> =
-                self.copy_scopes(self.scopes)
+            let scope_mark: int = self.scope_log.len()
             let saved_floor: int =
                 self.take_floor_depth
             self.take_floor_depth = self.scopes.len()
             result.children.push(
                 self.check_nested_block(node.children[0]))
             self.take_floor_depth = saved_floor
-            self.scopes = move base
+            self.rewind_scopes(scope_mark)
             self.loop_depth -= 1
             return result
         }
@@ -13792,8 +14263,7 @@ class ExpressionChecker {
                 lowered_value_binding = some(lowered)
             }
             let block: AstNode = node.children[block_index]
-            let base: List<LocalScope> =
-                self.copy_scopes(self.scopes)
+            let scope_mark: int = self.scope_log.len()
             let saved_floor: int =
                 self.take_floor_depth
             self.take_floor_depth = self.scopes.len()
@@ -13802,12 +14272,13 @@ class ExpressionChecker {
                     block, "block", "", new HirType("unit"))
             self.push_scope()
             lowered_binding.binding_id = self.declare(
-                binding, element, false, true, false)
+                binding, element, false, true, false,
+                "binding")
             match lowered_value_binding {
                 some(lowered) => {
                     lowered.binding_id = self.declare(
                         node.children[1], value_element,
-                        false, true, false)
+                        false, true, false, "binding")
                 }
                 none => {}
             }
@@ -13823,14 +14294,13 @@ class ExpressionChecker {
             }
             self.pop_scope()
             self.take_floor_depth = saved_floor
-            self.scopes = move base
+            self.rewind_scopes(scope_mark)
             result.children.push(body)
             self.loop_depth -= 1
             return result
         }
         if node.children.len() >= 2 {
-            let base: List<LocalScope> =
-                self.copy_scopes(self.scopes)
+            let scope_mark: int = self.scope_log.len()
             let saved_floor: int =
                 self.take_floor_depth
             self.take_floor_depth = self.scopes.len()
@@ -13839,7 +14309,7 @@ class ExpressionChecker {
             result.children.push(
                 self.check_nested_block(node.children[1]))
             self.take_floor_depth = saved_floor
-            self.scopes = move base
+            self.rewind_scopes(scope_mark)
         } else {
             self.fail(node, "invalid for statement")
         }
@@ -14356,6 +14826,13 @@ class ExpressionChecker {
     }
 
     fn check_statement(node: AstNode) -> HirNode {
+        // The parser already reported this statement: a resource refusal
+        // leaves an error node where the statement was. The editor checks
+        // such partial trees, and must not add a second diagnostic.
+        if node.kind == "error" {
+            return self.make_node(
+                node, "error", node.value, poison_hir_type())
+        }
         if node.kind == "let" || node.kind == "var" {
             return self.check_local(node)
         }
@@ -14429,16 +14906,15 @@ class ExpressionChecker {
                 self.feature_guards.len()
             self.collect_feature_guards(
                 node.children[0])
-            let base: List<LocalScope> =
-                self.copy_scopes(self.scopes)
+            let scope_mark: int = self.scope_log.len()
             result.children.push(self.check_nested_block(
                 node.children[1]))
-            let yes: List<LocalScope> =
-                self.copy_scopes(self.scopes)
+            let yes: List<ScopeChange> =
+                self.branch_changes(scope_mark)
             for self.feature_guards.len() > guard_mark {
                 self.feature_guards.pop()
             }
-            self.scopes = self.copy_scopes(base)
+            self.rewind_scopes(scope_mark)
             if node.children.len() > 2 {
                 if node.children[2].kind == "block" {
                     result.children.push(self.check_nested_block(
@@ -14448,9 +14924,9 @@ class ExpressionChecker {
                         self.check_statement(node.children[2]))
                 }
             }
-            let no: List<LocalScope> =
-                self.copy_scopes(self.scopes)
-            self.scopes = self.copy_scopes(base)
+            let no: List<ScopeChange> =
+                self.branch_changes(scope_mark)
+            self.rewind_scopes(scope_mark)
             let yes_returns: bool =
                 self.block_always_returns(
                     node.children[1])
@@ -14463,17 +14939,25 @@ class ExpressionChecker {
                     self.statement_always_returns(
                         node.children[2])
                 }
+            // the old checker replaced the scopes once more here, with a
+            // copy of the branch that continues
             if yes_returns && !no_returns {
-                self.scopes = move no
+                self.scope_epoch += 1
+                self.apply_changes(no)
             } else if !yes_returns && no_returns {
-                self.scopes = move yes
+                self.scope_epoch += 1
+                self.apply_changes(yes)
             } else if !yes_returns && !no_returns {
-                self.merge_move_states(yes, no)
+                self.apply_changes(
+                    self.merge_changes(yes, no))
             }
             return result
         }
         if node.kind == "for" {
-            return self.check_for(node)
+            let borrow_mark: int = self.closure_borrows.len()
+            let lowered: HirNode = self.check_for(node)
+            self.keep_closure_borrows(borrow_mark)
+            return lowered
         }
         if node.kind == "break" || node.kind == "continue" {
             if self.loop_depth == 0 {
@@ -14546,6 +15030,8 @@ class ExpressionChecker {
         copy.resolved = source.resolved
         copy.note = source.note
         copy.parenthesized = source.parenthesized
+        copy.parse_path_cost = source.parse_path_cost
+        copy.interpolation_syntax_ready = source.interpolation_syntax_ready
         copy.name_line = source.name_line
         copy.name_col = source.name_col
         copy.end_line = source.end_line
@@ -14743,6 +15229,8 @@ class ExpressionChecker {
         self.feature_guards = []
         self.take_floor_depth = -1
         self.capture_floor_depth = -1
+        self.capture_uses = []
+        self.closure_borrows = []
         self.require_send_captures = false
         self.require_sync_captures = false
         self.send_move_captures = {}
@@ -14770,6 +15258,7 @@ class ExpressionChecker {
             }
         }
         self.scopes = []
+        self.scope_log = []
         self.push_scope()
         function.annotations =
             self.check_hir_annotations(function.annotations)
@@ -14807,7 +15296,12 @@ class ExpressionChecker {
                 parameter_node, parameter.type,
                 parameter.passing == "inout",
                 parameter.passing != "move",
-                parameter.passing == "inout")
+                parameter.passing == "inout",
+                if parameter.passing == "move" {
+                    ""
+                } else {
+                    "parameter"
+                })
         }
         self.append_runtime_wiring(function)
         for child: AstNode in function.syntax.children {
@@ -14940,10 +15434,23 @@ class ExpressionChecker {
         for scope: LocalScope in self.scopes {
             saved_scopes.push(scope)
         }
+        let saved_log: int = self.scope_log.len()
+        let saved_epoch: int = self.scope_epoch
         self.fold_one_const(constant)
         self.current = saved_current
         self.current_constraints = move saved_constraints
         self.scopes = move saved_scopes
+        self.restore_scope_log(saved_log, saved_epoch)
+    }
+
+    // After checking something else in the middle of a function: its log
+    // entries name its own scopes, and its branches never touched the
+    // function's bindings, so neither may count against them.
+    fn restore_scope_log(length: int, epoch: int) {
+        for self.scope_log.len() > length {
+            self.scope_log.pop()
+        }
+        self.scope_epoch = epoch
     }
 
     fn fold_one_const(constant: HirConst) {
@@ -15459,12 +15966,15 @@ class ExpressionChecker {
         for scope: LocalScope in self.scopes {
             saved_scopes.push(scope)
         }
+        let saved_log: int = self.scope_log.len()
+        let saved_epoch: int = self.scope_epoch
         self.check_one_declaration_defaults(
             declaration)
         self.current = saved_current
         self.current_constraints =
             move saved_constraints
         self.scopes = move saved_scopes
+        self.restore_scope_log(saved_log, saved_epoch)
     }
 
     fn check_one_declaration_defaults(

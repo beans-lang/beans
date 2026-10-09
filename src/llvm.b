@@ -2515,7 +2515,10 @@ partial class LlvmTextEmitter {
         // chunk is a whole module. Splitting one would either duplicate the
         // unit or strand the `!dbg` references, so a module that carries a
         // line table is never split. The driver already keeps `--debug` to a
-        // single chunk; this is the emitter refusing on its own terms.
+        // single chunk; this is the emitter refusing on its own terms. Only a
+        // line table puts nodes in this list: the Linux PIC and PIE levels of
+        // any other build are written whole in the head, which every chunk
+        // repeats (module_named_metadata).
         if self.debug_meta.len() != 0 { return move chunks }
         // -1 repeats the body in every chunk, -2 leaves it to the chunk that
         // owns the definitions, and anything else names its chunk

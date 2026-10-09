@@ -1,0 +1,5 @@
+broken/broken.b:3:12: error: unknown name 'missing'
+    return missing
+           ^
+note: in function answer, declared at broken/broken.b:2:8
+note: imported at main.b:2:1

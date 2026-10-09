@@ -368,25 +368,78 @@ fn main() {
 
 ## Lexical
 
+- Within one declaration the parser accepts at most **256 nested grammar
+  constructs** along any path. Each of these opens a level: a parenthesis, a
+  prefix operator (`-`, `!`, `~`, `move`, `inout`), a call's argument list, an
+  index, a list, map or record literal, a generic, array or function type that
+  encloses another type, explicit type arguments, an `if`, `for`, `match`,
+  closure or `unsafe` form (the form and its own body together are one
+  level), and a non-raw string literal written inside another string's
+  interpolation piece. An `else if` continues its chain at the same level, so
+  any number of arms is one level. The body of a named function or method and
+  the braces of an interpolation piece do not count, and a piece's expression
+  continues from the level of the literal around it. Level 257 produces one
+  located `nesting deeper than 256 levels` error and exit status 1; parsing
+  that file stops there.
+- A chain is not nested but is still deep: in `a + b + c`, `x.f().g()`, a run
+  of `as` casts or an `else if` chain, each step hangs one syntax node below
+  the last. The syntax tree of one declaration may be at most **4096 nodes
+  deep** along any path. Every operator, call, member access, index, cast,
+  `?`, literal, name, statement, block and `else if` arm on the path counts
+  one; parentheses add no node. Siblings count from the same level, so the
+  limit does not restrict how many statements, list elements, arguments or
+  `match` arms there are. One statement holds a flat chain of about 4,000
+  binary operators or 2,000 method calls; split a longer one across
+  statements. A deeper tree produces one located `syntax chain deeper than
+  4096 levels` error and exit status 1; parsing that file stops there. Both
+  limits are checked before any later compiler stage or the language server
+  walks the tree, which keeps those recursive walks inside an 8 MiB stack.
 - No semicolons. Newline ends a statement (Go-style: only after a token that can end one).
+  This rule also applies inside parentheses: `(1` followed by a newline and
+  `+ 2)` is refused, while `(1 +` followed by a newline and `2)` continues.
 - A member chain may break at a `.` on either side: a line ending in `.`
   continues (the dot can never end a statement), and a newline is not a
   terminator when the next line begins with `.name` — so fluent chains write
   trailing-dot or leading-dot style. `..` stays a range operator and never
   continues a line. `...` is one token and means only the C variadic tail in
   an `extern "C" fn` signature.
-- Style consequence, same as Go: `} else {` must be on one line.
-- Comments: `//` line, `/* */` block (nesting allowed).
+- `else` may follow the branch's `}` on the same line, as in `} else {`, or
+  begin the next line. No statement begins with `else`, so the newline after
+  `}` does not end the `if`; this holds for statement and value forms and for
+  `else if` chains. `} else {` is the house style, and the compiler and
+  standard library are written that way; the other layout is accepted, not
+  warned about.
+- Comments: `//` line, `/* */` block (nesting allowed). A block comment still
+  open at the end of the file is one error at its opening `/*`.
 - Number literals can use `_` separators: `1_000_000`. Hex `0xFF`, binary `0b1010`.
-- No parens around conditions: `if x > 3 { }`. Braces always required.
+  Separators in digit sequences are ignored, including doubled, trailing, and
+  prefix-adjacent separators: `1__0`, `1_`, and `0x_F` mean 10, 1, and 15.
+  A hex or binary prefix still requires at least one actual digit; `0x`,
+  `0b`, `0x_`, and `0b_` are errors. An exponent's digits take no
+  separators: `1e1_0` is refused.
+- Conditions do not need parentheses: `if x > 3 { }` is the preferred style,
+  and `if (x > 3) { }` is also accepted. Braces are always required.
+- Outside strings and comments, source text is ASCII. Any other character is
+  refused where it appears, as one error that names it: `unexpected character
+  '$'`, or `unexpected character 'é' (U+00E9)` for a UTF-8 character. A byte
+  that is not UTF-8 text, or a control byte, is `unexpected byte 0x00`.
+- A leading UTF-8 byte-order mark is not skipped: it is refused at 1:1 as
+  `unexpected byte-order mark (U+FEFF)`.
 
 ## Strings
 
 - `"..."`, immutable, UTF-8.
+- An ordinary literal ends on the line it starts. A `"` still open at the end
+  of its line is one error, `string not closed before end of line`, at that
+  quote, and the next line is read as code of its own. When the next line
+  also leaves a string open (`"ab` newline `cd"`), that is the same mistake
+  and is not reported again. Use `\n` or a raw literal for text that spans
+  lines.
 - Interpolation with `{}`: `"hi {name}, total {price * (qty as decimal)}"`.
 - Format specs ride after a `:` in the braces: `{x:8}` pads to width 8 (right-aligned),
   `{x:-8}` left-aligns, `{pi:.2}` fixes decimals (float/decimal only), `{pi:8.2}` both.
   Width pads anything printable — `{xs:12}` pads a whole list. Same rendering as `std.fmt`.
+  An empty format spec, `{x:}`, renders exactly as `{x}`.
 - **Width is measured in display columns, not bytes.** `{s:12}` fills until the
   rendered value occupies twelve terminal columns, so `"café 東京 🍜"` (17 bytes,
   9 characters, 12 columns) is already full and `"ok"` gets ten spaces. Byte
@@ -1097,8 +1150,11 @@ The checker rejects use after move and a value moved on only one branch. A
 move on every branch is definite. Normal parameters, loop variables, match
 bindings, and closure captures are borrowed, so they cannot be moved. Moving an outer
 local from a loop is also rejected because the next iteration would see an
-empty binding. For now `move` names a whole local; field and index moves need
-consuming accessors such as List `remove`.
+empty binding. A local a closure reads stays borrowed from where the closure is
+made, wherever the body reads it (in a loop, in a branch that returns, or in a
+nested closure), and it stays borrowed after a loop that made the closure. For
+now `move` names a whole local; field and index moves need consuming accessors
+such as List `remove`.
 
 **A move hands the value over where it is written, not where the spent binding's
 scope ends.** From the `move` on, the value belongs to whatever took it — a
@@ -1310,6 +1366,11 @@ Primitives (all unboxed in codegen):
 
 ### Number rules
 
+- Binary operators group from highest precedence to lowest as `* / %`,
+  `+ -`, `<< >>`, `&`, `^`, `|`, `< <= > >=`, `== !=`, `&&`, then
+  `|| .. ..=`. Operators at the same precedence associate to the left.
+  Thus `6 & 3 == 2` means `(6 & 3) == 2`, and `1 == 1 == true` means
+  `(1 == 1) == true`; comparisons do not form a special chained operation.
 - A number literal takes the type the spot demands: `let p: decimal = 19.99` makes a decimal, `let f: f64 = 19.99` makes a float. No suffix zoo.
 - With no demand, an integer literal is `int` and a decimal-point literal is `f64`.
 - **A cast is a demand when its operand is a number literal.** A number written
@@ -1680,11 +1741,29 @@ spent (using one afterward is a use-after-move error), and each owned capture
 is released exactly once when the closure value dies. This is how a move-only
 value — a socket, a `Box`, a `List` — lives inside a callback and is torn
 down with it. Each listed name must be an enclosing local the body actually
-uses; `inout` parameters cannot be move-captured. Plain closure values stay
-shared `fn` values: copying one shares the same closure and captures rather
-than duplicating them. A `send fn` is move-only instead. Inside the body a
+uses; `inout` parameters cannot be move-captured. The closure takes the
+value's storage with it, so a spent `var` that is assigned again holds a new
+value of its own: the closure never sees it, and the old value lives as long
+as the closure, not the enclosing scope. A local that an earlier closure still
+reads, or a capture of the closure around this one, is borrowed and cannot be
+listed. Plain closure values stay shared `fn` values: copying one shares the
+same closure and captures rather than duplicating them. A `send fn` is
+move-only instead. Inside the body a
 move capture still reads as a borrowed binding — it cannot be moved out again,
 because the closure may be called more than once.
+
+**What `move(...)` can take.** Only a binding the function owns: a `let` or
+`var` local, or a `move` parameter. A borrowed parameter, a match binding, a
+loop variable and a closure parameter each borrow a value that something else
+still holds. A closure that took one would share that value with its owner,
+across threads for a `send fn`, so each is refused where it is listed, and the
+error for a borrowed parameter says to declare it `move`. A match binding
+borrows the value it was matched from, whatever that value is: a local, a
+field, or a call's result. So no match binding can be listed. To give a closure
+what a match would bind, move the matched local in and match inside the body,
+or take the payload out into a local first: `?` and `expect` hand it over
+(`let job: Job = next_job().expect("a job")`). A closure that runs only while
+the arm does can capture the binding without `move(...)`, as a borrow.
 
 ## Classes
 
@@ -2511,6 +2590,12 @@ No `return` in there — and that's on purpose, not an inconsistency. `return` a
 
 `match` works the same way: `pattern => expression` in value position, and arms can pattern-match on values, variants, ranges, `_`:
 
+Commas between arms are optional: an arm ends where its expression or block
+ends, at a newline or before the next pattern (`some(v) => v none => 0`). A
+trailing comma before `}` is allowed. Write the comma when the next pattern
+starts with `-`, which would otherwise continue the expression as a
+subtraction.
+
 ```
 match code {
     200        => "ok",
@@ -2558,6 +2643,10 @@ struct Pair<T> {
 fn largest<T implements Order>(xs: List<T>) -> Option<T> { ... }
 fn index<K implements Eq & Hash, V>(key: K, value: V) -> Map<K, V> { ... }
 ```
+
+Type-argument lists allow a trailing comma, as in `Map<int, int,>` or
+`id<int,>(value)`. An empty type-parameter list is allowed and declares no
+type parameters: `fn f<>() {}` has the same generic arity as `fn f() {}`.
 
 A `static fn` on a generic type has no receiver to read the owner's arguments
 off, so the owner parameters its signature names become type parameters of the

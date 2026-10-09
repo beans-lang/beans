@@ -126,9 +126,13 @@ fn decode_worker(fill: int, rounds: int, workers: int,
         for index: int in 0..rows.len() {
             let row: Row = rows.get(index).expect("row")
             let want: string = bodies.get(index).expect("body")
-            if row.id != 7 { bad += 1 }
-            else if row.note != "tail" { bad += 1 }
-            else if row.name != want { bad += 1 }
+            if row.id != 7 {
+                bad += 1
+            } else if row.note != "tail" {
+                bad += 1
+            } else if row.name != want {
+                bad += 1
+            }
         }
     }
     return bad

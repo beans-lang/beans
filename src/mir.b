@@ -688,6 +688,7 @@ class MirLowerer {
             self.copy_binding_map(parent_bindings)
         self.push_scope()
         var body: Option<HirNode> = none
+        var moved: Map<int, bool> = {}
         for child: HirNode in node.children {
             if child.kind == "closure_parameter" {
                 self.add_local(
@@ -697,6 +698,20 @@ class MirLowerer {
             } else if child.kind == "block" {
                 body = some(child)
             }
+        }
+        // move(...) captures take the first capture slots, so the
+        // instruction's move mask reaches each of them (CD-28)
+        for child: HirNode in node.children {
+            if child.kind == "move_capture" &&
+               !moved.contains_key(child.binding_id) &&
+               self.ensure_capture(child) >= 0 {
+                moved[child.binding_id] = true
+            }
+        }
+        if moved.len() > 63 {
+            self.fail(
+                node.file, node.line, node.col,
+                "a closure can move at most 63 captures")
         }
         self.current.entry = self.new_block()
         self.current_block = self.current.entry
@@ -738,6 +753,8 @@ class MirLowerer {
                 by_value_index < 63 &&
                 mir_capture_by_value_type(capture.type) &&
                 !source.mutable
+            capture.moved =
+                moved.contains_key(capture.binding_id)
             by_value_index += 1
             if capture.by_value &&
                capture.target >= 0 &&
@@ -777,6 +794,11 @@ class MirLowerer {
                 if capture.by_value {
                     instruction.capture_value_mask =
                         instruction.capture_value_mask |
+                        (1 << capture_index)
+                } else if capture.moved &&
+                          capture_index < 63 {
+                    instruction.capture_move_mask =
+                        instruction.capture_move_mask |
                         (1 << capture_index)
                 }
                 instruction.capture_locals.push(

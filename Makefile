@@ -93,13 +93,23 @@ test-ci: test
 # from build/test_timing on a dev laptop; the whole chain is under five
 # minutes when the compiler is already built.
 test-quick: $(BIN)
+	BEANSC="./$(BIN)" bash ./test/compiler_discovery.sh self-test
+	bash ./test/issue201.sh
+	bash ./test/issue202.sh
+	bash ./test/issue202_lsp.sh
+	bash ./test/issue203.sh
+	bash ./test/checker_width.sh
+	bash ./test/issue204.sh
+	bash ./test/issue206.sh
 	./test/parse_recovery.sh
 	bash ./test/diagnostics.sh
+	bash ./test/diagnostic_context.sh
 	bash ./test/package_semantics.sh
 	bash ./test/package_identity.sh
 	bash ./test/builtin_names.sh
 	./test/annotations.sh
 	./test/deterministic_build.sh
+	bash ./test/chunk_module_flags.sh
 	bash ./test/unsafe.sh
 	./test/differential.sh
 	bash ./test/ownership_fuzz.sh smoke
@@ -113,7 +123,16 @@ test-quick: $(BIN)
 # fails if they ever drift apart — so a green run of all five plus nothing
 # else is the same claim as `make test`.
 test-frontend: $(BIN)
+	BEANSC="./$(BIN)" bash ./test/compiler_discovery.sh self-test
+	bash ./test/issue201.sh
+	bash ./test/issue202.sh
+	bash ./test/issue202_lsp.sh
+	bash ./test/issue203.sh
+	bash ./test/checker_width.sh
+	bash ./test/issue204.sh
+	bash ./test/issue206.sh
 	bash ./test/diagnostics.sh
+	bash ./test/diagnostic_context.sh
 	./test/docs.sh
 	./test/version.sh
 	bash ./test/syntax_v07.sh
@@ -166,6 +185,9 @@ test-semantics: $(BIN)
 	bash ./test/interpreter_execution.sh
 	bash ./test/decimal_conformance.sh
 	./test/moves.sh
+	bash ./test/cd25_moves.sh
+	bash ./test/cd28_captures.sh
+	bash ./test/cd29_captures.sh
 	bash ./test/ownership_fuzz.sh smoke
 	bash ./test/borrowed_iteration.sh
 	bash ./test/downcast_borrow.sh
@@ -184,6 +206,7 @@ test-semantics: $(BIN)
 	bash ./test/module_consts.sh
 	./test/fixed_arrays.sh
 	bash ./test/closure_captures.sh
+	bash ./test/cd26_captures.sh
 	bash ./test/send_functions.sh
 	bash ./test/mir.sh
 	bash ./test/devirtualize.sh
@@ -292,6 +315,7 @@ test-platform: $(BIN)
 	./test/embedded.sh
 	bash ./test/release_completeness.sh --self-test
 	./test/deterministic_build.sh
+	bash ./test/chunk_module_flags.sh
 	./test/asm.sh
 	./test/targets.sh
 	./test/ios_target.sh
@@ -300,7 +324,16 @@ test-platform: $(BIN)
 	bash ./test/compiler_arch_objects.sh
 
 test-core: $(BIN)
+	BEANSC="./$(BIN)" bash ./test/compiler_discovery.sh self-test
+	bash ./test/issue201.sh
+	bash ./test/issue202.sh
+	bash ./test/issue202_lsp.sh
+	bash ./test/issue203.sh
+	bash ./test/checker_width.sh
+	bash ./test/issue204.sh
+	bash ./test/issue206.sh
 	bash ./test/diagnostics.sh
+	bash ./test/diagnostic_context.sh
 	./test/differential.sh
 	./test/panic.sh
 	./test/freestanding.sh
@@ -312,12 +345,16 @@ test-core: $(BIN)
 	bash ./test/release_completeness.sh --self-test
 	./test/version.sh
 	./test/deterministic_build.sh
+	bash ./test/chunk_module_flags.sh
 	./test/numerics.sh
 	bash ./test/interpreter_ranges.sh
 	bash ./test/interpreter_values.sh
 	bash ./test/interpreter_execution.sh
 	bash ./test/decimal_conformance.sh
 	./test/moves.sh
+	bash ./test/cd25_moves.sh
+	bash ./test/cd28_captures.sh
+	bash ./test/cd29_captures.sh
 	bash ./test/borrowed_iteration.sh
 	bash ./test/list_iteration.sh
 	bash ./test/list_backing.sh
@@ -392,6 +429,7 @@ test-core: $(BIN)
 	./test/stored_callbacks.sh
 	bash ./test/same_thread_callbacks.sh
 	bash ./test/closure_captures.sh
+	bash ./test/cd26_captures.sh
 	./test/stdlib_source.sh
 	bash ./test/api_names.sh
 	bash ./test/encoding.sh
@@ -576,6 +614,16 @@ fuzz-differential: $(BIN)
 
 fuzz-differential-smoke: $(BIN)
 	bash ./test/differential_fuzz.sh smoke
+
+.PHONY: test-discovery-harness test-compiler-discovery test-compiler-candidate
+test-discovery-harness:
+	bash ./test/compiler_discovery.sh self-test
+
+test-compiler-discovery: $(BIN)
+	BEANSC="./$(BIN)" bash ./test/compiler_discovery.sh smoke
+
+test-compiler-candidate: $(BIN)
+	BEANSC="./$(BIN)" bash ./test/compiler_discovery.sh candidate
 
 # rm before cp: overwriting a signed binary in place leaves macOS's signature
 # cache stale, and the kernel then kills the new binary on exec with SIGKILL

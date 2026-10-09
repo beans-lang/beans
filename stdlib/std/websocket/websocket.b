@@ -1566,8 +1566,9 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
             rounds += 1
             match self.stream.read(16384) {
                 ok(arrived) => {
-                    if arrived.len() == 0 { rounds = 100 }
-                    else {
+                    if arrived.len() == 0 {
+                        rounds = 100
+                    } else {
                         match self.absorb(arrived) {
                             ok(_) => {}
                             err(_) => { rounds = 100 }

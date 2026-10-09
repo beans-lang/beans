@@ -13,7 +13,7 @@
 #
 # The project is still in the public 1.0 bake, so do not call it 1.0.0 until
 # every release gate has passed.
-compiler=0.1.51
+compiler=0.1.52
 language=1.0
 
 # 22: on the existing ELF/Mach-O x86_64/arm64 unwind targets,

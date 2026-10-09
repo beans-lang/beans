@@ -41,8 +41,14 @@ done
 ./build/beansc build --emit ir examples/hello.b -o build/musl-self.ll >/dev/null
 grep -q "target triple = \"$triple\"" build/musl-self.ll
 
-make test-fixpoint
-bash test/differential.sh
+if [[ ${BEANS_HOSTED_BUILD_ONLY:-0} == 1 ]]; then
+    # A fast release dispatch: keep the self-hosted build and the hello
+    # smoke below, skip the fixed point and the differential loop.
+    echo "hosted gate: BEANS_HOSTED_BUILD_ONLY=1, skipping the fixed point and the differential loop"
+else
+    make test-fixpoint
+    bash test/differential.sh
+fi
 
 ./build/beansc build examples/hello.b -o build/musl-hello
 [[ $(./build/musl-hello) == "hello from beans" ]]

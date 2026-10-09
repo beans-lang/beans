@@ -73,7 +73,7 @@ run_asan() {
     clang -O1 -g -pthread -fsanitize=address,undefined \
         -fno-sanitize-recover=undefined -Wno-override-module \
         "${rt_unwind[@]}" \
-        "build/$name.ll" build/beans_rt.c "${ffi_sources[@]}" \
+        "build/$name.ll" build/beans_rt.c ${ffi_sources[@]+"${ffi_sources[@]}"} \
         -lm -o "$out/${name}_asan"
     set +e
     BEANS_NO_POOL=1 "$out/${name}_asan" >"$out/${name}.stdout" \
@@ -126,6 +126,7 @@ BEANS_SANITIZE=address,undefined \
 
 reach_asan() {   # <mode> <report the run must produce, "" for a clean run>
     local mode=$1 want=$2 status=0
+    local binary=${3:-$out/issue168_asan_reach} prefix=${4:-reach}
     # A caught error aborts on purpose, and bash announces a signal-killed
     # child on ITS OWN stderr ("line N: 1234 Abort trap: 6"). In an otherwise
     # green run that line reads like something broke, and a gate that trains
@@ -137,20 +138,20 @@ reach_asan() {   # <mode> <report the run must produce, "" for a clean run>
     set +e
     exec 3>&2 2>/dev/null
     ASAN_OPTIONS="detect_leaks=$asan_detect_leaks:halt_on_error=1" \
-        BEANS_NO_POOL=1 "$out/issue168_asan_reach" "$mode" \
-        >"$out/reach_$mode.stdout" 2>"$out/reach_$mode.stderr"
+        BEANS_NO_POOL=1 "$binary" "$mode" \
+        >"$out/${prefix}_$mode.stdout" 2>"$out/${prefix}_$mode.stderr"
     status=$?
     exec 2>&3 3>&-
     set -e
     if [[ -z "$want" ]]; then
         if [[ "$status" -ne 0 ]] ||
            grep -Eq 'AddressSanitizer|LeakSanitizer|UndefinedBehaviorSanitizer|runtime error:' \
-               "$out/reach_$mode.stderr"; then
+               "$out/${prefix}_$mode.stderr"; then
             echo "the in-bounds reach probe failed under ASan (status" \
                  "$status): an instrumented build still has to run the" \
                  "program" >&2
-            sed -n '1,80p' "$out/reach_$mode.stderr" >&2
-            sed -n '1,20p' "$out/reach_$mode.stdout" >&2
+            sed -n '1,80p' "$out/${prefix}_$mode.stderr" >&2
+            sed -n '1,20p' "$out/${prefix}_$mode.stdout" >&2
             return 1
         fi
         echo "ASan/UBSan ok reach probe $mode: an instrumented build runs the" \
@@ -160,13 +161,13 @@ reach_asan() {   # <mode> <report the run must produce, "" for a clean run>
     # Deliberately not naming a sanitizer in this pattern: here the report IS
     # the pass condition, so the text asked for is the specific fault
     # ("heap-buffer-overflow"), not the tool that found it.
-    if ! grep -q "$want" "$out/reach_$mode.stderr"; then
+    if ! grep -q "$want" "$out/${prefix}_$mode.stderr"; then
         echo "reach probe '$mode' did not produce '$want' (status $status)." >&2
         echo "the sanitizer is not looking inside the code beansc emitted:" \
-             "check that the definitions in build/issue168_asan_reach.ll carry" \
-             "sanitize_address, and that this build asked for it (#168)" >&2
-        sed -n '1,20p' "$out/reach_$mode.stdout" >&2
-        sed -n '1,60p' "$out/reach_$mode.stderr" >&2
+             "check that the IR definitions carry sanitize_address and" \
+             "that every compile asked for it (#168, #207)" >&2
+        sed -n '1,20p' "$out/${prefix}_$mode.stdout" >&2
+        sed -n '1,60p' "$out/${prefix}_$mode.stderr" >&2
         return 1
     fi
     echo "ASan ok reach probe $mode: $want in generated code"
@@ -177,6 +178,164 @@ reach_asan doublefree "attempting double-free"
 reach_asan read "heap-buffer-overflow"
 reach_asan write "heap-buffer-overflow"
 reach_asan uaf "heap-use-after-free"
+
+# #207: marking the IR and sanitizing the final link is not enough when the
+# backend compiles the module in chunks. `native_chunk_count` (src/driver.b)
+# splits any `--emit bin` build whose IR is 4 MiB or more, unless it is
+# --debug, --lto, wasm or BEANS_BUILD_JOBS=1, and each chunk is its own
+# `clang -c`. Those compiles once left out -fsanitize=, so the compiler itself,
+# built with BEANS_SANITIZE, carried `sanitize_address` on every definition
+# and checked nothing.
+#
+# The probe above is reused, padded with unique literals past the real
+# threshold; BEANS_BUILD_JOBS=2 keeps the caller's environment from choosing
+# the single-module path. A logging clang wrapper records every command, so
+# each lane proves what it claims instead of inferring it from a result:
+#
+#   first      ASan+UBSan, cold: every chunk is compiled with the sanitizer
+#              flags, the link reads the chunk objects, the faults are reported.
+#   cached     the same build again: nothing is compiled, the link reads
+#              exactly the first lane's objects, the faults are still reported.
+#   normal     no sanitizer: fresh objects, no sanitizer flag anywhere.
+#   undefined  UBSan alone. Its IR is byte-identical to the normal lane's, so
+#              only the flags in the chunk cache key keep it from reusing the
+#              normal lane's uninstrumented objects.
+echo "ASan checking the chunked release backend (#207)"
+chunk_reach_dir=$(mktemp -d "$out/issue207_chunked.XXXXXX")
+# A stem of this run's own gives the first lane cold objects; they are
+# removed again at the end of the leg.
+chunk_reach_stem="issue207_chunked_asan_reach_$$"
+chunk_reach_source="$chunk_reach_dir/$chunk_reach_stem.b"
+cp test/cases/issue168_asan_reach.b "$chunk_reach_source"
+awk 'BEGIN {
+    padding = ""
+    for (j = 0; j < 8192; j++) padding = padding "x"
+    for (i = 0; i < 512; i++)
+        printf "fn issue207_padding_%d() -> string { return r\"%d%s\" }\n", i, i, padding
+}' >> "$chunk_reach_source"
+cat > "$chunk_reach_dir/clang" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" > "$BEANS_TEST_CLANG_LOG/$$.args"
+exec "$BEANS_TEST_CLANG" "$@"
+SCRIPT
+chmod +x "$chunk_reach_dir/clang"
+chunk_reach_clang=$(command -v clang)
+chunk_reach_module="^build/beans_chunk\.$chunk_reach_stem\..*\.ll$"
+chunk_reach_object="^build/beans_chunk\.$chunk_reach_stem\..*\.o$"
+for chunk_reach_lane in first cached normal undefined; do
+    chunk_reach_log="$chunk_reach_dir/$chunk_reach_lane-commands"
+    mkdir -p "$chunk_reach_log"
+    case "$chunk_reach_lane" in
+        first | cached) chunk_reach_sanitizers=address,undefined ;;
+        normal) chunk_reach_sanitizers= ;;
+        undefined) chunk_reach_sanitizers=undefined ;;
+    esac
+    BEANS_TEST_CLANG="$chunk_reach_clang" \
+        BEANS_TEST_CLANG_LOG="$PWD/$chunk_reach_log" \
+        BEANS_SANITIZE="$chunk_reach_sanitizers" BEANS_BUILD_JOBS=2 \
+        ./build/beansc build --release --cc "$PWD/$chunk_reach_dir/clang" \
+        "$chunk_reach_source" -o "$chunk_reach_dir/$chunk_reach_lane" >/dev/null
+    if [[ $(wc -c < "build/$chunk_reach_stem.ll") -lt 4194304 ]]; then
+        echo "the #207 probe no longer crosses the 4 MiB chunk threshold" >&2
+        exit 1
+    fi
+    # Chunk compiles name a chunk module, and the link names chunk objects.
+    # Anything else the driver ran (the runtime object, a version probe) names
+    # neither and is not counted.
+    chunk_reach_compiles=0
+    chunk_reach_links=0
+    : > "$chunk_reach_dir/$chunk_reach_lane.objects"
+    for chunk_reach_command in "$chunk_reach_log"/*.args; do
+        if grep -Eq "$chunk_reach_module" "$chunk_reach_command"; then
+            chunk_reach_compiles=$((chunk_reach_compiles + 1))
+        elif grep -Eq "$chunk_reach_object" "$chunk_reach_command"; then
+            chunk_reach_links=$((chunk_reach_links + 1))
+            grep -E "$chunk_reach_object" "$chunk_reach_command" \
+                > "$chunk_reach_dir/$chunk_reach_lane.objects"
+        else
+            continue
+        fi
+        if [[ -z "$chunk_reach_sanitizers" ]]; then
+            if grep -q '^-fsanitize' "$chunk_reach_command"; then
+                echo "the $chunk_reach_lane lane passed clang a sanitizer flag:" >&2
+                cat "$chunk_reach_command" >&2
+                exit 1
+            fi
+            continue
+        fi
+        for chunk_reach_flag in "-fsanitize=$chunk_reach_sanitizers" \
+                -fno-sanitize-recover=undefined -fno-omit-frame-pointer; do
+            grep -qFx -- "$chunk_reach_flag" "$chunk_reach_command" || {
+                echo "a $chunk_reach_lane-lane clang command omitted" \
+                     "$chunk_reach_flag (#207):" >&2
+                cat "$chunk_reach_command" >&2
+                exit 1
+            }
+        done
+    done
+    chunk_reach_linked=$(($(wc -l < "$chunk_reach_dir/$chunk_reach_lane.objects")))
+    # Every host this script runs on can chunk this build, so a lane that
+    # linked no chunk objects is a failure, never a skip. On Linux that once
+    # was every build: the module's PIC/PIE flags sat in the emitter's debug
+    # metadata list, and `chunk_modules` refuses to split a module with any
+    # (CD-22).
+    if [[ "$chunk_reach_links" -ne 1 || "$chunk_reach_linked" -lt 2 ]]; then
+        echo "the $chunk_reach_lane lane linked no chunk objects" \
+             "($chunk_reach_links links, $chunk_reach_linked objects): the" \
+             "build took the single-module path" >&2
+        exit 1
+    fi
+    if [[ "$chunk_reach_lane" == cached ]]; then
+        if [[ "$chunk_reach_compiles" -ne 0 ]] ||
+           ! cmp -s "$chunk_reach_dir/first.objects" \
+                "$chunk_reach_dir/cached.objects"; then
+            echo "an unchanged chunked build did not reuse its objects" \
+                 "($chunk_reach_compiles chunk compiles)" >&2
+            exit 1
+        fi
+    elif [[ "$chunk_reach_compiles" -ne "$chunk_reach_linked" ]]; then
+        echo "the $chunk_reach_lane lane linked objects it did not compile" \
+             "($chunk_reach_compiles compiled, $chunk_reach_linked linked):" \
+             "the chunk cache key does not follow the compile flags" >&2
+        exit 1
+    fi
+    case "$chunk_reach_lane" in
+        first)
+            for chunk_reach_fault in "clean:" "doublefree:attempting double-free" \
+                    read:heap-buffer-overflow write:heap-buffer-overflow \
+                    uaf:heap-use-after-free; do
+                reach_asan "${chunk_reach_fault%%:*}" "${chunk_reach_fault#*:}" \
+                    "$chunk_reach_dir/first" chunked_first
+            done ;;
+        cached)
+            # The link read the first lane's objects, checked above; one fault
+            # confirms the relinked binary end to end.
+            reach_asan clean "" "$chunk_reach_dir/cached" chunked_cached
+            reach_asan read "heap-buffer-overflow" \
+                "$chunk_reach_dir/cached" chunked_cached ;;
+        normal)
+            cp "build/$chunk_reach_stem.ll" "$chunk_reach_dir/normal.ll"
+            BEANS_NO_POOL=1 "$chunk_reach_dir/normal" clean \
+                > "$chunk_reach_dir/normal.stdout"
+            grep -qFx 'in bounds 10' "$chunk_reach_dir/normal.stdout"
+            grep -qFx 'done clean' "$chunk_reach_dir/normal.stdout" ;;
+        undefined)
+            # This lane's premise, checked rather than assumed. If the emitter
+            # ever marks IR for UBSan, isolate the key with another flag.
+            cmp -s "build/$chunk_reach_stem.ll" "$chunk_reach_dir/normal.ll" || {
+                echo "the UBSan-only IR differs from the normal IR, so the" \
+                     "undefined lane no longer isolates the chunk cache key" >&2
+                exit 1
+            }
+            reach_asan clean "" "$chunk_reach_dir/undefined" chunked_undefined ;;
+    esac
+done
+rm -f build/beans_chunk."$chunk_reach_stem".* build/"$chunk_reach_stem".*ll \
+    "build/${chunk_reach_stem}_ffi.c"
+rm -rf "$chunk_reach_dir"
+echo "ASan ok chunked release: fresh and cached chunks carry the flags and" \
+     "report the faults; normal and UBSan-only objects never share a key"
 
 # The same question for rt_unwind: drop a flag and the runtime abandons a
 # panicking fiber's frames, which on macOS leaks with nothing to report it.
@@ -507,7 +666,7 @@ if [[ -n "$function_cc" ]]; then
         local sidecar=()
         [[ -f "build/${name}_ffi.c" ]] && sidecar=("build/${name}_ffi.c")
         "$function_cc" "${fn_flags[@]}" "${rt_unwind[@]}" \
-            "build/$name.ll" "${sidecar[@]}" \
+            "build/$name.ll" ${sidecar[@]+"${sidecar[@]}"} \
             build/beans_rt.c "$bridge" -lm -o "$fnsan/$name"
         local status=0
         env "$@" BEANS_NO_POOL=1 "$fnsan/$name" \

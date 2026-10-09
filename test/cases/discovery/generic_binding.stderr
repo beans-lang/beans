@@ -1,0 +1,5 @@
+main.b:3:26: error: generic T was int, then string; expected int, got string
+    let x: int = same(1, "x")
+                         ^
+note: generic parameter T declared at main.b:1:9
+note: in function main, declared at main.b:2:4

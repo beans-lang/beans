@@ -356,6 +356,55 @@ class BeansLspServer {
     // Diagnostics
     // -----------------------------------------------------------------
 
+    // One zero-based line of `file` as the snapshot read it, which for an
+    // open document is the editor's unsaved text. `fallback` is that
+    // document's text, for a diagnostic whose file the loader did not
+    // retain under exactly this path.
+    fn diagnostic_line(snapshot: SemanticSnapshot, file: string,
+                       fallback: string, line: int) -> string {
+        match snapshot.sources.line_text(file, line) {
+            some(text) => { return text }
+            none => { return lsp_line(fallback, line) }
+        }
+    }
+
+    // A diagnostic's or a related note's range, in UTF-16 columns. A
+    // producer that recorded only a point gets the identifier there.
+    fn diagnostic_range(snapshot: SemanticSnapshot, file: string,
+                        fallback: string,
+                        line: int, col: int,
+                        end_line: int, end_col: int) -> string {
+        let start_line: int = if line > 0 { line - 1 } else { 0 }
+        let source_line: string =
+            self.diagnostic_line(snapshot, file, fallback, start_line)
+        let start: int = if col > 0 { col - 1 } else { 0 }
+        var finish_line: int = start_line
+        var finish: int = start
+        if end_line >= line && end_col > 0 {
+            finish_line = end_line - 1
+            finish = end_col - 1
+        } else {
+            for finish < source_line.len() &&
+                lsp_ident_byte(source_line.byte_at(finish)) {
+                finish += 1
+            }
+        }
+        if finish_line == start_line && finish <= start {
+            finish = start + 1
+        }
+        let finish_text: string =
+            if finish_line == start_line {
+                source_line
+            } else {
+                self.diagnostic_line(snapshot, file, fallback, finish_line)
+            }
+        return lsp_object([
+            lsp_member("start", lsp_position(
+                start_line, lsp_utf16_index(source_line, start))),
+            lsp_member("end", lsp_position(
+                finish_line, lsp_utf16_index(finish_text, finish)))])
+    }
+
     fn publish(uri: string) {
         if !self.known(uri) { return }
         let file_path: string = self.document_path(uri)
@@ -372,30 +421,36 @@ class BeansLspServer {
                 "{diagnostic.line}:{diagnostic.col}:{diagnostic.message}"
             if seen.contains_key(key) { continue }
             seen[key] = true
-            let line: int =
-                if diagnostic.line > 0 { diagnostic.line - 1 } else { 0 }
-            let source_line: string = lsp_line(text, line)
-            let start: int =
-                if diagnostic.col > 0 { diagnostic.col - 1 } else { 0 }
-            var end: int = start
-            for end < source_line.len() &&
-                lsp_ident_byte(source_line.byte_at(end)) {
-                end += 1
-            }
-            if end == start { end += 1 }
-            items.push(
-                lsp_object([
+            var members: List<string> = [
                     lsp_member(
                         "range",
-                        lsp_range(
-                            line,
-                            lsp_utf16_index(source_line, start),
-                            lsp_utf16_index(source_line, end))),
+                        self.diagnostic_range(
+                            snapshot, diagnostic.file, text,
+                            diagnostic.line, diagnostic.col,
+                            diagnostic.end_line, diagnostic.end_col)),
                     lsp_member("severity", "1"),
                     lsp_member("source", lsp_quote("beansc")),
                     lsp_member(
                         "message",
-                        lsp_quote(diagnostic.message))]))
+                        lsp_quote(diagnostic.message))]
+            var related: List<string> = []
+            for note: DiagnosticNote in diagnostic.related.items {
+                let note_fallback: string =
+                    if lsp_belongs(note.file, file_path) { text } else { "" }
+                related.push(lsp_object([
+                    lsp_member("location", lsp_object([
+                        lsp_member("uri", lsp_quote(lsp_file_uri(note.file))),
+                        lsp_member("range", self.diagnostic_range(
+                            snapshot, note.file, note_fallback,
+                            note.line, note.col,
+                            note.end_line, note.end_col))])),
+                    lsp_member("message", lsp_quote(note.message))]))
+            }
+            if related.len() != 0 {
+                members.push(lsp_member(
+                    "relatedInformation", lsp_array(related)))
+            }
+            items.push(lsp_object(members))
         }
         if items.len() == 0 && !self.published.contains_key(uri) {
             // Nothing to say and nothing outstanding: stay quiet.

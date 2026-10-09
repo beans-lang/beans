@@ -29,17 +29,56 @@ class Parser {
     allow_initializer: bool
     recovered_statement_end: bool
     pending_type_closes: int
+    nesting_depth: int
+    limit_exceeded: bool
+    limit_message: string
+    limit_line: int
+    limit_col: int
+    in_string_piece: bool
+    // Brackets opened and not yet closed, innermost last: `(`, `[`, `{`
+    // and a generic `<`. A diagnostic names the innermost as context.
+    delimiters: List<Token>
+    // The name token of each enclosing named function, innermost last.
+    // Kept as tokens so a clean parse formats no note text.
+    functions: List<Token>
+    statement_failed: bool
+    source_ended_in_error: bool
+    statement_delimiter_depth: int
 
-    fn init(move tokens: List<Token>) {
+    fn init(move tokens: List<Token>, source_ended_in_error: bool = false) {
         self.tokens = move tokens
         self.pos = 0
         self.errors = []
         self.allow_initializer = true
         self.recovered_statement_end = false
         self.pending_type_closes = 0
+        self.nesting_depth = 0
+        self.limit_exceeded = false
+        self.limit_message = ""
+        self.limit_line = 0
+        self.limit_col = 0
+        self.in_string_piece = false
+        self.delimiters = []
+        self.functions = []
+        self.statement_failed = false
+        self.source_ended_in_error = source_ended_in_error
+        self.statement_delimiter_depth = 0
     }
 
     fn current() -> Token {
+        // A `>>` that closed one type list leaves its second byte for the
+        // enclosing list (`List<List<int>>`). take_type_close only splits
+        // when such a list is open, and that list's own close takes this
+        // token next, so no other grammar rule ever sees it.
+        if self.pending_type_closes > 0 {
+            let split: Token = self.tokens[self.pos - 1]
+            return Token {
+                kind: ">",
+                text: ">",
+                line: split.line,
+                col: split.col + 1,
+            }
+        }
         return self.tokens[self.pos]
     }
 
@@ -53,8 +92,36 @@ class Parser {
 
     fn advance() -> Token {
         let token: Token = self.current()
-        if !self.at_end() { self.pos += 1 }
+        // Every consumed token passes here, so test one byte, and only for
+        // the one-byte kinds a bracket can be.
+        if token.kind.len() == 1 {
+            let byte: int = token.kind.byte_at(0)
+            if byte == 40 || byte == 91 || byte == 123 {
+                self.delimiters.push(token)
+            } else if byte == 41 {
+                self.close_delimiter("(")
+            } else if byte == 93 {
+                self.close_delimiter("[")
+            } else if byte == 125 {
+                self.close_delimiter("\{")
+            }
+        }
+        if self.pending_type_closes > 0 {
+            self.pending_type_closes -= 1
+        } else if !self.at_end() {
+            self.pos += 1
+        }
         return token
+    }
+
+    fn close_delimiter(kind: string) {
+        var index: int = self.delimiters.len()
+        for index > 0 {
+            index -= 1
+            if self.delimiters[index].kind != kind { continue }
+            for self.delimiters.len() > index { self.delimiters.pop() }
+            return
+        }
     }
 
     fn match_token(kind: string) -> bool {
@@ -68,31 +135,125 @@ class Parser {
     }
 
     fn at_type_close() -> bool {
-        return self.pending_type_closes > 0 ||
-               self.check(">") || self.check(">>")
+        return self.check(">") || self.check(">>")
     }
 
     fn take_type_close() {
-        if self.pending_type_closes > 0 {
-            self.pending_type_closes -= 1
+        if self.match_token(">") {
+            self.close_delimiter("<")
             return
         }
-        if self.match_token(">") { return }
         if self.match_token(">>") {
-            self.pending_type_closes = 1
+            self.close_delimiter("<")
+            // The second byte closes the enclosing type list. With none open
+            // (`List<int>>`, `fn f(x: List<int>>)`) it is a stray close:
+            // report it here, where the type ends, not as whatever the
+            // surrounding declaration expected next.
+            let split: Token = self.tokens[self.pos - 1]
+            if self.delimiters.len() != 0 &&
+               self.delimiters[self.delimiters.len() - 1].kind == "<" {
+                self.pending_type_closes = 1
+            } else {
+                self.fail(Token {
+                    kind: ">", text: ">", line: split.line, col: split.col + 1,
+                }, "unexpected '>'")
+            }
             return
         }
         self.fail(self.current(), "expected '>'")
+        self.close_delimiter("<")
     }
 
     fn fail(token: Token, message: string) {
+        if self.limit_exceeded { return }
+        if token.kind == "lex_error" {
+            self.statement_failed = true
+            return
+        }
+        // An owning lexer failure consumed the rest of this source. Missing
+        // delimiters at that EOF are consequences, not independent defects.
+        if self.source_ended_in_error && token.kind == "eof" { return }
+        if self.statement_failed { return }
+        self.statement_failed = true
+        let related: DiagnosticNotes = new DiagnosticNotes()
+        // The innermost open bracket explains an error inside it. A `{`
+        // explains only its own missing `}`: every statement sits inside
+        // one, and the function note below already places it.
+        if self.delimiters.len() != 0 {
+            let opened: Token = self.delimiters[self.delimiters.len() - 1]
+            if opened.kind != "\{" ||
+               message.starts_with("expected '\}'") {
+                related.items.push(DiagnosticNote {
+                    file: "", line: opened.line, col: opened.col,
+                    end_line: opened.line, end_col: opened.col + 1,
+                    message: "'{opened.text}' opened",
+                })
+            }
+        }
+        var enclosing: int = self.functions.len()
+        for enclosing > 0 {
+            enclosing -= 1
+            let name: Token = self.functions[enclosing]
+            // A function whose name is missing has nothing to name.
+            if name.kind != "ident" { continue }
+            related.items.push(DiagnosticNote {
+                file: "", line: name.line, col: name.col,
+                end_line: name.line, end_col: name.col + name.text.len(),
+                message: "in function {name.text}, declared",
+            })
+        }
         self.errors.push(Diagnostic {
             severity: Severity.error,
             file: "",
             line: token.line,
             col: token.col,
+            end_line: token.line,
+            end_col: token.col + if token.text.len() > 0 {
+                token.text.len()
+            } else { 1 },
             message: message,
+            related: related,
         })
+    }
+
+    // A resource refusal aborts this source, then unwinds normally. Keeping
+    // the exhausted cursor at EOF avoids derivative missing-delimiter
+    // errors and keeps hostile unsaved documents away from recursive walks.
+    // The refusal is also kept apart from `errors`: an earlier error in the
+    // same statement suppresses the diagnostic, and a string piece's parser
+    // must still hand the outer parser the limit it hit, not that error.
+    fn reject_limit(token: Token, message: string) {
+        if self.limit_exceeded { return }
+        self.fail(token, message)
+        self.limit_exceeded = true
+        self.limit_message = message
+        self.limit_line = token.line
+        self.limit_col = token.col
+        self.pending_type_closes = 0
+        self.pos = self.tokens.len() - 1
+    }
+
+    fn enter_nesting(token: Token) -> bool {
+        if self.limit_exceeded { return false }
+        if self.nesting_depth >= parser_nesting_limit() {
+            self.reject_limit(token, "nesting deeper than {parser_nesting_limit()} levels")
+            return false
+        }
+        self.nesting_depth += 1
+        return true
+    }
+
+    // Grammar nesting is bounded above, but a flat chain is not nested: a
+    // long sum or method chain is a left-deep tree the parser builds in a
+    // loop, and every later walk (checker, lowering, interpreter, printers,
+    // editor queries) recurses through it. Bound the depth of the tree the
+    // parser hands them, measured as each node is finished.
+    fn bounded(node: AstNode, token: Token) -> AstNode {
+        if node.parse_path_cost > parser_chain_limit() {
+            self.reject_limit(token, "syntax chain deeper than {parser_chain_limit()} levels")
+            return self.node("error", "", token)
+        }
+        return node
     }
 
     fn expect(kind: string, message: string) -> Token {
@@ -115,7 +276,15 @@ class Parser {
         } else {
             self.fail(token, message)
         }
-        if !self.at_end() { self.advance() }
+        // Leave statement starts and delimiters for their actual owners.
+        // Consuming the function's `}` while looking for `]` or `)` used to
+        // manufacture a second missing-function-brace diagnostic.
+        if !self.at_end() && token.kind != "newline" &&
+           token.kind != "\}" && token.kind != ")" &&
+           token.kind != "]" && token.kind != "\{" &&
+           !parser_statement_start(token.kind) {
+            self.advance()
+        }
         return token
     }
 
@@ -149,10 +318,33 @@ class Parser {
             self.skip_newlines()
             return
         }
+        if self.statement_failed && parser_statement_start(self.current().kind) {
+            return
+        }
         if !self.check("\}") && !self.at_end() {
-            self.fail(self.current(), "expected end of statement")
-            for !self.check("newline") && !self.check("\}") &&
-                !self.at_end() {
+            if self.check("lex_error") {
+                self.statement_failed = true
+            } else if self.check(">") || self.check(">>") {
+                self.fail(self.current(), "unexpected '>'")
+            } else {
+                self.fail(self.current(), "expected end of statement")
+            }
+            for !self.check("newline") && !self.at_end() {
+                if self.check("\}") {
+                    // Skip braces inside the damaged statement, but retain
+                    // the surrounding block's closer. Otherwise `{}` in an
+                    // invalid type declaration ended the function early.
+                    var inner_brace: bool = false
+                    var index: int = self.delimiters.len()
+                    for index > self.statement_delimiter_depth {
+                        index -= 1
+                        if self.delimiters[index].kind == "\{" {
+                            inner_brace = true
+                            break
+                        }
+                    }
+                    if !inner_brace { break }
+                }
                 self.advance()
             }
             self.skip_newlines()
@@ -200,7 +392,17 @@ class Parser {
                 module.add(
                     self.parse_package_clause(false, declared))
             } else {
-                module.add(self.parse_declaration())
+                let start: Token = self.current()
+                let declaration: AstNode = self.parse_declaration()
+                // A resource refusal stopped this declaration part way, and
+                // parsing ends with it. The editor still checks a tree with
+                // errors, so hand on only the refusal: the cut-off tree would
+                // give derivative errors (missing types, branches, returns).
+                if self.limit_exceeded {
+                    module.add(self.node("error", "", start))
+                } else {
+                    module.add(declaration)
+                }
             }
             self.skip_newlines()
         }
@@ -259,13 +461,21 @@ class Parser {
     }
 
     fn parse_declaration() -> AstNode {
+        self.statement_failed = false
         let annotations: List<AstNode> = self.parse_annotations()
         let declaration: AstNode = self.parse_declaration_body()
         declaration.annotations = move annotations
+        // A damaged declaration can leave a bracket open; it must not be
+        // named as the context of the next declaration's error.
+        self.delimiters.clear()
         return declaration
     }
 
     fn parse_declaration_body() -> AstNode {
+        if self.check("lex_error") {
+            let token: Token = self.advance()
+            return self.node("error", "", token)
+        }
         var public: bool = false
         if self.match_token("pub") { public = true }
         if self.check("ident") &&
@@ -634,6 +844,7 @@ class Parser {
 
     fn parse_generic_parameters(target: AstNode) {
         if !self.match_token("<") { return }
+        self.delimiters.push(self.tokens[self.pos - 1])
         self.skip_newlines()
         for !self.at_type_close() && !self.at_end() {
             let name: Token = self.expect("ident", "expected generic name")
@@ -665,8 +876,10 @@ class Parser {
     }
 
     fn parse_function() -> AstNode {
+        let delimiter_depth: int = self.delimiters.len()
         let start: Token = self.expect("fn", "expected fn")
         let name: Token = self.expect("ident", "expected function name")
+        self.functions.push(name)
         let function: AstNode =
             self.named(self.node("fn", name.text, start), name)
         self.parse_generic_parameters(function)
@@ -762,14 +975,20 @@ class Parser {
         if self.match_token(";") {
             function.add(self.node("declaration", "", self.current()))
             self.skip_newlines()
+            self.functions.pop()
+            for self.delimiters.len() > delimiter_depth { self.delimiters.pop() }
             return function
         }
         self.skip_newlines()
         if !self.check("\{") {
             function.add(self.node("declaration", "", self.current()))
+            self.functions.pop()
+            for self.delimiters.len() > delimiter_depth { self.delimiters.pop() }
             return function
         }
-        function.add(self.parse_block())
+        function.add(self.parse_block(false))
+        self.functions.pop()
+        for self.delimiters.len() > delimiter_depth { self.delimiters.pop() }
         return function
     }
 
@@ -837,6 +1056,15 @@ class Parser {
         self.expect("\{", "expected '\{'")
         self.skip_newlines()
         for !self.check("\}") && !self.at_end() {
+            // A declaration keyword cannot begin a member: this body was
+            // never closed. Leave the keyword to the declaration it starts.
+            if parser_declaration_start(self.current().kind) { break }
+            // Each member is its own unit of recovery, like a statement:
+            // its first error is reported, and its skip stays inside it.
+            self.statement_failed = false
+            let member_start: int = self.pos
+            let saved_depth: int = self.statement_delimiter_depth
+            self.statement_delimiter_depth = self.delimiters.len()
             let annotations: List<AstNode> = self.parse_annotations()
             var modifier: string = ""
             var reading_modifiers: bool = true
@@ -961,6 +1189,18 @@ class Parser {
                 declaration.add(field)
                 self.finish_statement()
             }
+            // A word that only starts a statement (`let`, `return`, ...)
+            // was reported above and left in place; skip it with the rest
+            // of its line so the loop always moves on.
+            if self.pos == member_start && !self.at_end() {
+                self.advance()
+                self.finish_statement()
+            }
+            // Like a statement, a member owns the brackets it opened.
+            for self.delimiters.len() > self.statement_delimiter_depth {
+                self.delimiters.pop()
+            }
+            self.statement_delimiter_depth = saved_depth
             self.skip_newlines()
         }
         let closed: bool = self.check("\}")
@@ -977,6 +1217,26 @@ class Parser {
     }
 
     fn parse_type() -> AstNode {
+        self.skip_newlines()
+        let token: Token = self.current()
+        var container: bool = self.check("[") || self.check("fn")
+        if self.check("ident") {
+            var cursor: int = self.pos + 1
+            for cursor + 1 < self.tokens.len() && self.tokens[cursor].kind == "." { cursor += 2 }
+            container = (cursor < self.tokens.len() &&
+                         self.tokens[cursor].kind == "<" &&
+                         !parser_scalar_type_name(token.text)) ||
+                        (token.text == "send" && self.tokens[self.pos + 1].kind == "fn")
+        }
+        if container && !self.enter_nesting(token) {
+            return self.node("type", "", token)
+        }
+        let result: AstNode = self.parse_type_body()
+        if container { self.nesting_depth -= 1 }
+        return self.bounded(result, token)
+    }
+
+    fn parse_type_body() -> AstNode {
         self.skip_newlines()
         let start: Token = self.current()
         if self.match_token("[") {
@@ -1052,6 +1312,7 @@ class Parser {
         // one. A user-written name is still ambiguous here and still commits.
         if !parser_scalar_type_name(name) &&
            self.match_token("<") {
+            self.delimiters.push(self.tokens[self.pos - 1])
             self.skip_newlines()
             for !self.at_type_close() && !self.at_end() {
                 result.add(self.parse_type())
@@ -1064,7 +1325,17 @@ class Parser {
         return result
     }
 
-    fn parse_block() -> AstNode {
+    fn parse_block(nested: bool = true) -> AstNode {
+        let token: Token = self.current()
+        if nested && !self.enter_nesting(token) {
+            return self.node("block", "", token)
+        }
+        let result: AstNode = self.parse_block_body()
+        if nested { self.nesting_depth -= 1 }
+        return self.bounded(result, token)
+    }
+
+    fn parse_block_body() -> AstNode {
         let start: Token = self.expect("\{", "expected '\{'")
         let block: AstNode = self.node("block", "", start)
         self.skip_newlines()
@@ -1088,8 +1359,21 @@ class Parser {
     }
 
     fn parse_statement() -> AstNode {
+        self.statement_failed = false
+        let saved_depth: int = self.statement_delimiter_depth
+        self.statement_delimiter_depth = self.delimiters.len()
+        let start_pos: int = self.pos
         let annotations: List<AstNode> = self.parse_annotations()
         let statement: AstNode = self.parse_statement_body()
+        if self.pos == start_pos && !self.at_end() {
+            self.advance()
+            self.finish_statement()
+        }
+        // A statement owns the brackets it opened. One a damaged statement
+        // left open must not be named as the next statement's context.
+        for self.delimiters.len() > self.statement_delimiter_depth {
+            self.delimiters.pop()
+        }
         if annotations.len() != 0 &&
            statement.kind != "let" && statement.kind != "var" {
             self.fail(
@@ -1102,10 +1386,21 @@ class Parser {
                 "annotations in a function body apply only to local declarations")
         }
         statement.annotations = move annotations
-        return statement
+        self.statement_delimiter_depth = saved_depth
+        // A chain that only crosses the depth limit with its statement node
+        // is reported on the statement's own line, not at the block's brace.
+        return self.bounded(statement, Token {
+            kind: statement.kind, text: "", line: statement.line, col: statement.col,
+        })
     }
 
     fn parse_statement_body() -> AstNode {
+        if self.check("pub") {
+            // Visibility belongs to a module's declarations; a local is
+            // never exported. Say so once, then parse what it decorated.
+            self.fail(self.advance(),
+                      "'pub' applies only to module-level declarations")
+        }
         if self.check("let") || self.check("var") {
             return self.parse_local()
         }
@@ -1185,12 +1480,11 @@ class Parser {
             local.add(self.parse_type())
         } else if self.check("=") {
             // The annotation is part of the statement, never inferred from
-            // the initializer. Two reports, matching the stage-0 parser
-            // byte for byte, then recovery continues at the initializer.
+            // the initializer. Report the missing type once and retain the
+            // initializer for recovery.
             let here: Token = self.current()
             self.fail(here,
                       "expected ':' — beans requires the type here")
-            self.fail(here, "expected type")
         }
         if self.match_token("=") { local.add(self.parse_expression()) }
         self.finish_statement()
@@ -1198,31 +1492,86 @@ class Parser {
     }
 
     fn parse_if() -> AstNode {
-        let start: Token = self.advance()
-        let result: AstNode = self.node("if", "", start)
-        let saved: bool = self.allow_initializer
-        self.allow_initializer = false
-        result.add(self.parse_expression())
-        self.allow_initializer = saved
-        self.skip_newlines()
-        result.add(self.parse_block())
-        self.skip_newlines()
-        if self.match_token("else") {
+        let token: Token = self.current()
+        if !self.enter_nesting(token) { return self.node("error", "", token) }
+        let result: AstNode = self.parse_if_chain(false)
+        self.nesting_depth -= 1
+        return self.bounded(result, token)
+    }
+
+    // `if … else if … else` is one construct at one nesting level however
+    // many arms it has: the arms sit side by side in the source. The tree
+    // still hangs each `else if` arm under the previous one, so parse the
+    // arms in a loop, bound the depth that hanging creates as each arm
+    // arrives, and link them from the last arm up once all are parsed.
+    // `value` selects the expression form, which requires its `else`.
+    fn parse_if_chain(value: bool) -> AstNode {
+        var arms: List<AstNode> = []
+        var otherwise: Option<AstNode> = none
+        for {
+            let start: Token = self.advance()
+            let arm: AstNode =
+                self.node(if value { "if_expression" } else { "if" }, "", start)
+            let saved: bool = self.allow_initializer
+            self.allow_initializer = false
+            arm.add(self.parse_expression())
+            self.allow_initializer = saved
             self.skip_newlines()
-            if self.check("if") {
-                result.add(self.parse_if())
-            } else {
-                result.add(self.parse_block())
+            arm.add(self.parse_block(false))
+            // Arm n hangs n levels below the first one.
+            if arms.len() + arm.parse_path_cost > parser_chain_limit() {
+                self.reject_limit(start, "syntax chain deeper than {parser_chain_limit()} levels")
+                return self.node("error", "", start)
             }
+            arms.push(arm)
+            // `else` may start the line after the branch's `}`: no statement
+            // can begin with `else`, so the newline cannot end the `if`. A
+            // missing `else` in the value form is reported once, and the
+            // token after the branch is left for the statement it starts.
+            self.skip_newlines()
+            if value && !self.check("else") {
+                self.fail(self.current(), "expected else")
+                break
+            }
+            if !self.match_token("else") { break }
+            self.skip_newlines()
+            if self.check("if") { continue }
+            let opening: Token = self.current()
+            let tail: AstNode = self.parse_block(false)
+            if arms.len() + tail.parse_path_cost > parser_chain_limit() {
+                self.reject_limit(opening, "syntax chain deeper than {parser_chain_limit()} levels")
+                return self.node("error", "", opening)
+            }
+            otherwise = some(tail)
+            break
         }
-        return result
+        var below: Option<AstNode> = otherwise
+        var index: int = arms.len()
+        for index > 0 {
+            index -= 1
+            let arm: AstNode = arms[index]
+            match below {
+                some(child) => { arm.add(child) }
+                none => {}
+            }
+            below = some(arm)
+        }
+        return arms[0]
     }
 
     fn parse_for() -> AstNode {
+        let token: Token = self.current()
+        if !self.enter_nesting(token) { return self.node("error", "", token) }
+        let result: AstNode = self.parse_for_body()
+        self.nesting_depth -= 1
+        return self.bounded(result, token)
+    }
+
+    fn parse_for_body() -> AstNode {
         let start: Token = self.advance()
         let result: AstNode = self.node("for", "", start)
         if self.check("\{") {
-            result.add(self.parse_block())
+            result.add(self.parse_block(false))
             return result
         }
         let saved: bool = self.allow_initializer
@@ -1252,12 +1601,13 @@ class Parser {
         }
         self.allow_initializer = saved
         self.skip_newlines()
-        result.add(self.parse_block())
+        result.add(self.parse_block(false))
         return result
     }
 
     fn parse_expression() -> AstNode {
-        return self.parse_binary(1)
+        let token: Token = self.current()
+        return self.bounded(self.parse_binary(1), token)
     }
 
     fn parse_binary(minimum: int) -> AstNode {
@@ -1269,7 +1619,7 @@ class Parser {
             let binary: AstNode = self.node("binary", operation.kind, operation)
             binary.add(left)
             binary.add(right)
-            left = binary
+            left = self.bounded(binary, operation)
         }
         return left
     }
@@ -1286,17 +1636,20 @@ class Parser {
                     "'take' was removed — use 'move'")
                 kind = "move"
             }
+            if !self.enter_nesting(operation) { return self.node("error", "", operation) }
             let operand: AstNode = self.parse_prefix()
+            self.nesting_depth -= 1
             let unary: AstNode = self.node("unary", kind, operation)
             if operand.kind == "cast" &&
                !operand.parenthesized &&
                operand.children.len() >= 2 {
                 unary.add(operand.children[0])
                 operand.children[0] = unary
-                return operand
+                ast_refresh_path_cost(operand)
+                return self.bounded(operand, operation)
             }
             unary.add(operand)
-            return unary
+            return self.bounded(unary, operation)
         }
         if self.check("new") {
             let start: Token = self.advance()
@@ -1379,7 +1732,8 @@ class Parser {
         // delimiter disappeared.
         if token.kind == "newline" || token.kind == "\}" ||
            token.kind == ")" || token.kind == "]" ||
-           token.kind == "," || token.kind == "eof" {
+           token.kind == "," || token.kind == "eof" ||
+           parser_statement_start(token.kind) {
             self.fail(token, "expected expression")
             // Stage 0 represents this missing operand as an empty recovery
             // node. Keep the self-hosted AST identical as well as keeping the
@@ -1387,6 +1741,10 @@ class Parser {
             return self.node("error", "", token)
         }
         self.advance()
+        if token.kind == "lex_error" {
+            self.statement_failed = true
+            return self.node("error", "", token)
+        }
         if token.kind == "ident" &&
            self.check("(") &&
            (token.text == "size_of" ||
@@ -1404,9 +1762,18 @@ class Parser {
             let literal: AstNode =
                 self.node("literal", token.text, token)
             literal.note = token.kind
+            if token.kind == "string" {
+                let nested: bool = self.in_string_piece && !string_literal_is_raw(token.text)
+                if nested && !self.enter_nesting(token) {
+                    return self.node("error", "", token)
+                }
+                self.parse_string_pieces(literal)
+                if nested { self.nesting_depth -= 1 }
+            }
             return literal
         }
         if token.kind == "(" {
+            if !self.enter_nesting(token) { return self.node("error", "", token) }
             // inside parentheses a '{' can only start an initializer or
             // map, never an if/for body, so initializers come back on —
             // the same rule as stage 0's StructGuard
@@ -1416,9 +1783,11 @@ class Parser {
             self.allow_initializer = saved
             self.expect(")", "expected ')'")
             expression.parenthesized = true
-            return expression
+            self.nesting_depth -= 1
+            return self.bounded(expression, token)
         }
         if token.kind == "[" {
+            if !self.enter_nesting(token) { return self.node("error", "", token) }
             let saved: bool = self.allow_initializer
             self.allow_initializer = true
             let list: AstNode = self.node("list", "", token)
@@ -1433,9 +1802,11 @@ class Parser {
             }
             self.allow_initializer = saved
             self.expect("]", "expected ']'")
-            return list
+            self.nesting_depth -= 1
+            return self.bounded(list, token)
         }
         if token.kind == "\{" {
+            if !self.enter_nesting(token) { return self.node("error", "", token) }
             let saved: bool = self.allow_initializer
             self.allow_initializer = true
             let map: AstNode = self.node("map", "", token)
@@ -1455,10 +1826,66 @@ class Parser {
             }
             self.allow_initializer = saved
             self.expect("\}", "expected '\}'")
-            return map
+            self.nesting_depth -= 1
+            return self.bounded(map, token)
         }
         self.fail(token, "expected expression")
         return self.node("error", token.text, token)
+    }
+
+    // Parse valid pieces once, before any recursive consumer or the LSP
+    // sees this literal. Ordinary malformed pieces retain the checker's
+    // existing diagnostic path; resource refusals are parser errors.
+    fn parse_string_pieces(literal: AstNode) {
+        let raw: string = literal.value
+        if raw.len() < 2 || string_literal_is_raw(raw) { return }
+        var index: int = string_literal_body_start(raw)
+        let end: int = string_literal_body_end(raw)
+        var ready: bool = true
+        for index < end && !self.limit_exceeded {
+            let byte: int = raw.byte_at(index)
+            if byte == 92 {
+                index += string_escape_length(raw, index, end)
+                continue
+            }
+            if byte != 123 {
+                index += 1
+                continue
+            }
+            let start: int = index + 1
+            let cursor: int = string_interpolation_end(raw, start, end)
+            if cursor < 0 { ready = false; break }
+            let segment: string = raw.slice(start, cursor - 1)
+            index = cursor
+            let lexer: Lexer = new Lexer(interpolation_expression_source(segment))
+            let tokens: List<Token> = lexer.scan()
+            let parser: Parser = new Parser(move tokens, lexer.source_ended_in_error)
+            parser.nesting_depth = self.nesting_depth
+            parser.in_string_piece = true
+            let expression: AstNode = parser.parse_standalone_expression()
+            if parser.limit_exceeded {
+                // The piece was parsed as a tiny source starting at 1:1;
+                // its first byte sits at column `literal.col + start`.
+                self.reject_limit(Token {
+                    kind: "string", text: "", line: literal.line,
+                    col: literal.col + start + parser.limit_col - 1,
+                }, parser.limit_message)
+                ready = false
+                break
+            }
+            if segment == "" || lexer.errors.len() != 0 || parser.errors.len() != 0 {
+                ready = false
+                continue
+            }
+            ast_place_interpolation(expression, literal.line, literal.col + start - 1)
+            literal.interpolations.push(expression)
+            ast_refresh_path_cost(literal)
+            self.bounded(literal, Token {
+                kind: "string", text: "", line: literal.line, col: literal.col + start,
+            })
+        }
+        literal.interpolation_syntax_ready = ready
+        if !ready { literal.interpolations.clear() }
     }
 
     // Decide whether a '<' at the current position opens explicit type
@@ -1515,6 +1942,7 @@ class Parser {
         var expression: AstNode = start
         var running: bool = true
         for running {
+            let operation: Token = self.current()
             if self.check("(") {
                 let opening: Token = self.advance()
                 let call: AstNode =
@@ -1539,9 +1967,6 @@ class Parser {
                 } else {
                     self.fail(name, "expected name after '.'")
                     if name.line > dot.line {
-                        self.fail(
-                            name,
-                            "expected end of statement")
                         self.recovered_statement_end = true
                     }
                 }
@@ -1552,10 +1977,12 @@ class Parser {
                 expression = field
             } else if self.check("[") {
                 let bracket: Token = self.advance()
+                if !self.enter_nesting(bracket) { return self.node("error", "", bracket) }
                 let index: AstNode = self.node("index", "", bracket)
                 index.add(expression)
                 index.add(self.parse_expression())
                 self.expect("]", "expected ']'")
+                self.nesting_depth -= 1
                 expression = index
             } else if self.match_token("?") {
                 let attempt: AstNode =
@@ -1583,6 +2010,8 @@ class Parser {
                 // Explicit type arguments: wrap the callee, and let the
                 // next loop turn build the call the lookahead guaranteed.
                 let opening: Token = self.advance()
+                if !self.enter_nesting(opening) { return self.node("error", "", opening) }
+                self.delimiters.push(opening)
                 let wrapper: AstNode =
                     self.node("type_args", "", opening)
                 wrapper.add(expression)
@@ -1594,6 +2023,7 @@ class Parser {
                     self.skip_newlines()
                 }
                 self.take_type_close()
+                self.nesting_depth -= 1
                 if wrapper.children.len() == 1 {
                     self.fail(
                         opening,
@@ -1605,11 +2035,24 @@ class Parser {
             } else {
                 running = false
             }
+            expression = self.bounded(expression, operation)
         }
         return expression
     }
 
     fn parse_arguments(target: AstNode) {
+        let token: Token = Token { kind: "(", text: "(", line: target.line, col: target.col }
+        if !self.enter_nesting(token) {
+            target.note = "parse_error"
+            return
+        }
+        let errors_before: int = self.errors.len()
+        self.parse_arguments_body(target)
+        if self.errors.len() > errors_before { target.note = "parse_error" }
+        self.nesting_depth -= 1
+    }
+
+    fn parse_arguments_body(target: AstNode) {
         let saved: bool = self.allow_initializer
         self.allow_initializer = true
         self.skip_newlines()
@@ -1630,10 +2073,19 @@ class Parser {
         } else {
             target.end_line = ast_open_end()
             target.end_col = ast_open_end()
+            target.note = "parse_error"
         }
     }
 
     fn parse_initializer(type_name: AstNode) -> AstNode {
+        let token: Token = self.current()
+        if !self.enter_nesting(token) { return self.node("error", "", token) }
+        let result: AstNode = self.parse_initializer_body(type_name)
+        self.nesting_depth -= 1
+        return self.bounded(result, token)
+    }
+
+    fn parse_initializer_body(type_name: AstNode) -> AstNode {
         let start: Token = self.advance()
         let result: AstNode = self.node("initializer", "", start)
         result.add(type_name)
@@ -1658,6 +2110,14 @@ class Parser {
     }
 
     fn parse_match_expression() -> AstNode {
+        let token: Token = self.current()
+        if !self.enter_nesting(token) { return self.node("error", "", token) }
+        let result: AstNode = self.parse_match_expression_body()
+        self.nesting_depth -= 1
+        return self.bounded(result, token)
+    }
+
+    fn parse_match_expression_body() -> AstNode {
         let start: Token = self.advance()
         let result: AstNode = self.node("match", "", start)
         let saved: bool = self.allow_initializer
@@ -1680,7 +2140,7 @@ class Parser {
             self.expect("=>", "expected '=>'")
             self.skip_newlines()
             if self.check("\{") {
-                arm.add(self.parse_block())
+                arm.add(self.parse_block(false))
             } else {
                 arm.add(self.parse_expression())
             }
@@ -1781,6 +2241,17 @@ class Parser {
     }
 
     fn parse_closure_expression() -> AstNode {
+        let token: Token = self.current()
+        if !self.enter_nesting(token) { return self.node("error", "", token) }
+        let result: AstNode = self.parse_closure_expression_body()
+        self.nesting_depth -= 1
+        // A call or member access written after the body applies to the
+        // closure from outside it: `fn() -> int { 1 }()` opens its argument
+        // list one level below the closure, like any other call's.
+        return self.parse_postfix(self.bounded(result, token))
+    }
+
+    fn parse_closure_expression_body() -> AstNode {
         let start: Token = self.advance()
         let closure: AstNode = self.node("closure", "", start)
         self.expect("(", "expected '('")
@@ -1836,28 +2307,16 @@ class Parser {
             closure.add(result)
         }
         self.skip_newlines()
-        closure.add(self.parse_block())
-        return self.parse_postfix(closure)
+        closure.add(self.parse_block(false))
+        return closure
     }
 
     fn parse_if_expression() -> AstNode {
-        let start: Token = self.advance()
-        let result: AstNode = self.node("if_expression", "", start)
-        let saved: bool = self.allow_initializer
-        self.allow_initializer = false
-        result.add(self.parse_expression())
-        self.allow_initializer = saved
-        self.skip_newlines()
-        result.add(self.parse_block())
-        self.skip_newlines()
-        self.expect("else", "expected else")
-        self.skip_newlines()
-        if self.check("if") {
-            result.add(self.parse_if_expression())
-        } else {
-            result.add(self.parse_block())
-        }
-        return result
+        let token: Token = self.current()
+        if !self.enter_nesting(token) { return self.node("error", "", token) }
+        let result: AstNode = self.parse_if_chain(true)
+        self.nesting_depth -= 1
+        return self.bounded(result, token)
     }
 }
 
@@ -1871,4 +2330,38 @@ fn parser_scalar_type_name(name: string) -> bool {
            name == "byte" || name == "float" || name == "f32" ||
            name == "f64" || name == "decimal" ||
            name == "bool" || name == "string" || name == "unit"
+}
+
+// The language's nesting contract (spec/SYNTAX.md, Lexical): at most this
+// many grammar constructs open along one path inside a declaration.
+fn parser_nesting_limit() -> int {
+    return 256
+}
+
+// The depth of the syntax tree a declaration may hand to recursive walks,
+// counted in AST nodes along one path (spec/SYNTAX.md, Lexical). At an
+// 8 MiB stack the first walk to fault on a flat chain did so between
+// 18 000 and 37 000 nodes deep, so this keeps a margin of more than four
+// for larger frames on other hosts and in instrumented compiler builds.
+fn parser_chain_limit() -> int {
+    return 4096
+}
+
+// These words start statements or declarations, so a missing expression
+// before one must not consume the next construct during recovery.
+fn parser_statement_start(kind: string) -> bool {
+    return kind == "let" || kind == "var" || kind == "return" ||
+           kind == "for" || kind == "break" || kind == "continue" ||
+           kind == "pub" || kind == "class" || kind == "struct" ||
+           kind == "union" || kind == "interface" || kind == "enum" ||
+           kind == "import" || kind == "extern" || kind == "defer" ||
+           kind == "unsafe" || kind == "static" || kind == "override"
+}
+
+// Keywords that begin a module-level declaration and never a member of a
+// type body, so meeting one inside a body means the body was not closed.
+fn parser_declaration_start(kind: string) -> bool {
+    return kind == "class" || kind == "struct" || kind == "union" ||
+           kind == "interface" || kind == "enum" || kind == "import" ||
+           kind == "extern"
 }
