@@ -808,6 +808,8 @@ partial class LlvmTextEmitter {
         }
         clone.capture_value_mask =
             instruction.capture_value_mask
+        clone.capture_move_mask =
+            instruction.capture_move_mask
         clone.dispatch_slot = instruction.dispatch_slot
         // The flag says how the source asked for the comparison, which the
         // substitution does not change: the instance still compares through

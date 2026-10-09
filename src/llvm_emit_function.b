@@ -629,6 +629,15 @@ partial class LlvmTextEmitter {
             return ""
         }
         let id: int = self.fresh()
+        if index < 63 &&
+           (instruction.capture_move_mask &
+            (1 << index)) != 0 {
+            // a move(...) capture: the closure takes the frame's
+            // reference to the cell, and the local is left without one.
+            // An assignment then makes the local a new cell, so it
+            // cannot reach what the closure owns (CD-28).
+            return "  %clo.cell{id} = load ptr, ptr %l{local.id}\n  store ptr null, ptr %l{local.id}\n  %clo.slot{id} = getelementptr i8, ptr {box}, i64 {byte_offset}\n  store ptr %clo.cell{id}, ptr %clo.slot{id}\n"
+        }
         return "  %clo.cell{id} = load ptr, ptr %l{local.id}\n  call void @beans_retain(ptr %clo.cell{id})\n  %clo.slot{id} = getelementptr i8, ptr {box}, i64 {byte_offset}\n  store ptr %clo.cell{id}, ptr %clo.slot{id}\n"
     }
 
@@ -858,7 +867,8 @@ partial class LlvmTextEmitter {
             }
             // assignment writes through the shared cell — that is the
             // whole point of the cell — and a never-made cell (a bind
-            // the checker proved dead on this path) gets one lazily
+            // the checker proved dead on this path, or one a move(...)
+            // closure took, CD-28) gets one lazily
             let allocation: string =
                 self.cell_allocation(
                     instruction, local,

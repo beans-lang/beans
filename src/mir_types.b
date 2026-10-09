@@ -72,6 +72,11 @@ class MirInstruction {
     cleanup_id: int
     capture_locals: List<int>
     capture_value_mask: int
+    // Bit i: capture i is a move(...) capture riding a cell. The closure
+    // takes that cell from the local instead of sharing it, so the local
+    // holds none until it is assigned again (CD-28). Moved captures come
+    // first, so the word always reaches them.
+    capture_move_mask: int
     ownership: string
     effects: string
     file: string
@@ -122,6 +127,7 @@ class MirInstruction {
         self.cleanup_id = -1
         self.capture_locals = []
         self.capture_value_mask = 0
+        self.capture_move_mask = 0
         self.ownership = "trivial"
         self.effects = "none"
         self.file = file
@@ -214,6 +220,9 @@ class MirCapture {
     target: int
     type: HirType
     by_value: bool
+    // listed in the closure's move(...): the closure takes the enclosing
+    // local's cell, and the local starts again without one (CD-28)
+    moved: bool
 
     fn init(binding_id: int, name: string,
             source: int, target: int, type: HirType) {
@@ -223,6 +232,7 @@ class MirCapture {
         self.target = target
         self.type = type
         self.by_value = false
+        self.moved = false
     }
 }
 

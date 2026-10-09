@@ -1741,9 +1741,14 @@ spent (using one afterward is a use-after-move error), and each owned capture
 is released exactly once when the closure value dies. This is how a move-only
 value — a socket, a `Box`, a `List` — lives inside a callback and is torn
 down with it. Each listed name must be an enclosing local the body actually
-uses; `inout` parameters cannot be move-captured. Plain closure values stay
-shared `fn` values: copying one shares the same closure and captures rather
-than duplicating them. A `send fn` is move-only instead. Inside the body a
+uses; `inout` parameters cannot be move-captured. The closure takes the
+value's storage with it, so a spent `var` that is assigned again holds a new
+value of its own: the closure never sees it, and the old value lives as long
+as the closure, not the enclosing scope. A local that an earlier closure still
+reads, or a capture of the closure around this one, is borrowed and cannot be
+listed. Plain closure values stay shared `fn` values: copying one shares the
+same closure and captures rather than duplicating them. A `send fn` is
+move-only instead. Inside the body a
 move capture still reads as a borrowed binding — it cannot be moved out again,
 because the closure may be called more than once.
 

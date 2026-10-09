@@ -12415,6 +12415,9 @@ class ExpressionChecker {
         // move captures are validated against the enclosing scope before
         // the closure's own scope opens
         var moved_captures: List<LocalBinding> = []
+        var moved_borrowed: List<bool> = []
+        var moved_nodes: List<HirNode> = []
+        var refused_moves: List<int> = []
         var moved_names: Map<string, bool> = {}
         match move_captures {
             some(list) => {
@@ -12438,8 +12441,35 @@ class ExpressionChecker {
                                 self.fail(
                                     name_node,
                                     "use of moved value '{name_node.value}'")
+                            } else if self.capture_floor_depth >= 0 &&
+                                      self.local_scope_index(
+                                          name_node.value) <
+                                          self.capture_floor_depth {
+                                // a capture of the closure around this
+                                // one: that closure only borrows it
+                                // (CD-28)
+                                self.fail(
+                                    name_node,
+                                    "can't move outer value '{name_node.value}' from a loop or escaping closure")
+                                refused_moves.push(binding.id)
+                            } else if self.borrowed_by_closure(
+                                          binding) {
+                                // an earlier closure reads it through
+                                // the same storage for as long as that
+                                // closure lives (CD-28)
+                                self.fail(
+                                    name_node,
+                                    "can't move borrowed binding '{name_node.value}'")
+                                refused_moves.push(binding.id)
                             } else {
                                 moved_captures.push(binding)
+                                moved_borrowed.push(binding.borrowed)
+                                let moved: HirNode =
+                                    self.make_node(
+                                        name_node, "move_capture",
+                                        name_node.value, binding.type)
+                                moved.binding_id = binding.id
+                                moved_nodes.push(moved)
                             }
                         }
                         none => {
@@ -12470,8 +12500,14 @@ class ExpressionChecker {
         for binding: LocalBinding in moved_captures {
             self.send_move_captures[binding.id] = true
         }
+        // a refused move(...) is reported once, not again at each use in
+        // a send fn's body
+        for binding_id: int in refused_moves {
+            self.send_move_captures[binding_id] = true
+        }
         let capture_floor: int = self.scopes.len()
         let capture_mark: int = self.capture_uses.len()
+        let borrow_mark: int = self.closure_borrows.len()
         self.capture_floor_depth = capture_floor
         self.closure_depth += 1
         if self.take_floor_depth < capture_floor {
@@ -12527,6 +12563,7 @@ class ExpressionChecker {
         }
         self.pop_scope()
         self.borrow_captures(capture_mark)
+        self.drop_owned_borrows(borrow_mark)
         self.current.result = saved_result
         self.current.body_result = saved_body_result
         self.closure_depth -= 1
@@ -12546,14 +12583,50 @@ class ExpressionChecker {
         }
         // the closure owns the listed captures now: the enclosing
         // bindings are spent, exactly as if each was passed to a move
-        // parameter
-        for binding: LocalBinding in moved_captures {
-            let spent: LocalBinding = self.current_binding(binding)
+        // parameter. The body's reads borrowed them; that borrow goes
+        // too, because the closure takes the storage with it and a
+        // `var` assigned again starts in storage of its own (CD-28).
+        for index: int in 0..moved_captures.len() {
+            let spent: LocalBinding =
+                self.current_binding(moved_captures[index])
             self.write_binding_state(
-                spent, "moved", spent.borrowed,
+                spent, "moved", moved_borrowed[index],
                 spent.borrows_owner)
         }
+        // both backends read these to give each moved capture to the
+        // closure alone
+        for moved: HirNode in moved_nodes {
+            result.children.push(moved)
+        }
         return result
+    }
+
+    // A closure made earlier that reads this binding without owning it
+    // shares its storage while that closure lives, so the binding cannot
+    // be moved into another closure (CD-28). closure_borrows lists what
+    // each closure borrowed once its body was checked.
+    fn borrowed_by_closure(binding: LocalBinding) -> bool {
+        for capture: LocalBinding in self.closure_borrows {
+            if capture.id == binding.id { return true }
+        }
+        return false
+    }
+
+    // A closure nested in a `move(...)` closure reads the captures the
+    // outer one owns, not the enclosing bindings, so it borrows nothing
+    // of theirs. Called while send_move_captures still names the outer
+    // closure's own captures.
+    fn drop_owned_borrows(mark: int) {
+        if self.send_move_captures.len() == 0 { return }
+        var kept: List<LocalBinding> = []
+        for index: int in 0..self.closure_borrows.len() {
+            let capture: LocalBinding = self.closure_borrows[index]
+            if index < mark ||
+               !self.send_move_captures.contains_key(capture.id) {
+                kept.push(capture)
+            }
+        }
+        self.closure_borrows = move kept
     }
 
     fn closure_names_local(node: HirNode,
