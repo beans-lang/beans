@@ -25,6 +25,8 @@ Release contract: language=1.0, runtime_abi=23.
   in place; directory entry durability and atomic replacement require explicit
   caller sequencing (#174).
 - Generated Unicode width headers match their generator after comment cleanup.
+- Windows compiler fibers retain the scheduler return context and preserve a
+  caller that was already an OS fiber.
 
 This release uses the owner's requested `fast=true` workflow: Unix packages run
 `make test-quick`; the discovery soak, full release gate and hosted fixed-point

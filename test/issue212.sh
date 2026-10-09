@@ -26,6 +26,12 @@ def invoke(args, **kwargs):
 
 with tempfile.TemporaryDirectory(prefix="beans-issue212-") as directory:
     root = pathlib.Path(directory)
+    probe = root / ("root.exe" if os.name == "nt" else "root")
+    invoke([os.environ.get("BEANS_CC", "clang"), "-std=c11", "-O2",
+            "runtime/beans_fiber.c", "test/issue212_root.c", "-o", str(probe)] +
+           ([] if os.name == "nt" else ["-pthread"]))
+    assert "ok compiler root returns" in invoke([str(probe)])
+    print("ok compiler root lifecycle and nested entry", flush=True)
     cases = {
         "sum": ("fn main() { let w: List<int> = [1,2,3]\nlet total: int = " +
                 " + ".join("w[%d] * %d" % (i % 3, i % 3 + 1) for i in range(5000)) +

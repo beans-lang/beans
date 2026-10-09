@@ -534,8 +534,14 @@ BeansWorker* beans_worker_new(void) {
     InitializeCriticalSection(&worker->inbox_m);
     InitializeConditionVariable(&worker->inbox_c);
     worker->page = 4096;
-    // The scheduler itself becomes a fiber so SwitchToFiber can reach it.
-    ConvertThreadToFiber(NULL);
+    // Fibers return to the scheduler on the calling thread's OS fiber.
+    worker->sched_ctx.sp = IsThreadAFiber() ? GetCurrentFiber() :
+        ConvertThreadToFiber(NULL);
+    if (!worker->sched_ctx.sp) {
+        DeleteCriticalSection(&worker->inbox_m);
+        free(worker);
+        return NULL;
+    }
 #else
     pthread_mutex_init(&worker->inbox_m, NULL);
 #if defined(__APPLE__)
@@ -1795,10 +1801,19 @@ int beans_fiber_run_root(void (*entry)(void*), void* context, size_t stack_reser
         entry(context);
         return 0;
     }
+#if defined(_WIN32)
+    int was_fiber = IsThreadAFiber();
+#endif
     BeansWorker* worker = beans_worker_new();
     if (!worker) return ENOMEM;
     BeansFiber* root = beans_fiber_spawn(worker, entry, context, "compiler", stack_reserve);
-    if (!root) { beans_worker_free(worker); return ENOMEM; }
+    if (!root) {
+        beans_worker_free(worker);
+#if defined(_WIN32)
+        if (!was_fiber) ConvertFiberToThread();
+#endif
+        return ENOMEM;
+    }
     root->is_root = 1;
     worker->root_fiber = root;
     beans_worker_run(worker);
@@ -1806,7 +1821,7 @@ int beans_fiber_run_root(void (*entry)(void*), void* context, size_t stack_reser
     worker->root_fiber = NULL;
     beans_worker_free(worker);
 #if defined(_WIN32)
-    ConvertFiberToThread();
+    if (!was_fiber) ConvertFiberToThread();
 #endif
     return status;
 }
