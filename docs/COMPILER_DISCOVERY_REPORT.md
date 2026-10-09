@@ -24,7 +24,7 @@ bug-free.
 | CD-16 | sanitizer coverage | A `--release` build with IR ≥ 4 MiB is compiled by the chunked backend without `-fsanitize=`, so ASan never reaches it, the compiler itself included. | #207 |
 | CD-24 | hang | A native build of a `List` or `Map` type nested 24 deep spends 18 to 24 s writing IR; 32 deep, over 300 s. Found later, while verifying #202. | none |
 | CD-25 | invalid acceptance | A `move(...)` closure whose body branches left its captures usable, so two names owned one value. Found later, while fixing CD-15. Fixed locally on branch `fix/cd25-stale-binding`; see its BUGFIX_TODO row. | none |
-| CD-26 | invalid acceptance | A closure that reads an outer binding only inside a loop or a returning branch does not borrow it, so the binding can be moved away; a native reproduction segfaults. Found later, while fixing CD-15. | none |
+| CD-26 | invalid acceptance | A closure that reads an outer binding only inside a loop or a returning branch does not borrow it, so the binding can be moved away; a native reproduction segfaults. A closure made in a loop has the same hole. Found later, while fixing CD-15. Fixed locally on `fix/cd26-capture-borrow`: see [CD-26 verified locally](#cd-26-verified-locally--2026-10-08). | none |
 | CD-28 | wrong code | A `move(...)` closure over a `var` still shares the variable: assigning it afterwards releases the value the closure owns and hands the closure the new one, and a `send fn` made this way shares it with the worker thread. Found while fixing CD-25. | none |
 
 Decisions needed from owners before the remaining red gates can turn green:
@@ -468,6 +468,60 @@ fix).
 Not run: Linux, Windows, `make test-sanitize`, the Autobahn suite and any
 candidate soak; `make test-self-host` and `make test-core` were not rerun after
 the rebase.
+
+### CD-26 verified locally — 2026-10-08
+
+A closure's read of an outer binding marks it borrowed, but the mark was branch
+state: a read in a loop or a returning branch of the body, or a closure made in
+a loop, was undone by the join, and the binding could be moved while the
+closure still read it. Now a closure borrows what its body captured once the
+body is checked, and a `for` statement borrows again what the closures made in
+it captured. Branch `fix/cd26-capture-borrow`, on `95c457e`. macOS ARM64,
+Apple clang. "Unfixed" is `95c457e` built by itself; "fixed" is the change
+built by that compiler and then by itself.
+
+| Reproduction | Unfixed | Fixed |
+| --- | --- | --- |
+| Read in a returning `if` branch, in a `for` body, in a returning `match` arm, in a closure nested in a returning branch; closure made in a loop and kept in an outer `var` | `check` accepts; `run` panics ("builtin method 'List<int>.len' is not in the Beans interpreter yet", exit 3); native exit 139 | `check`, `run` and `build` exit 1 with one error at the `move`: "can't move borrowed binding 'items'" |
+
+`check` stdout, stderr and exit status, unfixed against fixed:
+
+| Corpus | Files | Result |
+| --- | --- | --- |
+| Every `.b` file in this repository | 955 | byte-identical (722 accepted, 233 refused) |
+| Every `.b` file in latte, cortado, espresso, barista, dbcore, postgres, mysql, redis and sqlite, from each package's root | 892 | byte-identical (372 accepted; 518 refused by both as entry files away from `beans.pot`, 2 with the same real error) |
+| `tools/ownership_fuzz.py` programs, seed 7, 300 cases | 900 | byte-identical |
+| CD-15's 8 000 generated programs | 8 000 | 450 differ; in each function that differs, the first difference is a new "can't move borrowed binding" at a `move` of a binding an earlier closure reads |
+
+No repository or sibling file is newly refused.
+
+| Run | Result |
+| --- | --- |
+| `test/cd26_captures.sh` (new) | **passed**; on the unfixed compiler **fails** at its first case |
+| `test/checker_width.sh` | **passed**, 7.3x to 7.7x CPU for 8x work (unfixed: 7.2x to 7.7x) |
+| `make test-fixpoint` | **passed** in 10 s |
+| `make test-quick` | **passed** in 184 s |
+| `make test-frontend` | **passed** in 379 s |
+| `make test-compiler-discovery` | **passed** in 25 s |
+| `tools/ownership_fuzz.py --cases 300 --lanes interp,debug` | **passed** in 334 s, 615 accepted and 285 refused |
+| `test/ci_coverage.sh`, `test/closure_captures.sh`, `test/moves.sh`, `test/borrowed_iteration.sh`, `test/downcast_borrow.sh` | **passed** |
+| `make test-self-host` | **passed** in 1 426 s, 80 examples compiled and matched |
+| `make test-core`, `BEANS_AUTOBAHN_SKIP=1` | **passed** in 1 873 s; skipped by the scripts themselves: Autobahn, `nghttpd`, the sqlite3 system package, wasmtime, the Android NDK, the iOS simulator, the Linux arm64 emulator and five cross targets the host clang cannot build |
+
+The table above ran on `95c457e`. The change was then rebased onto `3ef9509`
+(CD-24 and CD-25) and built by itself. There, `make test-fixpoint`,
+`make test-compiler-discovery`, `test/cd26_captures.sh`, `test/cd25_moves.sh`,
+`test/moves.sh`, `test/closure_captures.sh`, `test/checker_width.sh` (7.2x to
+7.4x), `test/borrowed_iteration.sh`, `test/downcast_borrow.sh` and
+`test/ci_coverage.sh` pass. Against `3ef9509` built by itself, `check` is
+byte-identical on the 955 repository files, the 900 ownership-fuzzer programs
+and the sibling packages. Remote dependencies were unreachable for that run,
+so 134 sibling files stop at "could not fetch" in both. Of the 8 000 generated
+programs, 468 differ, all by the same rule as above.
+
+Not run: Linux, Windows, `make test-sanitize` and any candidate soak;
+`make test-quick`, `make test-frontend`, `make test-self-host` and
+`make test-core` were not rerun after the rebase.
 
 ### Evidence required before a release verdict changes
 

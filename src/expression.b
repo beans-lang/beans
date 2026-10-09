@@ -114,6 +114,14 @@ class ExpressionChecker {
     feature_guards: List<string>
     take_floor_depth: int
     capture_floor_depth: int
+    // A closure's captures borrow what they read, but joins undo branch
+    // state, and a closure value outlives every branch of its body and the
+    // loop it is made in (CD-26). So each capture is logged here as it is
+    // read, and the closure borrows them again once its body is checked;
+    // what it borrowed then goes to closure_borrows, which a loop borrows
+    // again after it undoes its own state.
+    capture_uses: List<LocalBinding>
+    closure_borrows: List<LocalBinding>
     // The map a match subject reads its value from, while that match's arm
     // patterns are being declared. -1 when the subject is anything else.
     pattern_borrow_owner: int
@@ -202,6 +210,8 @@ class ExpressionChecker {
         self.take_floor_depth = -1
         self.pattern_borrow_owner = -1
         self.capture_floor_depth = -1
+        self.capture_uses = []
+        self.closure_borrows = []
         self.closure_depth = 0
         self.require_send_captures = false
         self.require_sync_captures = false
@@ -6974,6 +6984,7 @@ class ExpressionChecker {
         self.write_binding_state(
             binding, binding.move_state, true,
             binding.borrows_owner)
+        self.capture_uses.push(binding)
         let capture_key: string = "{binding.id}"
         if binding.inout_parameter &&
            !self.bad_inout_captures.contains_key(capture_key) {
@@ -7025,6 +7036,52 @@ class ExpressionChecker {
             self.fail(
                 node,
                 "stored callback cannot capture '{binding.name}' of non-Sync type {render_hir_type(binding.type)}")
+        }
+    }
+
+    // Once a closure's body is checked: borrow every binding it captured
+    // from `mark` on that is still in scope, whichever path of the body
+    // read it, and log it for the loops around the closure. A binding the
+    // closure owns through move(...) is spent instead; send_move_captures
+    // still names this closure's own until the caller restores it.
+    fn borrow_captures(mark: int) {
+        var seen: Map<int, bool> = {}
+        for index: int in mark..self.capture_uses.len() {
+            let capture: LocalBinding = self.capture_uses[index]
+            if seen.contains_key(capture.id) ||
+               self.send_move_captures.contains_key(capture.id) {
+                continue
+            }
+            seen[capture.id] = true
+            if self.borrow_capture(capture) {
+                self.closure_borrows.push(capture)
+            }
+        }
+    }
+
+    // After a loop undoes its state: a closure made in it may still be
+    // alive, so what it captured stays borrowed.
+    fn keep_closure_borrows(mark: int) {
+        for index: int in mark..self.closure_borrows.len() {
+            self.borrow_capture(self.closure_borrows[index])
+        }
+    }
+
+    // Borrow the binding in the capture's slot, if it is still the one
+    // captured: a scope may have closed, or another binding of that name
+    // may sit there now.
+    fn borrow_capture(capture: LocalBinding) -> bool {
+        match self.live_binding(capture.depth, capture.name) {
+            some(binding) => {
+                if binding.id != capture.id { return false }
+                if !binding.borrowed {
+                    self.write_binding_state(
+                        binding, binding.move_state, true,
+                        binding.borrows_owner)
+                }
+                return true
+            }
+            none => { return false }
         }
     }
 
@@ -12414,6 +12471,7 @@ class ExpressionChecker {
             self.send_move_captures[binding.id] = true
         }
         let capture_floor: int = self.scopes.len()
+        let capture_mark: int = self.capture_uses.len()
         self.capture_floor_depth = capture_floor
         self.closure_depth += 1
         if self.take_floor_depth < capture_floor {
@@ -12468,6 +12526,7 @@ class ExpressionChecker {
             }
         }
         self.pop_scope()
+        self.borrow_captures(capture_mark)
         self.current.result = saved_result
         self.current.body_result = saved_body_result
         self.closure_depth -= 1
@@ -14790,7 +14849,10 @@ class ExpressionChecker {
             return result
         }
         if node.kind == "for" {
-            return self.check_for(node)
+            let borrow_mark: int = self.closure_borrows.len()
+            let lowered: HirNode = self.check_for(node)
+            self.keep_closure_borrows(borrow_mark)
+            return lowered
         }
         if node.kind == "break" || node.kind == "continue" {
             if self.loop_depth == 0 {
@@ -15062,6 +15124,8 @@ class ExpressionChecker {
         self.feature_guards = []
         self.take_floor_depth = -1
         self.capture_floor_depth = -1
+        self.capture_uses = []
+        self.closure_borrows = []
         self.require_send_captures = false
         self.require_sync_captures = false
         self.send_move_captures = {}

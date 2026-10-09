@@ -1150,8 +1150,11 @@ The checker rejects use after move and a value moved on only one branch. A
 move on every branch is definite. Normal parameters, loop variables, match
 bindings, and closure captures are borrowed, so they cannot be moved. Moving an outer
 local from a loop is also rejected because the next iteration would see an
-empty binding. For now `move` names a whole local; field and index moves need
-consuming accessors such as List `remove`.
+empty binding. A local a closure reads stays borrowed from where the closure is
+made, wherever the body reads it (in a loop, in a branch that returns, or in a
+nested closure), and it stays borrowed after a loop that made the closure. For
+now `move` names a whole local; field and index moves need consuming accessors
+such as List `remove`.
 
 **A move hands the value over where it is written, not where the spent binding's
 scope ends.** From the `move` on, the value belongs to whatever took it — a
