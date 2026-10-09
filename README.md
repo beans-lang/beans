@@ -1,41 +1,121 @@
 # Beans
 
-Beans is a programming language for business apps and systems work. Run a
-script, or ship a native binary. Money math is exact.
-
-```beans
-import std.io
-
-fn main() {
-    let a: float = 0.1
-    let b: float = 0.2
-    io.println("float:   {a + b}")    // 0.30000000000000004
-
-    let x: decimal = 0.1
-    let y: decimal = 0.2
-    io.println("decimal: {x + y}")    // 0.3
-}
-```
+Beans is a compiled language for backend services and business systems. It
+builds native binaries through LLVM, manages memory with reference counting
+instead of a tracing GC, and has no null and no exceptions. The compiler,
+`beansc`, is written in Beans.
 
 [Documentation](https://beans-lang.github.io/docs/) ·
 [Releases](https://github.com/beans-lang/beans/releases) ·
 [Examples](examples/) ·
 [Contributing](CONTRIBUTING.md)
 
+### A web API with [Espresso](https://github.com/beans-lang/espresso)
+
+Controllers, constructor injection, model binding, and middleware, served by a
+non-blocking HTTP/1.1 event loop on fibers.
+
+```beans
+import github.com/beans-lang/espresso
+
+@espresso.controller(route: "/hello")
+pub class HelloController extends espresso.Controller {
+    pub fn init() {}
+
+    @espresso.get(route: r"/{name}")
+    pub fn hello(@espresso.route name: string) ->
+        Result<espresso.ActionResult> {
+        return self.ok_text("Hello, {name}!")
+    }
+}
+
+fn main() {
+    let builder: espresso.WebApplicationBuilder =
+        new espresso.WebApplicationBuilder()
+    espresso.add_controllers(builder).expect("controllers")
+    let app: espresso.WebApplication = builder.build().expect("app")
+    espresso.map_controllers(app).expect("map")
+
+    let server: espresso.WebServer = espresso.WebServer.bind(
+        app, new espresso.ServerOptions()).expect("bind")
+    server.run().expect("run")
+}
+```
+
+### A live UI with [Latte](https://github.com/beans-lang/latte)
+
+Components are `.bx` files: markup with Beans in it. The server keeps state and
+streams DOM edits over a WebSocket. Add `render:mode="client"` and the same
+component runs in the browser as WebAssembly.
+
+```html
+<beans>
+package site
+
+import {param} from latte
+
+pub partial class Counter extends Component {
+    @param pub label: string = "count"
+    @param pub start: int = 0
+    pub clicks: int = 0
+
+    pub fn total() -> int { return self.start + self.clicks }
+}
+</beans>
+
+<section class="counter">
+  <output>$self.label = $self.total()</output>
+  <button on:click={fn(e: MouseEvent) { self.clicks += 1 }}>add one</button>
+</section>
+```
+
+### Errors are values, checked at compile time
+
+A function that can fail returns `Result`. You handle it with `match` or pass
+it up with `?`. Using it as a plain value does not compile.
+
+```beans
+import std.io
+
+fn parse_qty(text: string) -> Result<int> {
+    let qty: int = text.to_int()?
+    if qty <= 0 {
+        return err("quantity must be positive, got {qty}")
+    }
+    return ok(qty)
+}
+
+fn main() {
+    match parse_qty("abc") {
+        ok(qty) => { io.println("qty {qty}") }
+        err(e) => { io.println("rejected: {e}") }  // can't read 'abc' as int
+    }
+    let qty: int = parse_qty("5")  // error: expected int, got Result<int>
+}
+```
+
 ## Why Beans
 
-- **Exact money.** A built-in `decimal` type, so totals and taxes add up.
-- **No null, no exceptions.** `Option`, `Result`, and `?` make failure explicit.
-- **Explicit types.** Code stays boring and easy to read a year later.
-- **Run or build.** `beansc run` interprets. `beansc build` makes a native binary through LLVM.
-- **Self-hosted.** The compiler, `beansc`, is written in Beans and rebuilds itself byte for byte.
-- **Systems access when you need it.** Sized ints, `unsafe` blocks, and C interop.
+- **Native speed, predictable memory.** LLVM native code. Reference counting
+  with a cycle collector, so no stop-the-world GC pauses. `move`, `Shared<T>`,
+  and `Weak<T>` when you need control over ownership.
+- **Safe by default.** No null: absence is `Option`. No exceptions: failure is
+  `Result`. Raw memory and pointers only inside `unsafe` blocks.
+- **Concurrency built in.** Fibers, threads, channels, mutexes, and typed atomics.
+- **Exact `decimal` arithmetic** for money, alongside fixed-width ints and floats.
+- **C interop.** Import C headers, generate bindings, export C functions.
+- **Two engines, one language.** `beansc run` interprets for fast iteration.
+  `beansc build` makes the native binary. The test suite checks that both give
+  the same output, and that the compiler rebuilds itself byte for byte.
+- **Measured against C++.** The [benchmark suite](bench/README.md) runs every
+  workload against tuned C++ references, with fixed checksums and a strict
+  variance policy.
 
 ## Ecosystem
 
-- [Espresso](https://github.com/beans-lang/espresso): web APIs with routing, middleware, DI, and OpenAPI.
-- [Latte](https://github.com/beans-lang/latte): server-rendered UI components with `.bx` markup.
-- [Cortado](https://github.com/beans-lang/cortado): native desktop apps on AppKit, GTK4, and Win32.
+- [Espresso](https://github.com/beans-lang/espresso): web APIs with DI, middleware, routing, and OpenAPI.
+- [Latte](https://github.com/beans-lang/latte): server-rendered UI components, or WebAssembly in the browser.
+- [Cortado](https://github.com/beans-lang/cortado): native desktop apps on AppKit, UIKit, GTK4, and Win32.
 - Database drivers: [PostgreSQL](https://github.com/beans-lang/postgres),
   [MySQL](https://github.com/beans-lang/mysql), [SQLite](https://github.com/beans-lang/sqlite),
   and [Redis](https://github.com/beans-lang/redis).
