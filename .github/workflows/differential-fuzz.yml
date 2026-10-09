@@ -72,10 +72,13 @@ jobs:
       - name: Fuzz one recorded seed
         env:
           INPUT_CASES: ${{ github.event_name == 'workflow_dispatch' && inputs.cases || '400' }}
-          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || (100 + 4 * github.run_number) }}
+          # Expressions have no arithmetic; the shell derives the default seed.
+          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || '' }}
+          RUN_NUMBER: ${{ github.run_number }}
           SHARD: ${{ matrix.shard }}
           FUZZ_GROUPS: ${{ matrix.groups }}
         run: |
+          : "${INPUT_START_SEED:=$(( 100 + 4 * RUN_NUMBER ))}"
           case "$INPUT_CASES" in ''|*[!0-9]*)
             echo "cases must be a whole number" >&2; exit 2 ;; esac
           case "$INPUT_START_SEED" in ''|*[!0-9]*)
@@ -95,9 +98,12 @@ jobs:
         if: contains(matrix.groups, 'classes')
         env:
           INPUT_CASES: ${{ github.event_name == 'workflow_dispatch' && inputs.cases || '400' }}
-          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || (100 + 4 * github.run_number) }}
+          # Expressions have no arithmetic; the shell derives the default seed.
+          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || '' }}
+          RUN_NUMBER: ${{ github.run_number }}
           SHARD: ${{ matrix.shard }}
         run: |
+          : "${INPUT_START_SEED:=$(( 100 + 4 * RUN_NUMBER ))}"
           OOP_FUZZ_SEED=$(( INPUT_START_SEED + SHARD - 1 ))
           export OOP_FUZZ_SEED
           export OOP_FUZZ_CASES="$INPUT_CASES"
@@ -108,9 +114,12 @@ jobs:
         if: contains(matrix.groups, 'classes')
         env:
           INPUT_CASES: ${{ github.event_name == 'workflow_dispatch' && inputs.cases || '400' }}
-          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || (100 + 4 * github.run_number) }}
+          # Expressions have no arithmetic; the shell derives the default seed.
+          INPUT_START_SEED: ${{ github.event_name == 'workflow_dispatch' && inputs.start_seed || '' }}
+          RUN_NUMBER: ${{ github.run_number }}
           SHARD: ${{ matrix.shard }}
         run: |
+          : "${INPUT_START_SEED:=$(( 100 + 4 * RUN_NUMBER ))}"
           OWNERSHIP_FUZZ_SEED=$(( INPUT_START_SEED + SHARD - 1 ))
           export OWNERSHIP_FUZZ_SEED
           export OWNERSHIP_FUZZ_CASES="$INPUT_CASES"
