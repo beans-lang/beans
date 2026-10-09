@@ -1,25 +1,47 @@
 # Beans
 
-Beans is a general-purpose programming language with explicit types and automatic
-reference counting. It supports functions, closures, structs, enums, classes,
-and interfaces.
+Beans is a programming language for business apps and systems work. Run a
+script, or ship a native binary. Money math is exact.
 
-The compiler, `beansc`, is written in Beans. It can run programs in an interpreter
-or compile them to native code through LLVM.
+```beans
+import std.io
+
+fn main() {
+    let a: float = 0.1
+    let b: float = 0.2
+    io.println("float:   {a + b}")    // 0.30000000000000004
+
+    let x: decimal = 0.1
+    let y: decimal = 0.2
+    io.println("decimal: {x + y}")    // 0.3
+}
+```
 
 [Documentation](https://beans-lang.github.io/docs/) ·
 [Releases](https://github.com/beans-lang/beans/releases) ·
 [Examples](examples/) ·
 [Contributing](CONTRIBUTING.md)
 
-```beans
-import std.io
+## Why Beans
 
-fn main() {
-    let name: string = "beans"
-    io.println("hello from {name}")
-}
-```
+- **Exact money.** A built-in `decimal` type, so totals and taxes add up.
+- **No null, no exceptions.** `Option`, `Result`, and `?` make failure explicit.
+- **Explicit types.** Code stays boring and easy to read a year later.
+- **Run or build.** `beansc run` interprets. `beansc build` makes a native binary through LLVM.
+- **Self-hosted.** The compiler, `beansc`, is written in Beans and rebuilds itself byte for byte.
+- **Systems access when you need it.** Sized ints, `unsafe` blocks, and C interop.
+
+## Ecosystem
+
+- [Espresso](https://github.com/beans-lang/espresso): web APIs with routing, middleware, DI, and OpenAPI.
+- [Latte](https://github.com/beans-lang/latte): server-rendered UI components with `.bx` markup.
+- [Cortado](https://github.com/beans-lang/cortado): native desktop apps on AppKit, GTK4, and Win32.
+- Database drivers: [PostgreSQL](https://github.com/beans-lang/postgres),
+  [MySQL](https://github.com/beans-lang/mysql), [SQLite](https://github.com/beans-lang/sqlite),
+  and [Redis](https://github.com/beans-lang/redis).
+- Packages install with `pot`. Editor support for [VS Code and Zed](https://github.com/beans-lang/editors).
+
+If Beans looks useful, a star helps other people find it.
 
 ## Install
 
@@ -59,7 +81,18 @@ manual downloads, upgrades, and other dependencies.
 
 ## Run a program
 
-Save the example above as `hello.b`. Check it and run it in the interpreter:
+Save this as `hello.b`:
+
+```beans
+import std.io
+
+fn main() {
+    let name: string = "beans"
+    io.println("hello from {name}")
+}
+```
+
+Check it and run it in the interpreter:
 
 ```bash
 beansc check hello.b
