@@ -1806,7 +1806,15 @@ int beans_fiber_run_root(void (*entry)(void*), void* context, size_t stack_reser
 #endif
     BeansWorker* worker = beans_worker_new();
     if (!worker) return ENOMEM;
-    BeansFiber* root = beans_fiber_spawn(worker, entry, context, "compiler", stack_reserve);
+#if defined(FIBER_NETPOLL)
+    // Host-owned descriptors must exist before an interpreted program's baseline.
+    if (!poller_init(worker)) {
+        int error = errno ? errno : EIO;
+        beans_worker_free(worker);
+        return error;
+    }
+#endif
+    BeansFiber* root = beans_fiber_spawn(worker, entry, context, "main", stack_reserve);
     if (!root) {
         beans_worker_free(worker);
 #if defined(_WIN32)

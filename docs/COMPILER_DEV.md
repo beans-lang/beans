@@ -158,14 +158,18 @@ fiber owner. Interpreting the compiler's source reuses that same root stack.
 The runner is also registered with the existing hosted-runtime symbol table,
 so self-interpretation works when PE or ELF executable symbols are hidden.
 Existing fiber-aware sleeps, thread joins, and network waits consequently use
-the same scheduler. This creates no extra application requests or subprocesses;
-a first network wait may initialize the existing kqueue descriptor on macOS,
-or epoll plus eventfd descriptors on Linux. These are released with the worker.
+the same scheduler. Before command entry, the runner initializes one kqueue
+descriptor on macOS or epoll plus eventfd descriptors on Linux, so an interpreted
+program sees a stable host-runtime descriptor baseline. Worker teardown closes
+them. This adds no application requests or subprocesses; descriptor exhaustion
+can prevent even a command such as `--version` from starting.
 
 `test/issue212.sh` checks the reported generated programs, evaluation order,
 accepted/refused depth boundaries, and a 1 MiB POSIX process stack. It also
 runs in the existing real Windows hosted GNU and MSVC target jobs. Target IR
 emission alone does not prove the Windows C runtime or executable works.
+Its C root probe checks repeated entry, caller-fiber ownership, stable descriptor
+counts across I/O waits, teardown and descriptor-exhaustion cleanup.
 `test/issue202.sh`, its LSP companion, `test/panic.sh`, `test/signals.sh`, and
 the existing fiber gates cover adjacent lifecycle and error behavior.
 
