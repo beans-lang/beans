@@ -566,6 +566,11 @@ jobs:
             exit 1
           fi
 
+      - name: Generated chains on the fixed Windows compiler stack
+        if: matrix.hosted
+        shell: bash
+        run: BEANSC=build/windows_native/beansc.exe bash test/issue212.sh
+
       # std.encoding on genuine Windows. The bundle staged on Linux already
       # carried the four packages' goldens through the PE-header check and
       # the manifest diff above, which is the cross-built half. This step is
@@ -722,6 +727,10 @@ jobs:
             echo "MSVC hosted gate skipped" >&2
             exit 1
           fi
+
+      - name: Generated chains on the fixed MSVC compiler stack
+        shell: bash
+        run: BEANSC=build/windows_msvc/beansc.exe bash test/issue212.sh
 
       - name: MSVC compiler reaches the IR fixed point
         shell: bash

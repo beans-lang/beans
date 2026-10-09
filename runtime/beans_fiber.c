@@ -16,6 +16,7 @@
 #define BEANS_FIBER_UNWIND 0
 #endif
 
+#include <errno.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -462,11 +463,13 @@ static void* stack_top(BeansFiber* fiber) {
 // report is async-signal-safe and the process aborts: an overflowed frame
 // cannot be resumed, and F2's unwind machinery is not in the picture yet.
 
+static struct sigaction fiber_previous_segv;
+static struct sigaction fiber_previous_bus;
+
 static void fiber_fault(int sig, siginfo_t* info, void* context) {
-    (void)context;
     BeansWorker* worker = tls_worker;
     BeansFiber* fiber = worker ? worker->current : NULL;
-    if (fiber && fiber->stack_base) {
+    if (fiber && !fiber->is_root && fiber->stack_base) {
         unsigned char* at = (unsigned char*)info->si_addr;
         unsigned char* guard = (unsigned char*)fiber->stack_base;
         if (at >= guard && at < guard + worker->page) {
@@ -479,7 +482,13 @@ static void fiber_fault(int sig, siginfo_t* info, void* context) {
             _exit(134);
         }
     }
-    // Not ours: restore the default action and refault.
+    // Root and unrelated faults retain the runtime's existing reporting owner.
+    struct sigaction* previous = sig == SIGBUS ? &fiber_previous_bus : &fiber_previous_segv;
+    if (previous->sa_handler != SIG_DFL && previous->sa_handler != SIG_IGN) {
+        if (previous->sa_flags & SA_SIGINFO) previous->sa_sigaction(sig, info, context);
+        else previous->sa_handler(sig);
+        return;
+    }
     signal(sig, SIG_DFL);
 }
 
@@ -491,8 +500,8 @@ static void guard_report_install(void) {
     memset(&action, 0, sizeof action);
     action.sa_sigaction = fiber_fault;
     action.sa_flags = SA_SIGINFO | SA_ONSTACK;
-    sigaction(SIGSEGV, &action, NULL);
-    sigaction(SIGBUS, &action, NULL);
+    sigaction(SIGSEGV, &action, &fiber_previous_segv);
+    sigaction(SIGBUS, &action, &fiber_previous_bus);
 }
 
 // The handler must not run on the overflowed fiber stack itself. One
@@ -1776,4 +1785,36 @@ void beans_worker_free(BeansWorker* worker) {
 #endif
     if (tls_worker == worker) tls_worker = NULL;
     free(worker);
+}
+
+// Compiler startup needs a fixed stack while retaining process signal ownership.
+int beans_fiber_run_root(void (*entry)(void*), void* context, size_t stack_reserve) {
+    if (tls_worker) {
+        // An interpreted compiler entry already runs on its host compiler's root.
+        if (!tls_worker->current || !tls_worker->current->is_root) return EINVAL;
+        entry(context);
+        return 0;
+    }
+    BeansWorker* worker = beans_worker_new();
+    if (!worker) return ENOMEM;
+    BeansFiber* root = beans_fiber_spawn(worker, entry, context, "compiler", stack_reserve);
+    if (!root) { beans_worker_free(worker); return ENOMEM; }
+    root->is_root = 1;
+    worker->root_fiber = root;
+    beans_worker_run(worker);
+    int status = beans_fiber_join(root, NULL, 0);
+    worker->root_fiber = NULL;
+    beans_worker_free(worker);
+#if defined(_WIN32)
+    ConvertFiberToThread();
+#endif
+    return status;
+}
+
+int beans_fiber_stack_bounds(void** low, void** high) {
+    BeansFiber* fiber = beans_fiber_current();
+    if (!fiber || !fiber->stack_base) return 0;
+    *low = (unsigned char*)fiber->stack_base + fiber->worker->page;
+    *high = (unsigned char*)fiber->stack_base + fiber->stack_reserve;
+    return 1;
 }

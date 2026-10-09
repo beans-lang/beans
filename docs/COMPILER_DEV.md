@@ -144,6 +144,40 @@ make fuzz-oop            # generated OOP semantics
 - **`make clean` wipes all of `build/`,** including the built compiler and the
   package cache.
 
+## Compiler stack and source limits
+
+[The language specification](../spec/SYNTAX.md#lexical) owns the nesting and
+syntax-tree depth limits. `src/main.b` enters the existing command dispatcher
+through `beans_compiler_stack_run`, which uses the runtime fiber owner's
+`beans_fiber_run_root`. This reserves the compiler stack on the original OS
+thread rather than creating another signal receiver or changing runtime
+worker-thread accounting. POSIX uses the existing guarded mappings and
+context switches; Windows uses the existing `CreateFiberEx` reservation.
+Root-stack faults chain to the runtime reporter, using bounds supplied by the
+fiber owner. Interpreting the compiler's source reuses that same root stack.
+The runner is also registered with the existing hosted-runtime symbol table,
+so self-interpretation works when PE or ELF executable symbols are hidden.
+Existing fiber-aware sleeps, thread joins, and network waits consequently use
+the same scheduler. This creates no extra application requests or subprocesses;
+a first network wait may initialize the existing kqueue descriptor on macOS,
+or epoll plus eventfd descriptors on Linux. These are released with the worker.
+
+`test/issue212.sh` checks the reported generated programs, evaluation order,
+accepted/refused depth boundaries, and a 1 MiB POSIX process stack. It also
+runs in the existing real Windows hosted GNU and MSVC target jobs. Target IR
+emission alone does not prove the Windows C runtime or executable works.
+`test/issue202.sh`, its LSP companion, `test/panic.sh`, `test/signals.sh`, and
+the existing fiber gates cover adjacent lifecycle and error behavior.
+
+The chain guard remains conservative. Local macOS ARM64 allocator-stack
+sampling at the accepted boundary observed approximately 3.93 MiB for flat
+operator/member chains and 3.15 MiB for else-if check/run. Those observations
+are lower bounds on stack usage, not a proof of the maximum across all frames,
+platforms, or instrumentation. Raising the guard further requires separate
+measurements. Unbounded chains would require iterative representations and
+walkers throughout the checker, lowering, interpreters, printers, and editor
+queries; this change preserves their existing order and tree shapes.
+
 ## Layout
 
 - `src/` - the self-hosted compiler, 82 `.b` files

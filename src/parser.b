@@ -256,7 +256,7 @@ class Parser {
     // parser hands them, measured as each node is finished.
     fn bounded(node: AstNode, token: Token) -> AstNode {
         if node.parse_path_cost > parser_chain_limit() {
-            self.reject_limit(token, "syntax chain deeper than {parser_chain_limit()} levels")
+            self.reject_limit(token, "syntax chain deeper than {parser_chain_limit()} levels; split the expression into intermediate let bindings or split the else-if ladder into functions")
             return self.node("error", "", token)
         }
         return node
@@ -1526,7 +1526,7 @@ class Parser {
             arm.add(self.parse_block(false))
             // Arm n hangs n levels below the first one.
             if arms.len() + arm.parse_path_cost > parser_chain_limit() {
-                self.reject_limit(start, "syntax chain deeper than {parser_chain_limit()} levels")
+                self.reject_limit(start, "syntax chain deeper than {parser_chain_limit()} levels; split the expression into intermediate let bindings or split the else-if ladder into functions")
                 return self.node("error", "", start)
             }
             arms.push(arm)
@@ -1545,7 +1545,7 @@ class Parser {
             let opening: Token = self.current()
             let tail: AstNode = self.parse_block(false)
             if arms.len() + tail.parse_path_cost > parser_chain_limit() {
-                self.reject_limit(opening, "syntax chain deeper than {parser_chain_limit()} levels")
+                self.reject_limit(opening, "syntax chain deeper than {parser_chain_limit()} levels; split the expression into intermediate let bindings or split the else-if ladder into functions")
                 return self.node("error", "", opening)
             }
             otherwise = some(tail)
@@ -2373,13 +2373,10 @@ fn parser_nesting_limit() -> int {
     return 256
 }
 
-// The depth of the syntax tree a declaration may hand to recursive walks,
-// counted in AST nodes along one path (spec/SYNTAX.md, Lexical). At an
-// 8 MiB stack the first walk to fault on a flat chain did so between
-// 18 000 and 37 000 nodes deep, so this keeps a margin of more than four
-// for larger frames on other hosts and in instrumented compiler builds.
+// Recursive walks retain their evaluation order on the fixed 256 MiB compiler stack.
+// Keep a conservative chain bound until every downstream walk becomes iterative.
 fn parser_chain_limit() -> int {
-    return 4096
+    return 16384
 }
 
 // These words start statements or declarations, so a missing expression
