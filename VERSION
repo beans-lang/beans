@@ -2,9 +2,10 @@
 # tools/gen_version_b.sh generates src/version.b; test/version.sh checks synchronization.
 # Release packagers require the tag to match this file.
 # Keep the compiler below 1.0.0 until all public 1.0 release gates pass.
-compiler=0.1.52
+compiler=0.1.53
 language=1.0
 
+# 23: Adds the same-thread compiler stack runner and bounded process execution used by dependency fetches.
 # 22: Native parked cancellation uses cleanup on ELF/Mach-O x86_64/arm64; interpreted host calls return cancellation to the tree walker through shared per-fiber handler, cancellation-state and cleanup-mask entries.
 # 21: beans_with_collection_deferred scopes collector/deinit exclusion counters across nesting and contained unwind without changing immediate ARC destruction.
 # 20: beans_json_decode_probe_publish and beans_json_decode_probe replace the encoding bridge's shared probe with per-thread status, error code, offset/record count and field index storage.
@@ -31,4 +32,4 @@ language=1.0
 # 8: beans_poll_wait_into fills a caller-owned event buffer.
 # 7: Adds Bytes.filled, Bytes.append_int_text and Thread.detach.
 # 6: Adds per-thread runtime-hook guard entry points.
-runtime_abi=22
+runtime_abi=23

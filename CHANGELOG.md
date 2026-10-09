@@ -2,6 +2,35 @@
 
 This file records user-facing changes in each Beans release.
 
+## [0.1.53] - 2026-10-09
+
+Release contract: language=1.0, runtime_abi=23.
+
+- Native equality builds for nested boxed Results and 255-deep Options, with
+  interpreter Error equality matching native structural comparisons (#210).
+- Nested inline Result/Option layout calculation reuses bottom-up sizes and
+  alignments instead of repeatedly traversing each child (#211).
+- Compiler commands run on a guarded 256 MiB stack on the original OS thread.
+  Generated sums, fluent calls and else-if ladders accepted by 0.1.51 work
+  again. The syntax-chain limit is 16,384 nodes; true nesting remains 256.
+  Iterative chain representation remains future work (#212).
+- Dependency Git operations share a 120-second deadline. A stalled fetch stops
+  and reaps its process tree, removes incomplete clones and reports the
+  requirement location. `Command.run_timeout(ms)` exposes bounded execution
+  through the existing process runner (#213).
+- Generic declarations missing whitespace before `=` receive a spacing hint;
+  a newline operator in parentheses produces one primary diagnostic (#214).
+- `std.fs.write_durable`, `write_bytes_durable` and `sync` compose existing File
+  flush operations. Directory operations stay on Dir. Durable writes truncate
+  in place; directory entry durability and atomic replacement require explicit
+  caller sequencing (#174).
+- Generated Unicode width headers match their generator after comment cleanup.
+
+This release uses the owner's requested `fast=true` workflow: Unix packages run
+`make test-quick`; the discovery soak, full release gate and hosted fixed-point
+and differential runs are skipped. Every target is still built, packaged,
+install-tested and smoke-tested. Region allocation is not implemented (#150).
+
 ## [0.1.52] - 2026-10-09
 
 Release contract: language=1.0, runtime_abi=22.

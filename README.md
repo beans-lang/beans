@@ -213,8 +213,8 @@ JSON and XML, compression, and structured logging. The
 
 ## Status
 
-The latest release is **v0.1.52**. It carries language contract `1.0` and runtime
-ABI `22`.
+The latest release is **v0.1.53**. It carries language contract `1.0` and runtime
+ABI `23`.
 
 Beans is pre-1.0. The language, standard library, command-line tools, module
 format, and ABI may still change between minor releases. Pin the compiler
@@ -259,7 +259,7 @@ make
 `make BEANSC_BOOT=/path/to/beansc` to choose another compiler. The build checks
 that the bootstrap compiler supports the language features used in `src/`.
 
-This checkout reports compiler `0.1.52` and runtime ABI `22`.
+This checkout reports compiler `0.1.53` and runtime ABI `23`.
 [VERSION](VERSION) defines the compiler, language, and runtime ABI versions.
 
 ## Developing

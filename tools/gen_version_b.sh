@@ -28,11 +28,7 @@ abi=$(field runtime_abi)
 
 mkdir -p "$(dirname "$out")"
 cat >"$out" <<EOF
-// Generated from VERSION by tools/gen_version_b.sh. Do not edit.
-//
-// The compiler reads its own version from here because it cannot read VERSION
-// while compiling itself. Bump VERSION and rebuild — test/version.sh refuses a
-// stale copy.
+// Generated from VERSION by tools/gen_version_b.sh; test/version.sh checks synchronization.
 
 package main
 

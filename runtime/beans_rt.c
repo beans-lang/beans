@@ -8571,12 +8571,7 @@ __attribute__((always_inline)) long long beans_str_count_chars(
 //
 // Invalid UTF-8 is not silently dropped: each bad byte counts as one column,
 // which is what a terminal draws for the replacement character it substitutes.
-/* BEGIN GENERATED display-width tables : Unicode 17.0.0.
-   Regenerate with tools/gen_width_table.py; do not edit by hand.
-   zero: Mn/Me/Cf marks, Cc controls, Hangul jamo V/T, and the emoji
-   skin-tone modifiers, less U+00AD which terminals draw.
-   wide: East_Asian_Width W and F, plus Emoji_Presentation.
-   pict: Extended_Pictographic, which a variation selector moves. */
+/* BEGIN GENERATED display-width tables - Unicode 17.0.0; regenerate with tools/gen_width_table.py. */
 static const unsigned int width_zero_ranges[][2] = {
     {0x0,0x1F}, {0x7F,0x9F}, {0x300,0x36F}, {0x483,0x489}, {0x591,0x5BD},
     {0x5BF,0x5BF}, {0x5C1,0x5C2}, {0x5C4,0x5C5}, {0x5C7,0x5C7}, {0x600,0x605},

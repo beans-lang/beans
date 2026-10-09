@@ -170,15 +170,7 @@ def build(ucd_dir):
 
 
 def generated(version, zero, wide, pictographic):
-    header = (
-        "%s — Unicode %s.\n"
-        "   Regenerate with tools/gen_width_table.py; do not edit by hand.\n"
-        "   zero: Mn/Me/Cf marks, Cc controls, Hangul jamo V/T, and the emoji\n"
-        "   skin-tone modifiers, less U+00AD which terminals draw.\n"
-        "   wide: East_Asian_Width W and F, plus Emoji_Presentation.\n"
-        "   pict: Extended_Pictographic, which a variation selector moves. */"
-        % (BEGIN, version)
-    )
+    header = "%s - Unicode %s; regenerate with tools/gen_width_table.py. */" % (BEGIN, version)
     return "\n".join(
         [
             header,
