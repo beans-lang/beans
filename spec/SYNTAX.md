@@ -1752,6 +1752,19 @@ move-only instead. Inside the body a
 move capture still reads as a borrowed binding — it cannot be moved out again,
 because the closure may be called more than once.
 
+**What `move(...)` can take.** Only a binding the function owns: a `let` or
+`var` local, or a `move` parameter. A borrowed parameter, a match binding, a
+loop variable and a closure parameter each borrow a value that something else
+still holds. A closure that took one would share that value with its owner,
+across threads for a `send fn`, so each is refused where it is listed, and the
+error for a borrowed parameter says to declare it `move`. A match binding
+borrows the value it was matched from, whatever that value is: a local, a
+field, or a call's result. So no match binding can be listed. To give a closure
+what a match would bind, move the matched local in and match inside the body,
+or take the payload out into a local first: `?` and `expect` hand it over
+(`let job: Job = next_job().expect("a job")`). A closure that runs only while
+the arm does can capture the binding without `move(...)`, as a borrow.
+
 ## Classes
 
 ```

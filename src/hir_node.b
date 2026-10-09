@@ -68,6 +68,12 @@ class LocalBinding {
     // map read sets it: `m.get(k)` hands back the map's own value, and two
     // of those alive at once would be two mutating names for one value.
     borrows_owner: int
+    // Why the function does not own this binding, or "" when it does (a
+    // `let`/`var` local or a `move` parameter): "parameter" for a borrowed
+    // parameter, "match" for a match binding, and "binding" for a loop
+    // variable or a closure parameter. Fixed when declared; move(...)
+    // takes only bindings with none (CD-29).
+    lent: string
     // The index of the scope that holds this binding, and the branch epoch
     // this object belongs to. The checker reads both to keep a branch's
     // move state without copying every scope (see scope_epoch there).
@@ -84,6 +90,7 @@ class LocalBinding {
         self.inout_parameter = inout_parameter
         self.move_state = "available"
         self.borrows_owner = -1
+        self.lent = ""
         self.depth = 0
         self.epoch = 0
     }

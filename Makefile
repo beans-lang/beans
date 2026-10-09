@@ -187,6 +187,7 @@ test-semantics: $(BIN)
 	./test/moves.sh
 	bash ./test/cd25_moves.sh
 	bash ./test/cd28_captures.sh
+	bash ./test/cd29_captures.sh
 	bash ./test/ownership_fuzz.sh smoke
 	bash ./test/borrowed_iteration.sh
 	bash ./test/downcast_borrow.sh
@@ -353,6 +354,7 @@ test-core: $(BIN)
 	./test/moves.sh
 	bash ./test/cd25_moves.sh
 	bash ./test/cd28_captures.sh
+	bash ./test/cd29_captures.sh
 	bash ./test/borrowed_iteration.sh
 	bash ./test/list_iteration.sh
 	bash ./test/list_backing.sh

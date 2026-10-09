@@ -545,7 +545,8 @@ class ExpressionChecker {
     // end of its scope exactly like a named binding, once and not twice.
     // Only the name goes away.
     fn declare(node: AstNode, type: HirType, mutable: bool,
-               borrowed: bool, inout_parameter: bool) -> int {
+               borrowed: bool, inout_parameter: bool,
+               lent: string = "") -> int {
         let at: int = self.scopes.len() - 1
         let discard: bool = is_discard_name(node.value)
         if !discard &&
@@ -563,6 +564,7 @@ class ExpressionChecker {
                 borrowed, inout_parameter)
         binding.depth = at
         binding.epoch = self.scope_epoch
+        binding.lent = lent
         self.scopes[at].bindings[node.value] = binding
         self.scope_log.push(new ScopeUndo(binding, true))
         return id
@@ -755,6 +757,7 @@ class ExpressionChecker {
                 binding.inout_parameter)
         item.move_state = binding.move_state
         item.borrows_owner = binding.borrows_owner
+        item.lent = binding.lent
         item.depth = binding.depth
         item.epoch = self.scope_epoch
         return item
@@ -12461,6 +12464,14 @@ class ExpressionChecker {
                                     name_node,
                                     "can't move borrowed binding '{name_node.value}'")
                                 refused_moves.push(binding.id)
+                            } else if binding.lent != "" {
+                                // the function does not own it, so the
+                                // closure would share the value its
+                                // owner still holds (CD-29)
+                                self.fail(
+                                    name_node,
+                                    self.lent_move_message(binding))
+                                refused_moves.push(binding.id)
                             } else {
                                 moved_captures.push(binding)
                                 moved_borrowed.push(binding.borrowed)
@@ -12517,9 +12528,15 @@ class ExpressionChecker {
         self.current.body_result = result_type
         self.push_scope()
         for index: int in 0..parameter_nodes.len() {
+            // borrowed; one written `move` or `inout` is refused above,
+            // and not again at a move(...) of it
+            var lent: string = "binding"
+            for part: AstNode in parameter_nodes[index].children {
+                if part.kind == "passing" { lent = "" }
+            }
             let binding_id: int = self.declare(
                 parameter_nodes[index],
-                parameters[index], false, true, false)
+                parameters[index], false, true, false, lent)
             let lowered: HirNode = self.make_node(
                 parameter_nodes[index], "closure_parameter",
                 parameter_nodes[index].value,
@@ -12599,6 +12616,19 @@ class ExpressionChecker {
             result.children.push(moved)
         }
         return result
+    }
+
+    // move(...) of a binding the function does not own. A borrowed
+    // parameter can be declared `move`; a match binding is a borrow of
+    // the matched value whatever was matched (CD-29).
+    fn lent_move_message(binding: LocalBinding) -> string {
+        if binding.lent == "parameter" {
+            return "can't move borrowed parameter '{binding.name}'; declare it `move {binding.name}`"
+        }
+        if binding.lent == "match" {
+            return "can't move match binding '{binding.name}'; it borrows the matched value"
+        }
+        return "can't move borrowed binding '{binding.name}'"
     }
 
     // A closure made earlier that reads this binding without owning it
@@ -13028,7 +13058,8 @@ class ExpressionChecker {
                 none => {}
             }
             let binding_id: int = self.declare(
-                binding, binding_type, false, true, false)
+                binding, binding_type, false, true, false,
+                "match")
             if self.pattern_borrow_owner >= 0 {
                 match self.find_local(binding.value) {
                     some(declared) => {
@@ -14241,12 +14272,13 @@ class ExpressionChecker {
                     block, "block", "", new HirType("unit"))
             self.push_scope()
             lowered_binding.binding_id = self.declare(
-                binding, element, false, true, false)
+                binding, element, false, true, false,
+                "binding")
             match lowered_value_binding {
                 some(lowered) => {
                     lowered.binding_id = self.declare(
                         node.children[1], value_element,
-                        false, true, false)
+                        false, true, false, "binding")
                 }
                 none => {}
             }
@@ -15264,7 +15296,12 @@ class ExpressionChecker {
                 parameter_node, parameter.type,
                 parameter.passing == "inout",
                 parameter.passing != "move",
-                parameter.passing == "inout")
+                parameter.passing == "inout",
+                if parameter.passing == "move" {
+                    ""
+                } else {
+                    "parameter"
+                })
         }
         self.append_runtime_wiring(function)
         for child: AstNode in function.syntax.children {
