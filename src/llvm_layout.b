@@ -42,6 +42,8 @@ class LlvmSlotConversion {
 // same for its payload or its two arms (LlvmTextEmitter.reference_tree).
 class LlvmReferenceTree {
     reference: bool
+    size: int = -2
+    alignment: int = -2
     below: List<LlvmReferenceTree>
 
     fn init(reference: bool,

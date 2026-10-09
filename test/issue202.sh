@@ -424,4 +424,31 @@ fn main() {
             ratios.append("%.1fx" % ratio)
     print("ok nested Result and Option-of-record types build at the nesting limit on both backends; "
           "IR emission CPU for 8x the depth: %s" % " ".join(ratios))
+
+    # #211: layout queries must reuse the bottom-up size/alignment answers,
+    # including list element masks and captured inline values.
+    def inline_layout(n, capture=False):
+        type_name = "Result<" * n + "int" + ", int>" * n
+        body = "let x: " + type_name + " = " + "ok(" * n + "7" + ")" * n
+        body += "\n    let xs: List<" + type_name + "> = [x]"
+        if capture:
+            body += "\n    let f: fn() -> bool = fn() -> bool { return x.is_ok() }\n    io.println(f())"
+        body += "\n    io.println(xs.len())\n    io.println(xs[0].is_ok())"
+        return wrap(body), ("true\n" if capture else "") + "1\ntrue\n"
+
+    for capture in (False, True):
+        source, output = inline_layout(255, capture)
+        for mode in ("run", "native"):
+            accepted(work, mode, source, output, label="inline layout at 255")
+        ratio = emit_seconds(work, inline_layout(248, capture)[0], "inline layout 248") / max(
+            emit_seconds(work, inline_layout(31, capture)[0], "inline layout 31"), 0.005)
+        assert ratio <= 24, "#211: %.1fx CPU for 8x inline layout depth" % ratio
+    print("ok #211: inline Result list/capture layout at the nesting limit; scaling below 24x for 8x depth")
+
+    # #210: compact names remain distinct at the grammar nesting limit.
+    source = wrap("let x: " + "Option<" * 255 + "int" + ">" * 255 + " = " +
+                  "some(" * 255 + "1" + ")" * 255 + "\n    io.println(x == x)\n    io.println(x != x)")
+    for mode in ("run", "native"):
+        accepted(work, mode, source, "true\nfalse\n", label="255-deep Option equality")
+    print("ok #210: 255-deep Option equality on both backends")
 PY

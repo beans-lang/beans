@@ -135,10 +135,16 @@ class Parser {
     }
 
     fn at_type_close() -> bool {
-        return self.check(">") || self.check(">>")
+        return self.check(">") || self.check(">>") || self.check(">=")
     }
 
     fn take_type_close() {
+        if self.check(">=") {
+            self.fail(self.current(), "write a space between '>' and '='")
+            self.advance()
+            self.close_delimiter("<")
+            return
+        }
         if self.match_token(">") {
             self.close_delimiter("<")
             return
@@ -1782,6 +1788,36 @@ class Parser {
             let expression: AstNode = self.parse_expression()
             self.allow_initializer = saved
             self.expect(")", "expected ')'")
+            // A line break before an operator ends this expression. If its
+            // continuation still has a closer, consume that same damaged
+            // expression so the next line does not become a second defect.
+            // Look ahead first: never eat a following declaration or block.
+            if self.statement_failed && self.check("newline") {
+                var end: int = self.pos + 1
+                for self.tokens[end].kind == "newline" { end += 1 }
+                if binary_precedence(self.tokens[end].kind) > 0 {
+                    var depth: int = 1
+                    for end < self.tokens.len() - 1 {
+                        let kind: string = self.tokens[end].kind
+                        if parser_statement_start(kind) || kind == "\}" || kind == ";" { break }
+                        if kind == "newline" && depth == 1 {
+                            var next: int = end + 1
+                            for self.tokens[next].kind == "newline" { next += 1 }
+                            if self.tokens[next].kind != ")" &&
+                               binary_precedence(self.tokens[next].kind) == 0 { break }
+                        }
+                        if kind == "(" { depth += 1 }
+                        if kind == ")" {
+                            depth -= 1
+                            if depth == 0 {
+                                for self.pos <= end { self.advance() }
+                                break
+                            }
+                        }
+                        end += 1
+                    }
+                }
+            }
             expression.parenthesized = true
             self.nesting_depth -= 1
             return self.bounded(expression, token)

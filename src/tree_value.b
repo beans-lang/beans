@@ -648,7 +648,7 @@ fn tree_value_total_equal(left: TreeValue,
                    right.memory_address &&
                left.slice_len == right.slice_len
     }
-    if left.kind == "record" {
+    if left.kind == "record" || left.kind == "error" {
         if left.text != right.text ||
            left.data().fields.entries.len() !=
                right.data().fields.entries.len() {

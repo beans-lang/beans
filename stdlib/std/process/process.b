@@ -14,6 +14,9 @@ package process
 
 import std.proc
 
+// Internal scoped deadline for the existing deadlock-free runtime runner.
+extern "C" fn beans_proc_timeout_scope(ms: int) -> int
+
 /// What a finished program left behind.
 pub class Output {
     /// Exit code, or the negative of the signal number if it was killed.
@@ -129,6 +132,20 @@ pub class Command {
         let parts: List<Bytes> = proc.run(argv, envp, self.dir, self.stdin_data,
                                           self.limit)?
         return ok(decode(parts))
+    }
+
+    /// Runs with one deadline covering stdin, both output streams and exit.
+    /// Timeout stops the child process group, reaps the child and returns kind
+    /// `timeout`. Output capture limits and ordinary run errors are unchanged.
+    pub fn run_timeout(ms: int) -> Result<Output> {
+        if ms < 0 { return err("a timeout cannot be negative", "invalid") }
+        let previous: int = self.timeout_scope(ms)
+        defer self.timeout_scope(previous)
+        return self.run()
+    }
+
+    fn timeout_scope(ms: int) -> int {
+        unsafe { return beans_proc_timeout_scope(ms) }
     }
 
     /// Starts it and comes straight back, giving a `Child` to watch, talk to and stop.

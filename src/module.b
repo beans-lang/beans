@@ -503,6 +503,19 @@ class ModuleCflags {
     }
 }
 
+// The requirement remains the source of truth, including the manifest site
+// used when a fetch fails before an imported source can be loaded.
+struct ModuleRequirement {
+    requested: string
+    file: string
+    line: int
+}
+
+fn git_fetch_timeout_ms() -> int {
+    let configured: int = os.env("BEANS_GIT_TIMEOUT_MS").or("").to_int().or(120000)
+    return if configured > 0 && configured <= 120000 { configured } else { 120000 }
+}
+
 class ModuleLoader {
     sources: SourceManager
     module_name: string
@@ -513,7 +526,7 @@ class ModuleLoader {
     errors: List<Diagnostic>
     state: Map<string, int>
     package_names: Map<string, string>
-    requirements: Map<string, string>
+    requirements: Map<string, ModuleRequirement>
     lock_entries: Map<string, LockEntry>
     resolved_entries: Map<string, LockEntry>
     locked: bool
@@ -749,13 +762,18 @@ class ModuleLoader {
                 } else {
                     let required_path: string = words[1]
                     let requested: string = words[2]
-                    let previous: string =
-                        self.requirements.get(required_path).or("")
+                    var previous: string = ""
+                    match self.requirements.get(required_path) {
+                        some(requirement) => { previous = requirement.requested }
+                        none => {}
+                    }
                     if previous != "" && previous != requested {
                         self.fail(mod_path, line_number, 1,
                                   "dependency {required_path} is required at both {previous} and {requested}")
                     } else {
-                        self.requirements[required_path] = requested
+                        self.requirements[required_path] = ModuleRequirement {
+                            requested: requested, file: mod_path, line: line_number,
+                        }
                     }
                 }
             } else if words[0] == "link" && words.len() == 4 {
@@ -1314,21 +1332,40 @@ class ModuleLoader {
         return path.join(context_root, relative)
     }
 
-    fn run_git(arguments: List<string>, cwd: string) -> process.Output {
+    fn run_git(arguments: List<string>, cwd: string, deadline: int = 0) -> process.Output {
         var command: process.Command = new process.Command("git")
+        command.arg("-c").arg("http.lowSpeedLimit=1000")
+        command.arg("-c").arg("http.lowSpeedTime=30")
         for argument: string in arguments {
             command.arg(argument)
         }
         if cwd != "" { command.cwd(cwd) }
-        match command.run() {
+        let remaining: int = if deadline == 0 { git_fetch_timeout_ms() }
+                             else { deadline - time.monotonic_millis() }
+        match command.run_timeout(if remaining > 0 { remaining } else { 0 }) {
             ok(output) => { return output }
             err(error) => {
-                self.fail(cwd, 0, 0,
-                          "could not start git: {error.msg}")
                 let failed: process.Output = new process.Output()
-                failed.status = -1
+                if error.kind == "timeout" {
+                    failed.status = -124
+                } else {
+                    self.fail(cwd, 0, 0, "could not run git: {error.msg}")
+                    failed.status = -1
+                }
                 return failed
             }
+        }
+    }
+
+    fn fail_fetch(remote_path: string, output: process.Output, message: string) {
+        let site: ModuleRequirement = self.requirements[remote_path]
+        if output.status == -124 {
+            let ms: int = git_fetch_timeout_ms()
+            let duration: string = if ms % 1000 == 0 { "{ms / 1000} s" } else { "{ms} ms" }
+            self.fail(site.file, site.line, 1,
+                      "could not fetch {remote_path}: timed out after {duration}")
+        } else {
+            self.fail(site.file, site.line, 1, message)
         }
     }
 
@@ -1384,7 +1421,7 @@ class ModuleLoader {
             return ""
         }
         let requested: string =
-            self.requirements[remote_path]
+            self.requirements[remote_path].requested
         let refresh: bool =
             self.lock_mode == "update" &&
             (self.update_module == "" ||
@@ -1467,11 +1504,11 @@ class ModuleLoader {
         clone_args.push("--")
         clone_args.push("https://{remote_path}.git")
         clone_args.push(temporary)
-        let cloned: process.Output = self.run_git(clone_args, "")
+        let deadline: int = time.monotonic_millis() + git_fetch_timeout_ms()
+        let cloned: process.Output = self.run_git(clone_args, "", deadline)
         if !cloned.succeeded() {
             self.remove_temporary(temporary)
-            self.fail(self.root, 0, 0,
-                      "could not fetch {remote_path}")
+            self.fail_fetch(remote_path, cloned, "could not fetch {remote_path}")
             return ""
         }
 
@@ -1481,26 +1518,27 @@ class ModuleLoader {
             let checkout: process.Output = self.run_git(
                 ["-c", "advice.detachedHead=false", "checkout", "--quiet",
                  "--detach", checkout_ref],
-                temporary)
+                temporary, deadline)
             if !checkout.succeeded() {
                 self.remove_temporary(temporary)
-                self.fail(self.root, 0, 0,
-                          "requested ref {checkout_ref} is not available from {remote_path}")
+                self.fail_fetch(remote_path, checkout,
+                    "requested ref {checkout_ref} is not available from {remote_path}")
                 return ""
             }
         }
 
         let head: process.Output =
-            self.run_git(["rev-parse", "HEAD"], temporary)
+            self.run_git(["rev-parse", "HEAD"], temporary, deadline)
         let tree: process.Output =
-            self.run_git(["show", "-s", "--format=%T", "HEAD"], temporary)
+            self.run_git(["show", "-s", "--format=%T", "HEAD"], temporary, deadline)
         resolved.commit = head.stdout_text().trim()
         resolved.tree = tree.stdout_text().trim()
         if !head.succeeded() || !tree.succeeded() ||
            !safe_git_id(resolved.commit) || !safe_git_id(resolved.tree) {
             self.remove_temporary(temporary)
-            self.fail(self.root, 0, 0,
-                      "could not resolve the commit and content hash for {remote_path}")
+            self.fail_fetch(remote_path,
+                if head.status == -124 { head } else { tree },
+                "could not resolve the commit and content hash for {remote_path}")
             return ""
         }
         if use_lock {

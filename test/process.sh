@@ -381,7 +381,8 @@ echo "checking no memory errors under ASan"
 BEANS_SANITIZE=address ./build/beansc llvm "examples/processes.b" \
     >"$tmp/processes.sanitize-address.ll"
 clang -O1 -g -pthread -fsanitize=address -Wno-override-module \
-    "$tmp/processes.sanitize-address.ll" build/beans_rt.c -lm -o "$tmp/asan" 2>"$tmp/asan.build"
+    "$tmp/processes.sanitize-address.ll" build/processes_ffi.c build/beans_rt.c \
+    -lm -o "$tmp/asan" 2>"$tmp/asan.build"
 # A leak is a sanitizer failure like any other: LeakSanitizer rides inside
 # ASan on Linux and reports at exit, which makes the run exit non-zero. Hold
 # the status before reading the report, or this dies under `set -e` with the
@@ -409,3 +410,63 @@ if grep -q '24 + out->len + err->len' runtime/beans_rt.c; then
     echo "process output is still packed into a staging Bytes" >&2
     exit 1
 fi
+
+# One deadline must cover all blocking edges, including a helper that inherits
+# the pipes and a child that closes them before exit. A later ordinary run also
+# proves the deadline scope is restored after each error.
+echo "checking deadlines cover input, output, descendants and exit"
+cat >"$tmp/deadline.b" <<'DEADLINE'
+import std.io
+import std.process
+
+fn check_timeout(label: string, script: string, input: bool) {
+    let cmd: process.Command = new process.Command("/bin/sh")
+    cmd.arg("-c").arg(script).capture_limit(64)
+    if input { cmd.stdin_text("x".repeat(1000000)) }
+    match cmd.run_timeout(100) {
+        ok(done) => io.println("{label}: unexpectedly finished {done.status}"),
+        err(e) => io.println("{label}: {e.kind}"),
+    }
+}
+fn main() {
+    check_timeout("sleep", "sleep 30", false)
+    check_timeout("input", "sleep 30", true)
+    check_timeout("output", "while :; do printf x; printf y >&2; done", false)
+    check_timeout("closed pipes", "exec 0<&- 1>&- 2>&-; sleep 30", false)
+    check_timeout("descendant", "sleep 30 & exit 0", false)
+    match new process.Command("/bin/echo").arg("restored").run() {
+        ok(done) => io.println(done.stdout_text().trim()),
+        err(e) => io.println(e.kind),
+    }
+    match new process.Command("/bin/echo").arg("bounded success").run_timeout(30000) {
+        ok(done) => io.println(done.stdout_text().trim()),
+        err(e) => io.println(e.kind),
+    }
+    match new process.Command("/beans/no-such-program").run_timeout(30000) {
+        ok(done) => io.println("missing accepted"),
+        err(e) => io.println("missing: {e.kind}"),
+    }
+    match new process.Command("/bin/echo").run_timeout(-1) {
+        ok(done) => io.println("negative accepted"),
+        err(e) => io.println("negative: {e.kind}"),
+    }
+}
+DEADLINE
+./build/beansc build "$tmp/deadline.b" -o "$tmp/deadline" >/dev/null
+run_timeout 30 "$tmp/deadline" >"$tmp/deadline.native"
+BEANS_CC=/beans/no-c-compiler run_timeout 30 ./build/beansc run "$tmp/deadline.b" >"$tmp/deadline.interp"
+diff -u "$tmp/deadline.interp" "$tmp/deadline.native"
+diff -u - "$tmp/deadline.native" <<'EXPECTED'
+sleep: timeout
+input: timeout
+output: timeout
+closed pipes: timeout
+descendant: timeout
+restored
+bounded success
+missing: not_found
+negative: invalid
+EXPECTED
+BEANS_NO_POOL=1 BEANS_SANITIZE=address ./build/beansc build "$tmp/deadline.b" -o "$tmp/deadline.asan" >/dev/null
+BEANS_NO_POOL=1 run_timeout 30 "$tmp/deadline.asan" >"$tmp/deadline.asan.out"
+diff -u "$tmp/deadline.native" "$tmp/deadline.asan.out"

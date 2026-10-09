@@ -224,32 +224,56 @@ partial class LlvmTextEmitter {
     // read their answers here: asking type_is_reference at each level
     // walked the chain below it again (CD-27). The answers depend only on
     // the declarations, never on what the emitter is building.
-    fn reference_tree(type: HirType) -> LlvmReferenceTree {
+    fn reference_tree(type: HirType, layout: bool = false) -> LlvmReferenceTree {
         if !type_is_nested_level(type) {
-            return new LlvmReferenceTree(
+            let tree: LlvmReferenceTree = new LlvmReferenceTree(
                 self.type_is_reference(type), [])
+            if layout {
+                tree.size = self.type_size(type)
+                tree.alignment = self.inline_alignment(type)
+            }
+            return tree
         }
         if canonical_hir_name(type.name) == "Option" {
             let payload: LlvmReferenceTree =
-                self.reference_tree(type.args[0])
-            return new LlvmReferenceTree(
+                self.reference_tree(type.args[0], layout)
+            let tree: LlvmReferenceTree = new LlvmReferenceTree(
                 payload.reference, [payload])
+            if layout {
+                if tree.reference {
+                    tree.size = self.program.target.pointer_size()
+                    tree.alignment = tree.size
+                } else {
+                    tree.alignment = payload.alignment
+                    tree.size = self.align_up(
+                        self.align_up(1, payload.alignment) + payload.size,
+                        payload.alignment)
+                }
+            }
+            return tree
         }
-        let failed_type: HirType =
-            self.result_error_type(type)
-        let okay: LlvmReferenceTree =
-            self.reference_tree(type.args[0])
-        let failed: LlvmReferenceTree =
-            self.reference_tree(failed_type)
-        let inline: bool =
-            self.result_is_inline_known(
-                type, failed_type,
-                type_is_nested_level(type.args[0]),
-                okay.reference,
-                type_is_nested_level(failed_type),
-                failed.reference)
-        return new LlvmReferenceTree(
-            !inline, [okay, failed])
+        let failed_type: HirType = self.result_error_type(type)
+        let okay: LlvmReferenceTree = self.reference_tree(type.args[0], layout)
+        let failed: LlvmReferenceTree = self.reference_tree(failed_type, layout)
+        let inline: bool = self.result_is_inline_known(
+            type, failed_type,
+            type_is_nested_level(type.args[0]), okay.reference,
+            type_is_nested_level(failed_type), failed.reference)
+        let tree: LlvmReferenceTree = new LlvmReferenceTree(!inline, [okay, failed])
+        if layout {
+            if tree.reference {
+                tree.size = self.program.target.pointer_size()
+                tree.alignment = tree.size
+            } else {
+                tree.alignment = if okay.alignment > failed.alignment {
+                    okay.alignment
+                } else { failed.alignment }
+                let okay_offset: int = self.align_up(1, okay.alignment)
+                let failed_offset: int = self.align_up(okay_offset + okay.size, failed.alignment)
+                tree.size = self.align_up(failed_offset + failed.size, tree.alignment)
+            }
+        }
+        return tree
     }
 
     fn type_supported(type: HirType) -> bool {
@@ -303,6 +327,9 @@ partial class LlvmTextEmitter {
     // The size a type's shape decides, or -2 when its LLVM spelling
     // decides it (type_size_of_text).
     fn type_size_by_shape(type: HirType) -> int {
+        if type_is_nested_level(type) {
+            return self.reference_tree(type, true).size
+        }
         if canonical_hir_name(type.name) == "decimal" {
             return 32
         }
@@ -341,49 +368,6 @@ partial class LlvmTextEmitter {
             if element_size < 0 { return -1 }
             return type.array_length * element_size
         }
-        // a wide Option is {i1, T}: the payload sits at its own
-        // alignment and the aggregate rounds up to it. This once
-        // answered -1, and 8 + (-1) sized a Result box at seven
-        // bytes for a sixteen-byte store.
-        if canonical_hir_name(type.name) ==
-               "Option" &&
-           type.args.len() == 1 &&
-           !self.type_is_reference(type) {
-            let payload_size: int =
-                self.type_size(type.args[0])
-            if payload_size < 0 { return -1 }
-            let alignment: int =
-                self.inline_alignment(type.args[0])
-            return self.align_up(
-                self.align_up(1, alignment) +
-                    payload_size,
-                alignment)
-        }
-        if self.result_is_inline(type) {
-            let okay: HirType = type.args[0]
-            let failed: HirType =
-                self.result_error_type(type)
-            let okay_offset: int =
-                self.align_up(
-                    1, self.inline_alignment(okay))
-            let failed_offset: int =
-                self.align_up(
-                    okay_offset +
-                        self.type_size(okay),
-                    self.inline_alignment(failed))
-            var alignment: int =
-                self.inline_alignment(okay)
-            let failed_alignment: int =
-                self.inline_alignment(failed)
-            if failed_alignment > alignment {
-                alignment =
-                    failed_alignment
-            }
-            return self.align_up(
-                failed_offset +
-                    self.type_size(failed),
-                alignment)
-        }
         return -2
     }
 
@@ -403,6 +387,9 @@ partial class LlvmTextEmitter {
     }
 
     fn type_alignment(type: HirType) -> int {
+        if type_is_nested_level(type) {
+            return self.reference_tree(type, true).alignment
+        }
         if canonical_hir_name(type.name) == "decimal" {
             return 16
         }
@@ -421,32 +408,6 @@ partial class LlvmTextEmitter {
         if canonical_hir_name(type.name) == "array" &&
            type.args.len() == 1 {
             return self.type_alignment(type.args[0])
-        }
-        // A wide Option is {i1, T} and aligns to T, the way inline_alignment
-        // already had it. Without this the fall-through below treated the
-        // aggregate as a scalar and answered its *size*: `Option<f32>` came
-        // back 8-aligned instead of 4, so a record holding one was computed
-        // larger than LLVM lays it out — 40 bytes against 32 for a struct of
-        // two ints and an `Option<Inner>`. The list stride was then eight
-        // bytes wider than the element, and every element after the first
-        // read partly from its neighbour: plausible-looking integers, no
-        // diagnostic, and only in a native build.
-        if canonical_hir_name(type.name) ==
-               "Option" &&
-           type.args.len() == 1 &&
-           !self.type_is_reference(type) {
-            return self.type_alignment(type.args[0])
-        }
-        if self.result_is_inline(type) {
-            var alignment: int =
-                self.inline_alignment(type.args[0])
-            let failed: int =
-                self.inline_alignment(
-                    self.result_error_type(type))
-            if failed > alignment {
-                alignment = failed
-            }
-            return alignment
         }
         match self.declaration_for(type) {
             some(declaration) => {

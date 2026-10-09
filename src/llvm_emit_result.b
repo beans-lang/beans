@@ -1469,6 +1469,8 @@ partial class LlvmTextEmitter {
         let different_block: int = self.fresh()
         let okay_block: int = self.fresh()
         let error_block: int = self.fresh()
+        let okay_join: int = self.fresh()
+        let error_join: int = self.fresh()
         let merge_block: int = self.fresh()
         var output: string =
             "  %result.eq.left.tag{id} = load i64, ptr {left}\n  %result.eq.right.tag{id} = load i64, ptr {right}\n  %result.eq.tags{id} = icmp eq i64 %result.eq.left.tag{id}, %result.eq.right.tag{id}\n  br i1 %result.eq.tags{id}, label %result.eq.same{same_block}, label %result.eq.different{different_block}\nresult.eq.same{same_block}:\n  %result.eq.ok{id} = icmp eq i64 %result.eq.left.tag{id}, 0\n  br i1 %result.eq.ok{id}, label %result.eq.okay{okay_block}, label %result.eq.error{error_block}\nresult.eq.okay{okay_block}:\n"
@@ -1491,7 +1493,7 @@ partial class LlvmTextEmitter {
             return new LlvmSlotConversion("", "")
         }
         output =
-            "{output}{left_ok.setup}{right_ok.setup}{okay.setup}  br label %result.eq.merge{merge_block}\nresult.eq.error{error_block}:\n"
+            "{output}{left_ok.setup}{right_ok.setup}{okay.setup}  br label %result.eq.okjoin{okay_join}\nresult.eq.okjoin{okay_join}:\n  br label %result.eq.merge{merge_block}\nresult.eq.error{error_block}:\n"
         let left_error: LlvmSlotConversion =
             self.emit_result_payload_value(
                 left, type, false,
@@ -1512,11 +1514,11 @@ partial class LlvmTextEmitter {
             return new LlvmSlotConversion("", "")
         }
         output =
-            "{output}{left_error.setup}{right_error.setup}{errors.setup}  br label %result.eq.merge{merge_block}\nresult.eq.different{different_block}:\n  br label %result.eq.merge{merge_block}\nresult.eq.merge{merge_block}:\n"
+            "{output}{left_error.setup}{right_error.setup}{errors.setup}  br label %result.eq.errjoin{error_join}\nresult.eq.errjoin{error_join}:\n  br label %result.eq.merge{merge_block}\nresult.eq.different{different_block}:\n  br label %result.eq.merge{merge_block}\nresult.eq.merge{merge_block}:\n"
         let result: string =
             "%result.eq{id}"
         output =
-            "{output}  {result} = phi i1 [ {okay.value}, %result.eq.okay{okay_block} ], [ {errors.value}, %result.eq.error{error_block} ], [ false, %result.eq.different{different_block} ]\n"
+            "{output}  {result} = phi i1 [ {okay.value}, %result.eq.okjoin{okay_join} ], [ {errors.value}, %result.eq.errjoin{error_join} ], [ false, %result.eq.different{different_block} ]\n"
         return new LlvmSlotConversion(
             output, result)
     }

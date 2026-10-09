@@ -229,6 +229,9 @@ partial class LlvmTextEmitter {
     // the C++ compiler laid it out in 16. Its destructor then read a pointer
     // from the padding and crashed.
     fn inline_alignment(type: HirType) -> int {
+        if type_is_nested_level(type) {
+            return self.reference_tree(type, true).alignment
+        }
         if canonical_hir_name(type.name) ==
                "decimal" {
             return 16
@@ -250,23 +253,6 @@ partial class LlvmTextEmitter {
         if canonical_hir_name(type.name) == "array" &&
            type.args.len() == 1 {
             return self.inline_alignment(type.args[0])
-        }
-        if canonical_hir_name(type.name) ==
-               "Option" &&
-           type.args.len() == 1 &&
-           !self.type_is_reference(type) {
-            return self.inline_alignment(type.args[0])
-        }
-        if self.result_is_inline(type) {
-            var alignment: int =
-                self.inline_alignment(type.args[0])
-            let failed: int =
-                self.inline_alignment(
-                    self.result_error_type(type))
-            if failed > alignment {
-                alignment = failed
-            }
-            return alignment
         }
         match self.record_layout(type) {
             some(layout) => {
@@ -1099,7 +1085,7 @@ partial class LlvmTextEmitter {
                 self.emit_inline_equal(
                     element, left_value,
                     right_value,
-                    "{tag}.option")
+                    "option{id}")
             if compared.value == "" {
                 return new LlvmSlotConversion("", "")
             }

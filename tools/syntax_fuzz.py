@@ -295,7 +295,7 @@ def reject_cases():
                repair={"main.b": main_body("let x: int = 1 +\n    2")})
     yield case("newline_inside_parentheses", main_body("let x: int = (1\n    + 2)"),
                "newline-rules", "lexical", "reject",
-               rejection={"file": "main.b", "line": 3, "col": 20, "message": "expected '\\)'"},
+               rejection={"file": "main.b", "line": 3, "col": 20, "message": "expected '\\)'", "count": 1},
                repair={"main.b": main_body("let x: int = (1 +\n    2)")})
     yield case("source_bom", "\ufefffn main() {\n}\n", "lexical-edges", "lexical", "reject", modes=LEX,
                rejection=rejection(1, "unexpected byte-order mark \\(U\\+FEFF\\)", col=1),

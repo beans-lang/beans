@@ -264,6 +264,11 @@ import gitlab.com/tools/csv as csvlib
   `--locked` rejects a missing, stale, or changed lock; `--offline` forbids
   network access and accepts only a clean cached tree matching the locked hash.
   Dependency Git processes are started directly, never through a shell.
+  A fetch has a two-minute total deadline, including checkout and hash resolution;
+  Git HTTP transfers below 1000 bytes/s for 30 seconds are also refused. Set
+  `BEANS_GIT_TIMEOUT_MS` to `1..120000` to shorten the deadline. A timeout stops
+  the process group, removes the temporary clone, and reports the requirement's
+  location without publishing a partial cache tree or updating the lock.
 - `require path "../module"` is a local development dependency. The target's
   declared `module` name is its import path. Relative paths start at the
   requiring `beans.pot`, stay out of `beans.lock`, and work with `--locked
@@ -3433,6 +3438,10 @@ match cmd.run() {
   drained and discarded; the parent does not close the pipe early and change the
   child's result through `SIGPIPE` or `EPIPE`. `run()` still waits for the child to
   exit, so use `start()` plus `stop()` for a program meant to run forever.
+- `Command.run_timeout(ms)` bounds stdin, both output streams, and child exit with
+  one deadline. Expiry stops the process group (a Job Object on Windows), reaps
+  the child, and returns `err` with kind `timeout`. A negative duration is
+  `invalid`; zero permits no waiting. `run()` retains its unbounded behavior.
 - The first `env` call switches from inheriting the parent's environment to a fresh one
   holding only what was set, because a half-inherited environment works until it does
   not. Program names still use `PATH` from that fresh environment.

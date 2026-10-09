@@ -168,21 +168,81 @@ fix branches merged; bootstrap: the 0.1.51 release binary): `make test-compiler-
 
 **Released as 0.1.52 on 2026-10-09 with the fast gate, by the owner's decision.** The release workflow's `fast` dispatch skipped the two-hour candidate soak and the hosted fixed-point and differential runs under qemu, and the Unix packages ran `make test-quick` instead of `make test`; every target was still built, packaged and install-tested. No new Linux/macOS two-hour candidate soak, Windows deterministic replay or Autobahn run has covered this compiler. On the final tip (`f8c6ad0` plus `main`'s README), discovery 325/325, every issue and CD test, `make test-quick`, `make test-frontend`, `make test-fixpoint`, `test/tls.sh` with LibreSSL and `make test-core` passed on macOS ARM64; `make test-self-host`, `make test-sanitize` and the campaign sanitizer check ran on each fix branch but were not rerun on the final tip. The combined gates above predate CD-22 to CD-29.
 
-## Other open reports
+## GitHub issue audit — 2026-10-09
 
-The performance/enhancement reports were also reviewed. Their owning boundaries
-and next acceptance checks are recorded here while the bug sequence proceeds.
+Audited the 14 open issues against `main` at `876b66f` (0.1.52). The
+following seven were already implemented on that commit and were closed with
+fresh local evidence. These closures do not claim new throughput figures or
+unrun platform coverage.
 
-| Issue | Next action and evidence |
+| Closed issue | Existing owner and fresh evidence |
 | --- | --- |
-| [#140](https://github.com/beans-lang/beans/issues/140) | Audit direct socket text/write paths; compare copies and large-body benchmarks. |
-| [#141](https://github.com/beans-lang/beans/issues/141) | Verify `BeansHotTls` caching and optimized assembly; remeasure TLS calls. |
-| [#142](https://github.com/beans-lang/beans/issues/142) | Check integrated typed-JSON depth guards; prove malformed/deep-input behavior and traversal counts. |
-| [#143](https://github.com/beans-lang/beans/issues/143) | Inspect `encode_into` and string-buffer ownership; prove allocation/copy counts and output parity. |
-| [#144](https://github.com/beans-lang/beans/issues/144) | Verify direct typed decoding against the DOM baseline, corpus, and benchmark. |
-| [#146](https://github.com/beans-lang/beans/issues/146) | Audit large-block/fiber-stack retention; measure post-load RSS and reuse costs. |
-| [#150](https://github.com/beans-lang/beans/issues/150) | Inline list backing is implemented; region allocation needs sound escape checks across calls, reflection, and FFI. |
-| [#174](https://github.com/beans-lang/beans/issues/174) | Reuse `Dir` and `File.sync`; settle path-addressed directory/durability semantics before adding aliases. |
+| [#191](https://github.com/beans-lang/beans/issues/191) | Generic reflection annotation substitution; annotated and unannotated instantiations agree on interpreter/native. |
+| [#140](https://github.com/beans-lang/beans/issues/140) | Socket text/byte vectored writes and head-only HTTP framing; `test/net.sh`, `test/fiber_net.sh` pass. |
+| [#141](https://github.com/beans-lang/beans/issues/141) | Darwin `BeansHotTls` key accessor and internal pointer passing already present; fiber/network and RSS gates pass. |
+| [#142](https://github.com/beans-lang/beans/issues/142) | The direct typed decoder integrates depth checks, including skipped unknown fields; `test/json_typed_decode.sh` passes its corpus and sanitizer lanes. |
+| [#143](https://github.com/beans-lang/beans/issues/143) | `encode_into` reuses caller buffers; `test/json_direct.sh` passes parity, fuzz, and buffer/refusal cases. |
+| [#144](https://github.com/beans-lang/beans/issues/144) | Direct typed byte scanner and payload allocator; `test/json_typed_decode.sh` passes both backends, four-thread and allocator/sanitizer lanes. |
+| [#146](https://github.com/beans-lang/beans/issues/146) | Large blocks use mappings; completed fiber stacks retain a bounded pool of 64, with excess unmapped. `test/rss_release.sh` and `test/fiber_stacks.sh` pass. The retained 64 have no idle timer. |
+
+The following fixes are implemented locally, and their issues remain open
+until the fixes are published. Reused the emitter's reference tree and join-block
+patterns, the interpreter's record equality walker, the parser's type-close
+and statement-recovery owners, the process runtime's concurrent drains, and
+the dependency loader's existing temporary-cache cleanup and requirement map.
+
+| Issue | Local change and owning regression |
+| --- | --- |
+| [#210](https://github.com/beans-lang/beans/issues/210) (CD-31/CD-32) | Boxed Result comparisons join from their actual ending blocks; deep Option temporary names use the existing counter. Error payloads use the interpreter's structural equality, matching native. `test/backend_parity.sh` adds nested success/error/reference cases; `test/issue202.sh` adds 255-deep Option equality/inequality. |
+| [#211](https://github.com/beans-lang/beans/issues/211) (CD-30) | Carry size and alignment bottom-up in the existing reference tree; mask/offset walkers consume those answers. `test/issue202.sh` checks list and capture layouts at depth 255 and scaling for 8x depth. The 255-level list reproduction emits IR in about 0.05 s locally, compared with the reported 38 s. No ABI layout change is intended. |
+| [#213](https://github.com/beans-lang/beans/issues/213) | `Command.run_timeout(ms)` bounds the existing runner across stdin, both output streams and exit, kills its process group (Job Object on Windows), and reaps the child. Git fetch/checkout/hash resolution share a two-minute deadline and HTTP low-speed limits; `BEANS_GIT_TIMEOUT_MS` can shorten it. Requirement source locations stay in the existing requirement map. `test/process.sh` covers blocking edges, scope restoration and ASan; `test/package_identity.sh` proves a stalled helper reports the `require` line, removes its temporary clone, and leaves the lock untouched. Windows execution remains unverified locally. |
+| [#214](https://github.com/beans-lang/beans/issues/214) | Type-close recovery names the required space in `List<int>=`; parenthesized newline/operator recovery consumes the damaged continuation without a second error. `test/issue201.sh`, `test/issue204.sh`, and the discovery matrix pin the diagnostics. |
+
+No extra Git subprocesses, network calls, cache objects or background jobs are
+introduced. The process deadline uses the existing FFI wrapper mechanism
+without changing the five-argument process primitive ABI; native programs
+importing `std.process` now compile its small generated C shim. The POSIX runner
+adds an exec-pipe readiness poll; bounded runs also add process-group setup and
+deadline checks. Bounded Windows runs add a timer thread and Job Object.
+The layout change eliminates repeated walks without adding a persistent cache
+or a second layout authority.
+
+Remaining design/compatibility work:
+
+| Open issue | Remaining scope |
+| --- | --- |
+| [#212](https://github.com/beans-lang/beans/issues/212) | The documented 4096-node safety limit still refuses formerly accepted long chains. A larger fixed compiler stack, measured Windows safety, and iterative chain representation are unresolved. The limit has not been raised without that work. |
+| [#150](https://github.com/beans-lang/beans/issues/150) | Inline list backing is implemented. Region allocation still needs a language contract and escape checks across calls, reflection and FFI. |
+| [#174](https://github.com/beans-lang/beans/issues/174) | `Dir` and `File.sync` provide the underlying capabilities. A unified directory spelling and path-addressed durability contract remain API decisions. |
+
+Validation completed on the frozen local compiler, macOS ARM64:
+
+- `BEANS_AUTOBAHN_SKIP=1 make test-core`: exited successfully on the restarted
+  run, with the skips and incomplete conformance checks listed below.
+  An earlier aggregate run was interrupted by replacing `build/beansc` during
+  validation; its partial result is not counted as a pass.
+- `make test-fixpoint`: passed; stage 2 and stage 3 are byte-identical
+  (`af059244e2efec1e`), and the compiler under test agrees with that fixed point.
+- `make test-self-host`: passed (1 960 s); all 80 examples compiled and matched,
+  924 sources parsed, 22 rejected as expected, and 715 body-checked/MIR-lowered.
+- `make test-compiler-discovery`: 325/325 passed, with no known, new, changed,
+  or stale failures. `test/ci_coverage.sh`: 191 scripts, each in exactly one slice.
+- Focused process/child, package identity, backend parity, issue201/202/204,
+  inline Option/Result, C-layout, and tier-1 C ABI suites passed. Process
+  deadlines also passed the interpreter without a C compiler and native ASan.
+- Final focused diff and `git diff --check` passed. Searched the modified
+  size/alignment/mask paths, process runner, and Git requirement/cache flow
+  again; no parallel layout, runner, or cache owner was introduced.
+
+Logs are in `build/issue-audit/` (`core.log`, `self-host.log`, `fixpoint.log`,
+`discovery.log`, and the focused suite logs). Skips/gaps: Windows and Linux
+execution were not run; wasmtime, the Linux ARM64 emulator image, pkg-config
+sqlite3, nghttpd, h2spec, a booted iOS simulator, and Android NDK were unavailable.
+Autobahn was explicitly disabled for this runner (`wstest` is unavailable).
+This host's Clang could not emit LoongArch64, PowerPC/PowerPC64, or s390x
+compiler objects; supported non-native object checks passed, including i686
+Windows. All execution evidence here is local macOS ARM64 evidence; release
+approval and a multi-host candidate campaign are separate.
 
 ## Final gate
 

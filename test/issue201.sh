@@ -50,6 +50,12 @@ for mode in parse ast check; do
     reject "$mode" "$tmp/fn-type-extra.b" ":2:24: error: unexpected '>'"
 done
 
+# #214: the type closer was swallowed into >=; point to the missing space.
+printf 'fn main() {\n    let xs: List<int>= [3]\n}\n' >"$tmp/close-equal.b"
+for mode in parse ast check; do
+    reject "$mode" "$tmp/close-equal.b" ":2:21: error: write a space between '>' and '='"
+done
+
 printf 'fn main() {\n    let x: int = 1 $ 2\n}\n' >"$tmp/stray.b"
 for mode in lex parse ast check; do
     reject "$mode" "$tmp/stray.b" ":2:20: error: unexpected character '$'"

@@ -10421,11 +10421,26 @@ static BList* bytes_parts3(BList* first, BList* second, BList* third) {
     return parts;
 }
 
+// Command.run_timeout scopes this per-thread value around the existing run
+// primitive. Keep its ABI unchanged so a released compiler can bootstrap the
+// new stdlib and the interpreter can call the same five-argument host entry.
+static _Thread_local long long proc_timeout_ms = -1;
+long long beans_proc_timeout_scope(long long ms) {
+    long long previous = proc_timeout_ms;
+    proc_timeout_ms = ms;
+    return previous;
+}
+long long beans_time_monotonic_nanos(void);
+static long long proc_now_ms(void) {
+    return beans_time_monotonic_nanos() / 1000000LL;
+}
+
 #if !defined(_WIN32)
 // Writes as much as the pipe will take without blocking. Returns bytes written, or -1
 // on a real error; EAGAIN is not an error, it means "come back when poll says so".
-static long long proc_push(int fd, const char* data, long long len, long long* done) {
+static long long proc_push(int fd, const char* data, long long len, long long* done, long long deadline) {
     while (*done < len) {
+        if (proc_now_ms() >= deadline) return 0;
         rt_ssize_t wrote = write(fd, data + *done, (size_t)(len - *done));
         if (wrote > 0) {
             *done += wrote;
@@ -10440,6 +10455,11 @@ static long long proc_push(int fd, const char* data, long long len, long long* d
 
 BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
                     BList* input, long long max_output) {
+    const long long budget = proc_timeout_ms;
+    const long long started = proc_now_ms();
+    const long long deadline = budget < 0 || budget > LLONG_MAX - started
+        ? LLONG_MAX : started + budget;
+    int timed_out = 0;
     BRes bad;
     bad.val = 0;
     int argc = 0;
@@ -10489,6 +10509,12 @@ BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
     if (pid == 0) {
         // Child. Only async-signal-safe work here, and every failure is reported
         // through the exec pipe rather than by printing anything.
+        if (budget >= 0 && setpgid(0, 0) != 0) {
+            int e = errno;
+            rt_ssize_t ignored = write(exec_fd[1], &e, sizeof e);
+            (void)ignored;
+            _exit(127);
+        }
         dup2(in_fd[0], 0);
         dup2(out_fd[1], 1);
         dup2(err_fd[1], 2);
@@ -10518,7 +10544,8 @@ BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
         _exit(127);
     }
 
-    // Parent.
+    // Parent. The group also owns git's transport/index-pack helpers.
+    if (budget >= 0) setpgid(pid, pid);
     close(in_fd[0]);
     close(out_fd[1]);
     close(err_fd[1]);
@@ -10527,11 +10554,24 @@ BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
     // Did exec fail? The pipe is close-on-exec, so EOF means the program started.
     int child_errno = 0;
     rt_ssize_t got_errno = 0;
-    do {
+    for (;;) {
+        long long left = budget < 0 ? -1 : deadline - proc_now_ms();
+        if (budget >= 0 && left <= 0) { timed_out = 1; break; }
+        struct pollfd opening = {exec_fd[0], POLLIN, 0};
+        int ready = poll(&opening, 1, left < 0 ? -1 : left > INT_MAX ? INT_MAX : (int)left);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready == 0) { timed_out = 1; break; }
+        if (ready < 0) { child_errno = errno; got_errno = sizeof child_errno; break; }
         got_errno = read(exec_fd[0], &child_errno, sizeof child_errno);
-    } while (got_errno < 0 && errno == EINTR);
+        if (got_errno < 0 && errno == EINTR) continue;
+        break;
+    }
     close(exec_fd[0]);
-    if (got_errno == (rt_ssize_t)sizeof child_errno) {
+    if (timed_out || got_errno == (rt_ssize_t)sizeof child_errno) {
+        // A poll/read failure can occur before exec has finished as well.
+        // Stop it before reaping rather than waiting on an unbounded child.
+        if (budget >= 0) kill(-pid, SIGKILL);
+        kill(pid, SIGKILL);
         // Reap before returning: a child that never ran still has to be collected.
         int discard = 0;
         while (waitpid(pid, &discard, 0) < 0 && errno == EINTR) {}
@@ -10541,7 +10581,8 @@ BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
         // argv[0] points into the packed Bytes, so it is a plain C string, not a
         // beans rc string — fs_err_obj_rc would read a length from before it. ASan
         // caught exactly that.
-        void* built = fs_err_obj(argv[0], child_errno);
+        void* built = timed_out ? mk_error("process timed out", "timeout")
+                                : fs_err_obj(argv[0], child_errno);
         free(argv);
         free(envp);
         bad.err = built;
@@ -10569,13 +10610,17 @@ BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
         if (in_open) { watch[n].fd = in_fd[1]; watch[n].events = POLLOUT; in_slot = n++; }
         if (out_open) { watch[n].fd = out_fd[0]; watch[n].events = POLLIN; out_slot = n++; }
         if (err_open) { watch[n].fd = err_fd[0]; watch[n].events = POLLIN; err_slot = n++; }
-        int ready = poll(watch, (nfds_t)n, -1);
+        long long left = budget < 0 ? -1 : deadline - proc_now_ms();
+        if (budget >= 0 && left <= 0) { timed_out = 1; break; }
+        int ready = poll(watch, (nfds_t)n,
+            left < 0 ? -1 : left > INT_MAX ? INT_MAX : (int)left);
+        if (ready == 0) { timed_out = 1; break; }
         if (ready < 0) {
             if (errno == EINTR) continue;
             break;
         }
         if (in_slot >= 0 && watch[in_slot].revents) {
-            if (proc_push(in_fd[1], input_data, input_len, &pushed) < 0 ||
+            if (proc_push(in_fd[1], input_data, input_len, &pushed, deadline) < 0 ||
                 pushed >= input_len || (watch[in_slot].revents & (POLLERR | POLLHUP))) {
                 // Written out, or the child closed its stdin. Closing ours is what
                 // lets a program that reads to EOF finish.
@@ -10590,6 +10635,10 @@ BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
             BList** into = which == 0 ? &out : &err;
             char buffer[8192];
             for (;;) {
+                if (budget >= 0 && proc_now_ms() >= deadline) {
+                    timed_out = 1;
+                    break;
+                }
                 rt_ssize_t got = read(fd, buffer, sizeof buffer);
                 if (got > 0) {
                     long long room = max_output > (*into)->len
@@ -10614,6 +10663,7 @@ BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
                 break;
             }
         }
+        if (timed_out) break;
     }
     if (in_open) close(in_fd[1]);
     if (out_open) close(out_fd[0]);
@@ -10622,7 +10672,27 @@ BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
     // Every child is reaped, always. A zombie per run would be a slow leak of the one
     // resource a process cannot get more of.
     int status = 0;
-    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    if (timed_out) { kill(-pid, SIGKILL); kill(pid, SIGKILL); }
+    for (;;) {
+        pid_t waited = waitpid(pid, &status, budget < 0 || timed_out ? 0 : WNOHANG);
+        if (waited == pid) break;
+        if (waited < 0) { if (errno == EINTR) continue; break; }
+        if (proc_now_ms() >= deadline) {
+            timed_out = 1;
+            kill(-pid, SIGKILL);
+            kill(pid, SIGKILL);
+        } else {
+            struct timespec pause = {0, 1000000};
+            nanosleep(&pause, NULL);
+        }
+    }
+    if (timed_out) {
+        beans_release(out);
+        beans_release(err);
+        free(argv);
+        free(envp);
+        return (BRes){0, mk_error("process timed out", "timeout")};
+    }
     long long code = WIFSIGNALED(status) ? -(long long)WTERMSIG(status)
                                          : (long long)WEXITSTATUS(status);
 
@@ -10844,7 +10914,7 @@ typedef struct {
     HANDLE in_w, out_r, err_r; // the parent's ends
 } ProcWin;
 static int proc_win_spawn(char** argv, BList* env_packed, char* cwd, ProcWin* got,
-                          int* err_out) {
+                          int* err_out, HANDLE job) {
     char* line = NULL;
     wchar_t* wline = NULL;
     wchar_t* wcwd = NULL;
@@ -10915,7 +10985,7 @@ static int proc_win_spawn(char** argv, BList* env_packed, char* cwd, ProcWin* go
     si.StartupInfo.hStdInput = in_r;
     si.StartupInfo.hStdOutput = out_w;
     si.StartupInfo.hStdError = err_w;
-    DWORD flags = CREATE_UNICODE_ENVIRONMENT;
+    DWORD flags = CREATE_UNICODE_ENVIRONMENT | (job ? CREATE_SUSPENDED : 0);
     HANDLE inherit[3] = {in_r, out_w, err_w};
     if (attrs && UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
                                            inherit, sizeof inherit, NULL, NULL)) {
@@ -10927,6 +10997,15 @@ static int proc_win_spawn(char** argv, BList* env_packed, char* cwd, ProcWin* go
     if (!CreateProcessW(app, wline, NULL, NULL, TRUE, flags, env, wcwd,
                         &si.StartupInfo, &pi)) {
         *err_out = proc_win_errno(GetLastError());
+        goto fail;
+    }
+    if (job && (!AssignProcessToJobObject(job, pi.hProcess) ||
+                ResumeThread(pi.hThread) == (DWORD)-1)) {
+        *err_out = proc_win_errno(GetLastError());
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
         goto fail;
     }
     CloseHandle(in_r);
@@ -11010,26 +11089,77 @@ static void* proc_drain(void* arg) {
     }
 }
 
+// The timer covers blocked stdin, both drains, and child exit. It observes a
+// completion event rather than only the parent handle: an exited git process
+// may leave a transport helper holding the pipes open.
+typedef struct {
+    HANDLE job, finished;
+    DWORD span;
+    volatile LONG timed_out;
+} ProcDeadline;
+static void* proc_deadline(void* raw) {
+    ProcDeadline* watch = raw;
+    if (WaitForSingleObject(watch->finished, watch->span) == WAIT_TIMEOUT) {
+        InterlockedExchange(&watch->timed_out, 1);
+        TerminateJobObject(watch->job, 1);
+    }
+    return NULL;
+}
+
 BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
                     BList* input, long long max_output) {
+    const long long budget = proc_timeout_ms;
+    const long long started = proc_now_ms();
+    HANDLE job = NULL;
+    if (budget >= 0) {
+        job = CreateJobObjectW(NULL, NULL);
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+        memset(&limits, 0, sizeof limits);
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation,
+                                              &limits, sizeof limits)) {
+            if (job) CloseHandle(job);
+            return (BRes){0, mk_error("cannot bound child process group", "io")};
+        }
+    }
     BRes bad;
     bad.val = 0;
     int argc = 0;
     char** argv = proc_split(argv_packed, &argc);
     if (!argv || argc == 0) {
         free(argv);
+        if (job) CloseHandle(job);
         bad.err = mk_error("a command needs at least a program name", "invalid");
         return bad;
     }
     ProcWin child;
     int e = 0;
-    if (proc_win_spawn(argv, env_packed, cwd, &child, &e) != 0) {
+    if (proc_win_spawn(argv, env_packed, cwd, &child, &e, job) != 0) {
         // The same shape the POSIX exec pipe produces, so "no such file" and
         // "exited 127" stay distinguishable.
         void* built = fs_err_obj(argv[0], e);
         free(argv);
+        if (job) CloseHandle(job);
         bad.err = built;
         return bad;
+    }
+
+    ProcDeadline watch = {job, NULL, 0, 0};
+    pthread_t timer;
+    int timer_up = 0;
+    if (budget >= 0) {
+        long long left = budget - (proc_now_ms() - started);
+        watch.span = left <= 0 ? 0 : left > 0xFFFFFFFELL ? 0xFFFFFFFEu : (DWORD)left;
+        watch.finished = CreateEventW(NULL, TRUE, FALSE, NULL);
+        timer_up = watch.finished && pthread_create(&timer, NULL, proc_deadline, &watch) == 0;
+        if (!timer_up) {
+            TerminateJobObject(job, 1);
+            CloseHandle(child.in_w); CloseHandle(child.out_r); CloseHandle(child.err_r);
+            WaitForSingleObject(child.proc, INFINITE); CloseHandle(child.proc);
+            if (watch.finished) CloseHandle(watch.finished);
+            CloseHandle(job); free(argv);
+            return (BRes){0, mk_error("cannot start child deadline", "io")};
+        }
     }
 
     ProcSink out = {child.out_r, NULL, 0, 0, max_output};
@@ -11040,13 +11170,17 @@ BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
     if (!err_up) {
         // Without both drains the deadlock-freedom argument is gone. Stop the child
         // rather than risk hanging on it; nobody observes this exit code.
-        TerminateProcess(child.proc, 1);
+        if (job) TerminateJobObject(job, 1);
+        else TerminateProcess(child.proc, 1);
         CloseHandle(child.in_w);
         if (out_up) pthread_join(out_t, NULL);
         CloseHandle(child.out_r);
         CloseHandle(child.err_r);
         WaitForSingleObject(child.proc, INFINITE);
         CloseHandle(child.proc);
+        if (timer_up) { SetEvent(watch.finished); pthread_join(timer, NULL); }
+        if (watch.finished) CloseHandle(watch.finished);
+        if (job) CloseHandle(job);
         void* built = fs_err_obj(argv[0], EAGAIN);
         free(argv);
         free(out.data);
@@ -11082,6 +11216,13 @@ BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
     GetExitCodeProcess(child.proc, &raw);
     CloseHandle(child.proc);
     long long code = (long long)(int)raw; // sign-extend — see the section comment
+    if (timer_up) { SetEvent(watch.finished); pthread_join(timer, NULL); }
+    if (watch.finished) CloseHandle(watch.finished);
+    if (job) CloseHandle(job);
+    if (watch.timed_out) {
+        free(out.data); free(err.data); free(argv);
+        return (BRes){0, mk_error("process timed out", "timeout")};
+    }
 
     BList* status_bytes = bytes_mk(8);
     rt_store_le(status_bytes->data, (unsigned long long)code, 8);
@@ -11288,7 +11429,7 @@ BRes beans_proc_start(BList* argv_packed, BList* env_packed, char* cwd) {
     }
     ProcWin child;
     int e = 0;
-    if (proc_win_spawn(argv, env_packed, cwd, &child, &e) != 0) {
+    if (proc_win_spawn(argv, env_packed, cwd, &child, &e, NULL) != 0) {
         void* built = fs_err_obj(argv[0], e);
         free(argv);
         return (BRes){0, built};
@@ -14412,6 +14553,10 @@ static long long host_call_json_decode_probe(const unsigned long long* w) {
     return beans_json_decode_probe((unsigned long long*)(uintptr_t)w[0]);
 }
 
+static long long host_call_proc_timeout_scope(const unsigned long long* w) {
+    return beans_proc_timeout_scope((long long)w[0]);
+}
+
 static long long host_call_with_collection_deferred(const unsigned long long* w) {
     beans_with_collection_deferred((void (*)(void*))(uintptr_t)w[0],
                                     (void*)(uintptr_t)w[1]);
@@ -14419,6 +14564,8 @@ static long long host_call_with_collection_deferred(const unsigned long long* w)
 }
 
 static const BHostEntry rt_host_table[] = {
+    {"beans_proc_timeout_scope", (void*)&beans_proc_timeout_scope, 1,
+     host_call_proc_timeout_scope},
     {"beans_with_collection_deferred", (void*)&beans_with_collection_deferred,
      2, host_call_with_collection_deferred},
     {"beans_net_recv_into_wait", (void*)&beans_net_recv_into_wait, 3,

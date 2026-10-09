@@ -66,6 +66,25 @@ bounded "$bin" sem-probe visible "$tmp/recovery.b:6:21" >"$tmp/visible.out"
 grep -Fq 'kept' "$tmp/visible.out" && grep -Fq 'end' "$tmp/visible.out" ||
     fail "recovery.b: completion lost the retained locals" "$tmp/visible.out"
 
+# #214: a newline before an operator is one defect, including its closer;
+# the following declaration and an independent error survive recovery.
+cat >"$tmp/paren-lines.b" <<'EOF'
+fn main() {
+    let x: int = (1
+        + (2 * 3))
+    let kept: int = 7
+    let broken: int = 1 +
+    let end: int = 9
+}
+EOF
+status=0
+bounded "$bin" ast "$tmp/paren-lines.b" >"$tmp/paren-lines.out" 2>&1 || status=$?
+[ "$status" -eq 1 ] || fail "paren-lines.b: expected exit 1" "$tmp/paren-lines.out"
+[ "$(errors "$tmp/paren-lines.out")" -eq 2 ] || fail "paren-lines.b: expected 2 independent errors" "$tmp/paren-lines.out"
+for kept in '(let "kept"' '(let "broken"' '(let "end"'; do
+    grep -Fq "$kept" "$tmp/paren-lines.out" || fail "paren-lines.b: lost $kept" "$tmp/paren-lines.out"
+done
+
 # 2. An open string ends with its line. The next line is code, quotes and
 #    all; only a second open string right below is the same mistake.
 cat >"$tmp/strings.b" <<'EOF'

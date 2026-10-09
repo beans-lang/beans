@@ -289,6 +289,8 @@ agree test/cases/parity/issue169_generic_assignability.b 3
 # the erased members. Two instantiations, a non-generic subclass of each, two
 # links up, an override, a generic subclass, and the plain controls.
 agree test/cases/parity/issue159_declaring_type.b
+# #210: boxed Result arms can open their own control-flow blocks.
+agree test/cases/parity/issue210_nested_equality.b
 # A call the emitter names outright has to do the same work as the call
 # through the table it replaces: the guarded path writes the receiver as a
 # bare pointer while the direct one runs every operand, receiver included,
@@ -442,7 +444,7 @@ agree test/cases/parity/json_typed_decode.b
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=62
+listed=63
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

@@ -3,9 +3,12 @@ package main
 partial class LlvmTextEmitter {
     fn pointer_mask_at(type: HirType,
                        base: int) -> int {
-        let pointer_size: int =
-            self.program.target.pointer_size()
-        if self.type_is_reference(type) {
+        return self.pointer_mask_known(type, base, self.reference_tree(type, true))
+    }
+
+    fn pointer_mask_known(type: HirType, base: int, tree: LlvmReferenceTree) -> int {
+        let pointer_size: int = self.program.target.pointer_size()
+        if tree.reference {
             if base % pointer_size != 0 {
                 return -1
             }
@@ -34,33 +37,32 @@ partial class LlvmTextEmitter {
         }
         if name == "Option" &&
            type.args.len() == 1 &&
-           !self.type_is_reference(type) {
+           !tree.reference {
             let offset: int =
                 self.align_up(
                     1,
-                    self.inline_alignment(
-                        type.args[0]))
-            return self.pointer_mask_at(
-                type.args[0], base + offset)
+                    tree.below[0].alignment)
+            return self.pointer_mask_known(
+                type.args[0], base + offset, tree.below[0])
         }
-        if self.result_is_inline(type) {
+        if type_is_nested_level(type) && name == "Result" && !tree.reference {
             let okay: HirType = type.args[0]
             let failed: HirType =
                 self.result_error_type(type)
             let okay_offset: int =
                 self.align_up(
-                    1, self.inline_alignment(okay))
+                    1, tree.below[0].alignment)
             let failed_offset: int =
                 self.align_up(
                     okay_offset +
-                        self.type_size(okay),
-                    self.inline_alignment(failed))
+                        tree.below[0].size,
+                    tree.below[1].alignment)
             let okay_mask: int =
-                self.pointer_mask_at(
-                    okay, base + okay_offset)
+                self.pointer_mask_known(
+                    okay, base + okay_offset, tree.below[0])
             let failed_mask: int =
-                self.pointer_mask_at(
-                    failed, base + failed_offset)
+                self.pointer_mask_known(
+                    failed, base + failed_offset, tree.below[1])
             if okay_mask < 0 || failed_mask < 0 {
                 return -1
             }
@@ -101,7 +103,12 @@ partial class LlvmTextEmitter {
     fn pointer_offsets_at(type: HirType,
                           base: int,
                           offsets: List<int>) -> bool {
-        if self.type_is_reference(type) {
+        return self.pointer_offsets_known(type, base, offsets, self.reference_tree(type, true))
+    }
+
+    fn pointer_offsets_known(type: HirType, base: int, offsets: List<int>,
+                             tree: LlvmReferenceTree) -> bool {
+        if tree.reference {
             offsets.push(base)
             return true
         }
@@ -125,34 +132,30 @@ partial class LlvmTextEmitter {
         }
         if name == "Option" &&
            type.args.len() == 1 &&
-           !self.type_is_reference(type) {
+           !tree.reference {
             let offset: int =
                 self.align_up(
                     1,
-                    self.inline_alignment(
-                        type.args[0]))
-            return self.pointer_offsets_at(
-                type.args[0], base + offset,
-                offsets)
+                    tree.below[0].alignment)
+            return self.pointer_offsets_known(
+                type.args[0], base + offset, offsets, tree.below[0])
         }
-        if self.result_is_inline(type) {
+        if type_is_nested_level(type) && name == "Result" && !tree.reference {
             let okay: HirType = type.args[0]
             let failed: HirType =
                 self.result_error_type(type)
             let okay_offset: int =
                 self.align_up(
-                    1, self.inline_alignment(okay))
+                    1, tree.below[0].alignment)
             let failed_offset: int =
                 self.align_up(
                     okay_offset +
-                        self.type_size(okay),
-                    self.inline_alignment(failed))
-            return self.pointer_offsets_at(
-                       okay, base + okay_offset,
-                       offsets) &&
-                   self.pointer_offsets_at(
-                       failed, base + failed_offset,
-                       offsets)
+                        tree.below[0].size,
+                    tree.below[1].alignment)
+            return self.pointer_offsets_known(
+                       okay, base + okay_offset, offsets, tree.below[0]) &&
+                   self.pointer_offsets_known(
+                       failed, base + failed_offset, offsets, tree.below[1])
         }
         match self.declaration_for(type) {
             some(declaration) => {

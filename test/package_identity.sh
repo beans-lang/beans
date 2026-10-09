@@ -942,3 +942,44 @@ if "only_here" in labels:
 LSPPY
 
 echo "ok package clauses, canonical identity, file-scoped bindings, cycles, and lsp"
+
+# A stalled Git helper must be stopped before temporary cache cleanup. Use a
+# controlled executable rather than an unreliable external network endpoint.
+echo "checking stalled dependency fetch is bounded and leaves no cache entry"
+stall="$tmp/stalled-fetch"
+mkdir -p "$stall/bin" "$stall/app" "$stall/home"
+cat >"$stall/bin/git" <<'GIT'
+#!/bin/sh
+printf '%s\n' "$@" >"$BEANS_TEST_GIT_ARGS"
+for argument do destination=$argument; done
+mkdir -p "$destination"
+sleep 30 &
+wait
+GIT
+chmod +x "$stall/bin/git"
+printf 'module stalled_app\nrequire example.test/acme/stall HEAD\n' >"$stall/app/beans.pot"
+printf 'package main\nimport example.test/acme/stall\nfn main() {}\n' >"$stall/app/main.b"
+python3 - "$root/build/beansc" "$stall" <<'PYTIMEOUT'
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+compiler, root = sys.argv[1:]
+root = Path(root)
+env = dict(os.environ, PATH=str(root / 'bin') + os.pathsep + os.environ['PATH'],
+           BEANS_HOME=str(root / 'home'), BEANS_GIT_TIMEOUT_MS='500',
+           BEANS_TEST_GIT_ARGS=str(root / 'args'))
+start = time.monotonic()
+result = subprocess.run([compiler, 'check', str(root / 'app/main.b')],
+                        env=env, text=True, capture_output=True, timeout=10)
+assert result.returncode == 1, result
+assert time.monotonic() - start < 5, result
+assert 'beans.pot:2:1' in result.stderr, result.stderr
+assert 'timed out after 500 ms' in result.stderr, result.stderr
+assert not list((root / 'home').rglob('clone.tmp-*')), 'temporary clone leaked'
+assert not list((root / 'home/pkg').rglob('.git')), 'partial cache published'
+assert not (root / 'app/beans.lock').exists(), 'failed fetch wrote a lock'
+args = (root / 'args').read_text().splitlines()
+assert args[:4] == ['-c', 'http.lowSpeedLimit=1000', '-c', 'http.lowSpeedTime=30'], args
+PYTIMEOUT

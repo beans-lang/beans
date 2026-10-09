@@ -106,9 +106,14 @@ partial class LlvmTextEmitter {
 
     fn cycle_pointer_mask_at(type: HirType,
                              base: int) -> int {
+        return self.cycle_pointer_mask_known(type, base, self.reference_tree(type, true))
+    }
+
+    fn cycle_pointer_mask_known(type: HirType, base: int,
+                                tree: LlvmReferenceTree) -> int {
         let pointer_size: int =
             self.program.target.pointer_size()
-        if self.type_is_reference(type) {
+        if tree.reference {
             if !self.cycle_capable_reference(type) {
                 return 0
             }
@@ -140,14 +145,13 @@ partial class LlvmTextEmitter {
         }
         if name == "Option" &&
            type.args.len() == 1 &&
-           !self.type_is_reference(type) {
+           !tree.reference {
             let offset: int =
                 self.align_up(
                     1,
-                    self.inline_alignment(
-                        type.args[0]))
-            return self.cycle_pointer_mask_at(
-                type.args[0], base + offset)
+                    tree.below[0].alignment)
+            return self.cycle_pointer_mask_known(
+                type.args[0], base + offset, tree.below[0])
         }
         match self.declaration_for(type) {
             some(declaration) => {
