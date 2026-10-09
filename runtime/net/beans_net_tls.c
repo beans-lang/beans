@@ -1,4 +1,4 @@
-// TLS for std.tls — the platform's own stack, wrapping a socket as a filter.
+// TLS for std.tls: the platform's own stack, wrapping a socket as a filter.
 //
 // The connected-socket API is a byte pump: Beans owns the descriptor and
 // feeds and drains TLS records. The macOS listener API is the one exception.
@@ -12,7 +12,7 @@
 //   Windows    SChannel through SSPI, with the same in/out token pump
 //
 // Certificate chain building and hostname verification always belong to the
-// platform verifier — never reimplemented here.
+// platform verifier: never reimplemented here.
 //
 // The in/out model: the Beans side calls
 //   feed(handle, received_bytes)      -> hands TLS the ciphertext that arrived
@@ -39,7 +39,7 @@ enum {
     BEANS_TLS_CLOSED = 115,      // peer sent close_notify
 };
 
-// The data paths — read and write — return a byte count (>= 0) and these
+// The data paths: read and write: return a byte count (>= 0) and these
 // NEGATIVE sentinels otherwise, so a one-byte transfer is never mistaken for
 // a status. The status enum above is only for calls that carry no count;
 // mixing the two is how a 111-byte write reads back as BEANS_TLS_PROTOCOL.
@@ -239,8 +239,8 @@ BEANS_NET_API long long beans_tls_client_new(const uint8_t* host,
         memcpy(s->host, host, (size_t)host_len);
         s->host[host_len] = 0;
         // Break out of the handshake at server-auth so trust is evaluated
-        // here — with the caller's extra roots plus the system store, and
-        // the hostname policy — rather than by SecureTransport's default
+        // here: with the caller's extra roots plus the system store, and
+        // the hostname policy: rather than by SecureTransport's default
         // system-only evaluation. This is what lets a private CA or a
         // pinned root be trusted without ever hand-rolling chain building.
         if (SSLSetSessionOption(s->ctx,
@@ -714,7 +714,7 @@ BEANS_NET_API long long beans_tls_handshake(long long handle) {
             // The break-on-auth stop: evaluate trust here (system roots plus
             // the caller's, with the hostname policy), then continue the
             // handshake in the same call so the Beans side never sees the
-            // break — it drives one uniform in/out loop.
+            // break: it drives one uniform in/out loop.
             if (!s->is_server && !beans_tls_evaluate(s)) {
                 return BEANS_TLS_HANDSHAKE;
             }

@@ -78,7 +78,7 @@ class Puppy extends Dog {
 
 // ---- an inherited method nobody replaces ---------------------------------
 // Root.kind is the only body in the family, so Root, Mid and Leaf receivers
-// all settle on it — a base-typed receiver included.
+// all settle on it, a base-typed receiver included.
 
 class Root {
     fn init() {}
@@ -245,11 +245,11 @@ class Point implements Eq {
 // `pick` has no descriptor row at all: it binds its own type at each call
 // site, so its symbol is raised per instantiation under the template's own
 // name and can appear at any point in the emit. A subclass receiver must
-// not settle on whichever instantiation happened to be raised first — the
+// not settle on whichever instantiation happened to be raised first, the
 // answer would be another call site's type arguments.
 //
 // `raise_tally` runs first and raises the int instantiation, so by the time
-// `ask_generic` is emitted the template's own name does hold a symbol —
+// `ask_generic` is emitted the template's own name does hold a symbol,
 // which is the whole hazard: binding to it would pass a string where that
 // instantiation reads an int. The bodies below read their argument, so the
 // two instantiations answer different numbers and a mixed-up binding is a
@@ -257,7 +257,7 @@ class Point implements Eq {
 //
 // The call is settled because there is nothing to settle: a method with
 // generics of its own holds no row, so the body is the one the receiver's
-// static type names — found by walking that type's base chain, which is how
+// static type names, found by walking that type's base chain, which is how
 // `SubTally` reaches `Tally.pick` at all (#89).
 
 class Tally {

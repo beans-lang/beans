@@ -1,7 +1,7 @@
 // #123, found alongside it: the emitter capped a class chain at 32 links.
 // Past that the chain walk gave up and returned nothing, and `class_layout`
 // reported that as "its pointer mask or class shape exceeds runtime metadata
-// capacity" — a message about the emitter's own metadata, for a program whose
+// capacity", a message about the emitter's own metadata, for a program whose
 // only sin was a deep hierarchy. `beansc check` passed it and the interpreter
 // ran it, so it was a build-time failure on a legal program.
 //

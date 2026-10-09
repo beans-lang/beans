@@ -3,7 +3,7 @@
 // single body a descriptor row could name. Every form below exists only to
 // be dispatched, and every one of them checked clean before #89: the row
 // stayed null and the native call jumped through it while the interpreter
-// answered, or — for a replaced body — native bound the base's template and
+// answered, or, for a replaced body, native bound the base's template and
 // the interpreter dispatched to the subclass's, with nothing said either
 // way.
 package main

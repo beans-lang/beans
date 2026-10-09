@@ -1,18 +1,18 @@
 #include <stdarg.h>
 #include <stdint.h>
 
-// The reference for what a caller must produce for a C `...` tail. Clang
-// compiles this file, so every `va_arg` below reads exactly what the target's
-// variadic rules say is there — and the rules differ: Apple's arm64 ABI puts
-// the whole tail on the stack with each argument at its natural size while the
-// fixed head stays in registers, generic AAPCS64 keeps filling the register
-// banks, and SysV x86-64 counts vector registers through `al`. A caller that
-// guesses one 8-byte slot per argument passes all three of these tests only by
-// accident, and fails the alternating one on purpose.
-//
-// C's default argument promotions apply to every variadic argument: anything
-// narrower than `int` arrives as `int`, and `float` arrives as `double`. The
-// reads below are written to that rule, not to the width the caller wrote.
+// Provide Clang's target-specific va_arg oracle for variadic ABI and promotion tests.
+
+
+
+
+
+
+
+
+
+
+
 
 // A tail of integers that were all narrower than `int` at the call site.
 int64_t beans_test_va_narrow(int64_t count, ...) {
@@ -26,8 +26,8 @@ int64_t beans_test_va_narrow(int64_t count, ...) {
     return sum;
 }
 
-// A tail of `unsigned int`. uint32_t is not promoted — it is already as wide
-// as `int` — so this is the one unsigned width that must be read unsigned.
+// Read unsigned-int tails as unsigned when their width matches int and no promotion occurs.
+
 uint64_t beans_test_va_unsigned(int64_t count, ...) {
     va_list ap;
     va_start(ap, count);

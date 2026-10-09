@@ -1,10 +1,10 @@
 // A fiber's unwind is a fact about that fiber alone (issue #44, B3). A parent
-// parked inside its cleanup — a defer that joins a child — lets other fibers
+// parked inside its cleanup, a defer that joins a child, lets other fibers
 // run, finish and panic while it waits; none of that may touch the parent's
 // own unwind, or the rest of its cleanup is silently skipped. The native
 // runtime keeps the unwind in the BeansFiber; the interpreter once kept it in
 // one process-wide field that a finishing child restored to the value it saw
-// when it started — a child that started before the parent's panic restored
+// when it started, a child that started before the parent's panic restored
 // "not unwinding", and the parent's older defer and its local's deinit never
 // ran. Both backends must print the same lines, in the same order.
 import std.io
@@ -18,7 +18,7 @@ class Res {
 
 fn quick() -> int { return 0 }
 
-// starts, parks on a sleep, and finishes later — while the parent is parked
+// starts, parks on a sleep, and finishes later, while the parent is parked
 // in its cleanup
 fn napper(label: string) -> int {
     io.println("  {label} starts")
@@ -45,7 +45,7 @@ fn report(outcome: Result<int>) {
 }
 
 // The child is brewed first and the parent parks on a quick sibling, so the
-// child runs — and goes to sleep — before the parent panics. The parent then
+// child runs, and goes to sleep, before the parent panics. The parent then
 // panics holding a local and two defers; the newest defer joins the sleeping
 // child. The child finishes during that park. The older defer and the local's
 // deinit must still run, and the join above must report the parent's panic.
@@ -81,7 +81,7 @@ fn parent_sibling_panics() -> int {
 
 // An unwinding frame joins the children it never joined, exactly as a return
 // would (B4): the scope join every `brew` synthesizes is a defer, so the
-// unwind runs it with the other defers, newest first — after the defers
+// unwind runs it with the other defers, newest first, after the defers
 // registered later, before the frame's locals drop. The child's output lands
 // there, and the parent's panic is what the join above reports.
 fn parent_never_joins() -> int {

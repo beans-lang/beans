@@ -6,8 +6,8 @@ package main
 // one every conforming parser must reject, and `i_` one the standard leaves to
 // the implementation.
 //
-// Typed decoding is not a general JSON parser — it decodes into a declared
-// shape — so the answer sheet is written in the only terms the corpus speaks:
+// Typed decoding is not a general JSON parser, it decodes into a declared
+// shape, so the answer sheet is written in the only terms the corpus speaks:
 // SYNTAX. The decoder reports two families of refusal, and the boundary is the
 // code: 1..10 come from the JSON reader (bad character, unexpected end,
 // trailing content, bad number/string/literal/comment, structure, empty) and
@@ -17,14 +17,14 @@ package main
 //
 //   y_  may be refused for its SHAPE (a scalar root is not a struct), but a
 //       syntax refusal means the reader rejected a valid document.
-//   n_  must be refused, and refused for its SYNTAX — an invalid document that
+//   n_  must be refused, and refused for its SYNTAX, an invalid document that
 //       reaches the shape checks means the reader accepted it.
 //   i_  is recorded, never asserted; the golden is the pin.
 //
 // Every file is decoded as two permissive shapes: a struct that allows unknown
 // fields, and a list of that struct. The struct names one uniquely-spelled
 // optional field and nothing else, so every key a corpus object carries is an
-// unknown field the decoder must skip — which means walking its value, whatever
+// unknown field the decoder must skip, which means walking its value, whatever
 // JSON that is: a nested object, an array of mixed scalars, an escaped or
 // broken string, a number at any extreme, a subtree past the depth limit. The
 // list shape carries the array roots. Between them the two shapes drive the
@@ -34,7 +34,7 @@ package main
 // `decode_bytes_in_place`, over a private copy of the same bytes. That is the
 // entry a server uses to decode a request body without copying it, and it is
 // the one that hands yyjson the caller's buffer to rewrite in place, so it gets
-// the corpus driven over it too — and it must reach the same verdict, the same
+// the corpus driven over it too, and it must reach the same verdict, the same
 // error code and the same byte offset as the copying entry on every file.
 //
 // One line per file per shape: the accept/reject verdict, and on a refusal the

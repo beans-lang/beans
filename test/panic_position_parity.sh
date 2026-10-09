@@ -1,48 +1,5 @@
 #!/usr/bin/env bash
-# #54: a panic raised by a host builtin must carry the interpreted program's
-# position, not a line in this compiler's own source — and the two backends
-# must report it byte for byte the same way.
-#
-# The tree interpreter is itself a compiled Beans program. When it calls a
-# host builtin (`data.crc32(...)`, `list.insert(...)`) with bad input, the
-# runtime panic carries the position the interpreter's OWN compiled call site
-# set — a line in src/interpreter.b — because that is the only source
-# position the runtime can see from inside a `beansc run`. The native backend
-# passes the user's line/col to the same runtime call, so it reports the right
-# one. The fix is the pattern the other bounds-checked builtins already use:
-# validate in the interpreter first and raise through fail_at, which carries
-# the interpreted node's position, with the message the runtime would print.
-#
-# This probe is not seeded from the issue's example list, which named six of
-# the fifteen. It is anchored to the runtime itself: every host operation that
-# can panic with a position takes `(line, col)` in its C signature, so that
-# set can be read straight out of runtime/beans_rt.c and is complete by
-# construction. The coverage check at the end asserts that every Bytes / List
-# / string / fmt-pad function in that set is either exercised below on both
-# backends, or named in EXCLUDED with a reason. A new panicking builtin added
-# to the runtime fails this check until it is one or the other — so the list
-# cannot silently fall behind the surface.
-#
-# The runtime function each case drives is named beside it, and that name is
-# checked rather than believed. It used to be believed, and the two halves of
-# this file were then matched by two rules that never met: the covered side was
-# a string typed here by hand, the surface side was read out of the runtime. A
-# name typed wrong made a real function read UNCOVERED while its case passed.
-# Far worse in the other direction, a name that stopped being true — because
-# the emitter changed which runtime entry a shape lowers to — kept reading as
-# covered for a path nothing drove. Three did: List<C> of a *class* lowers to
-# beans_list_insert / beans_list_remove, not the _typed pair the cases claimed,
-# and a slice taken as a value calls beans_list_slice, not the
-# beans_list_slice_check that only a slice *iterator* emits. Those three
-# (line, col) paths were asserted covered while no case called them at all.
-#
-# So every claim is now verified twice against facts, before it is allowed to
-# count: it must name a real (line, col) runtime function, and it must appear
-# as a call site in the LLVM IR the compiler actually emits for that very case.
-# The IR is the same compiler under test saying what the program calls, so the
-# claim cannot drift away from the program again. What the IR does NOT show is
-# the interpreter's own path — that half is what `agree` proves, by holding the
-# two backends to the same panic line and the same message.
+# #54: compare panic positions across backends and verify host-operation claims against runtime signatures and emitted LLVM calls.
 set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
@@ -73,19 +30,19 @@ if [ ! -s "$runtime_family" ]; then
     exit 1
 fi
 
-# panic_line <file> — the sole "runtime panic at ..." line a run printed, or
+# panic_line <file>, the sole "runtime panic at ..." line a run printed, or
 # empty. Both backends use the identical wording, so a byte compare of this
 # line proves position and message agree at once.
 panic_line() {
     grep -o 'runtime panic at .*' "$1" 2>/dev/null | head -1
 }
 
-# agree <name> <rtfns> <program> — the interpreter and a native build must
+# agree <name> <rtfns> <program>, the interpreter and a native build must
 # panic at the same place with the same message. <rtfns> is a comma list of
 # the runtime functions this case drives (for the coverage check), or "-" for
 # a regression case outside the Bytes/List/string/fmt families. A case is
 # counted as covering its rtfns only when it actually agrees AND the compiler
-# emits a call to each of them for this program — see `claims_hold`.
+# emits a call to each of them for this program, see `claims_hold`.
 agree() {
     local name=$1 rtfns=$2 program=$3
     printf '%s\n' "$program" >"$tmp/$name.b"
@@ -133,7 +90,7 @@ agree() {
     echo "  agree: $name ($i)"
 }
 
-# claims_hold <name> <rtfns> — a case may only be credited with what it can be
+# claims_hold <name> <rtfns>, a case may only be credited with what it can be
 # shown to do. Every name it claims has to be a real (line, col) runtime
 # function, and has to appear as a call site in the IR the compiler emits for
 # this exact program. `beansc llvm` is the compiler under test answering the
@@ -143,7 +100,7 @@ agree() {
 # The IR names a callee on the same line as the `call`, but a call that yields
 # a value is written `%v4 = call i64 @beans_bytes_get(...)`, so the line does
 # not start with `call`. Anchoring on the line start reads every such case as
-# calling nothing — which is how a check like this quietly passes everything.
+# calling nothing, which is how a check like this quietly passes everything.
 # `declare` lines are dropped instead, and the rest matched on the keyword.
 claims_hold() {
     local name=$1 rtfns=$2 fn
@@ -263,7 +220,7 @@ agree list_slice beans_list_slice 'fn main() {
     let s: List<int> = xs.slice(1, 9)
 }'
 
-# beans_list_slice_check is not the slice-as-a-value call above — that is
+# beans_list_slice_check is not the slice-as-a-value call above, that is
 # beans_list_slice. It is emitted only when a slice is ITERATED, where the
 # bound has to be checked before the loop can start reading. Taking the slice
 # as a value never reaches it, so the case that claimed both covered only one.
@@ -385,7 +342,7 @@ agree guard_divide_by_zero - 'fn main() {
 # A panic from the compound operator on an index target must report the index
 # position on both backends. The native backend anchors an index-target
 # assignment at the index (src/mir.b), so the interpreter passes that original
-# index node to the numeric helper too — otherwise `v[0] /= 0` reports the
+# index node to the numeric helper too, otherwise `v[0] /= 0` reports the
 # operator column on the interpreter and the `[` column natively. Slice and
 # fixed array both, since the slice store rides the array store path.
 agree guard_slice_compound_divzero - 'fn main() {
@@ -436,7 +393,7 @@ cover_fail=0
 # well as newer Bash. Associative arrays stopped that shell before any case
 # ran, even returning zero. Do not use `printf ... | grep -q`: that pipeline
 # lies under `set -o pipefail`: grep -q exits the moment it matches, printf is
-# then killed by SIGPIPE, and the pipeline's status becomes 141 — so a name
+# then killed by SIGPIPE, and the pipeline's status becomes 141, so a name
 # that WAS found reads as missing. It only bites once the haystack outgrows a
 # pipe buffer, which is to say it sits harmless until the day the surface
 # grows and then reports UNCOVERED for something demonstrably covered.

@@ -6,7 +6,7 @@
 //
 // A **library** has no `main`. Two of the three survived that anyway, because
 // each carries its own guard: the first read of a static field or a singleton
-// runs its initializer. **Reflection has no such guard and cannot have one** —
+// runs its initializer. **Reflection has no such guard and cannot have one**,
 // nothing reads "the registry", it is read by name, and a name that was never
 // registered is indistinguishable from a name that does not exist. So a
 // module built with `--emit shared` answered "no such type" for every class it
@@ -18,7 +18,7 @@
 // also proves what happens when it does not.
 import std.reflect
 
-/// Retained at run time, or reflection would not carry it at all — which
+/// Retained at run time, or reflection would not carry it at all, which
 /// would make this half of the test pass for the wrong reason.
 @retention(value: "runtime")
 pub annotation marked {
@@ -67,7 +67,7 @@ pub extern "C" fn probe() -> i32 as "beans_library_reflect" {
                 some(initializer) => {
                     match initializer.call([]) {
                         // The value that comes back is a boxed one, which is
-                        // the only source `as?` may narrow from — and
+                        // the only source `as?` may narrow from, and
                         // narrowing it is the point: a class the registry
                         // never heard of has no initializer to call at all.
                         ok(value) => {

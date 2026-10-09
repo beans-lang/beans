@@ -108,7 +108,7 @@ diff -u "$tmp/expected" "$tmp/interp.out"
 # On ELF hosts the loadable object is often only the versioned soname:
 # glibc 2.34+ ships lib<name>.so as a linker script the dynamic loader
 # refuses, and a bare runtime package carries lib<name>.so.6 with no dev
-# symlink at all. The interpreter has to reach the versioned spelling —
+# symlink at all. The interpreter has to reach the versioned spelling,
 # `link linux library "m"` broke exactly this way on Ubuntu 24.04.
 if [[ $(uname -s) != Darwin ]]; then
     mkdir -p "$tmp/versioned"

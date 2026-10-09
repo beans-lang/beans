@@ -2,7 +2,7 @@
 # A module built with `--emit shared` has no main. The static prologue used to
 # be emitted inside main, so it never ran: every `pub static` read as the zero
 # it was born with, silently, and once static reads were guarded it panicked
-# instead — which is how it was found. The prologue is a function of its own
+# instead, which is how it was found. The prologue is a function of its own
 # now, called from main when there is one and from the first static read when
 # there is not.
 #
@@ -180,7 +180,7 @@ fi
 # top of the writes. The export answered ok and the device was not attached.
 # Nothing above could see it, because a read always went first.
 #
-# So the interesting call has to be the very first thing the process does — no
+# So the interesting call has to be the very first thing the process does, no
 # arrange step, no warm-up, nothing. One process per lane per order is the
 # point: if a bug depends on being first, nothing that runs second can see it.
 # Which also means one cold lane cannot cover two first calls. The attach lane
@@ -192,7 +192,7 @@ fi
 # one arms the prologue in the callee; a first call that writes only the
 # declared default overwrites itself with the same bytes the prologue would.
 # Either one passes cold on a broken compiler and looks like a real cold
-# lane. Reading the harness cannot tell you which you have — only running it
+# lane. Reading the harness cannot tell you which you have, only running it
 # against the bug can.
 #
 # So a lane added without a pre-fix compiler to test it against is a lane
@@ -201,7 +201,7 @@ fi
 #
 #     BEANSC=/path/to/pre-fix/beansc bash test/shared_statics.sh
 #
-# one lane at a time — the first failure exits, so a combined run never tells
+# one lane at a time, the first failure exits, so a combined run never tells
 # you whether the later lanes could fail at all.
 cat >"$tmp/order.c" <<'C'
 #include <dlfcn.h>

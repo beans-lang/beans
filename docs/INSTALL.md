@@ -27,7 +27,7 @@ beansc doctor
 
 ## What the installer does
 
-1. Detects the operating system, CPU architecture and — on Linux — whether the
+1. Detects the operating system, CPU architecture and - on Linux - whether the
    libc is glibc or musl.
 2. Downloads `beans-release-manifest.tsv` and picks the matching package,
    preferring a full package when one exists for your target.
@@ -35,7 +35,7 @@ beansc doctor
 4. Unpacks it into a staging directory and runs the staged `beansc --version`.
 5. Only then moves it into place, so a failed download, checksum, unpack or
    validation never damages a working installation.
-6. Adds the `bin` directory to your PATH, once — running the installer again
+6. Adds the `bin` directory to your PATH, once - running the installer again
    never adds a second entry.
 7. Deletes its temporary files, on success and on failure.
 
@@ -63,7 +63,7 @@ installation. If the latest release is already installed, it does nothing.
 
 Override with `BEANS_HOME` or `--prefix` / `-Prefix`.
 
-The layout is stable, and the installation can be moved after unpacking —
+The layout is stable, and the installation can be moved after unpacking -
 every path inside is resolved relative to the launcher:
 
 ```
@@ -114,7 +114,7 @@ Remove-Item -Recurse -Force $env:LOCALAPPDATA\Beans
 
 ## Full and slim packages
 
-A **full** package bundles a complete native C toolchain — Clang, LLD, llvm-ar,
+A **full** package bundles a complete native C toolchain - Clang, LLD, llvm-ar,
 the Clang resource directory, and the headers, startup objects and target
 libraries needed to link. `beansc build` works with nothing else installed.
 
@@ -128,7 +128,7 @@ libraries needed to link. `beansc build` works with nothing else installed.
 
 A **slim** package ships for every other supported host: macOS, musl Linux, the
 less common Linux CPUs, and the MSVC and msvcrt-MinGW Windows ABIs. A complete,
-correct native toolchain cannot be bundled for these — the MSVC toolchain and
+correct native toolchain cannot be bundled for these - the MSVC toolchain and
 the Windows SDK are Microsoft's to distribute, Apple's SDK is Apple's, and a
 cross-built package cannot carry a Clang of the wrong architecture.
 
@@ -158,15 +158,15 @@ letting you reach a Clang or linker error.
 | `beansc build --emit static` | Clang **and** an archiver (`llvm-ar` or `ar`) |
 | `beansc build --emit shared` | same as native `build` |
 | `beansc bindgen` | Clang |
-| `beansc run` with C FFI | Clang — the interpreter's C bridge compiles a shim |
+| `beansc run` with C FFI | Clang - the interpreter's C bridge compiles a shim |
 | `beansc pot add`, `remove`, `tidy`, `update` | Git, and only for Git-based dependencies |
 | `beansc upgrade` | network access; uses the release installer and checksum manifest |
 
 Beans emits LLVM IR, so the C compiler must be Clang. GCC cannot compile that
 IR, and is not a supported substitute.
 
-On **musl** hosts other than x86-64 and arm64 — PowerPC64, RISC-V 64 and
-LoongArch64 — a native `beansc build` also needs **libucontext** (`apk add
+On **musl** hosts other than x86-64 and arm64 - PowerPC64, RISC-V 64 and
+LoongArch64 - a native `beansc build` also needs **libucontext** (`apk add
 libucontext-dev`). The fiber runtime switches stacks with its own assembly on
 x86-64 and arm64 and with the POSIX `ucontext` family everywhere else, and
 musl declares those functions without shipping them. glibc hosts need nothing
@@ -182,7 +182,7 @@ make ARCH=ppc64 && make ARCH=ppc64 install
 Override the tools Beans uses with `BEANS_CC`, `BEANS_AR`, `BEANS_RUNTIME`,
 `BEANS_WASM_HOST` and `BEANS_STDLIB`, or per build with `--cc`, `--ar`,
 `--linker` and `--sysroot`. A cross sysroot can also come from the environment
-— `BEANS_WASM_SYSROOT` for a wasm target, `BEANS_SYSROOT` for anything else —
+- `BEANS_WASM_SYSROOT` for a wasm target, `BEANS_SYSROOT` for anything else -
 so the path a machine happens to keep it at stays out of a project's scripts.
 `--sysroot` wins over both.
 
@@ -212,9 +212,9 @@ missing-header or linker error, and `beansc doctor` reports the same thing.
 
 Every release publishes:
 
-- `beans-release-manifest.tsv` — version, target, OS, arch, libc, full/slim,
+- `beans-release-manifest.tsv` - version, target, OS, arch, libc, full/slim,
   asset name, SHA-256, and whether native builds are self-contained
-- `beans-release-checksums.txt` — SHA-256 of every published file
+- `beans-release-checksums.txt` - SHA-256 of every published file
 - an SPDX SBOM and build attestations covering the files you download
 
 ```bash

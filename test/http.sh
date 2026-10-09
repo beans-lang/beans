@@ -48,7 +48,7 @@ echo "checking every response head goes through the one framing gate"
 # std.http that writes a response status line, exactly one that writes the
 # chunked framing header, and the only way to reach either is through
 # `check_response_head`. That is what makes response splitting and framing
-# confusion one bug to fix rather than one per encoder — the reason
+# confusion one bug to fix rather than one per encoder, the reason
 # http_write_rules.b and http_chunked_encode.b can prove the whole write side
 # from a handful of entry points.
 #
@@ -56,7 +56,7 @@ echo "checking every response head goes through the one framing gate"
 # reuses the head writers, one of these counts moves; if it hand-rolls a
 # status line instead, the first count moves. Either way the author lands
 # here and has to say which gate the new path runs. Update a number only
-# after checking the new call site validates first — never to make the
+# after checking the new call site validates first, never to make the
 # suite green.
 framing_shape() { # <count> <fixed string> <why it is that number>
     local want=$1 needle=$2 why=$3 got
@@ -99,7 +99,7 @@ fi
 echo "checking parse throughput against raw llhttp"
 # The done-gate: the bridge mechanism (feed + event buffer + drain, no typed
 # decode) must stay within 2x of what a real C consumer of the same llhttp
-# pays — copying span callbacks, the floor every binding shares. The bare
+# pays, copying span callbacks, the floor every binding shares. The bare
 # no-callback scan rate is also printed for the record; nothing that
 # extracts data can match a pure DFA scan, C included (the copying C
 # baseline itself runs at roughly half the bare-scan rate).
@@ -165,8 +165,8 @@ clang -O2 -Iruntime/net/vendor/llhttp "$tmp/bench_raw.c" \
     runtime/net/vendor/llhttp/llhttp.c runtime/net/vendor/llhttp/api.c \
     runtime/net/vendor/llhttp/http.c -o "$tmp/bench_raw"
 # The C lanes are measured below, inside the same round as the Beans lanes
-# they are compared against. Running them here instead — minutes and two
-# compiler invocations before the bridge lane — is what made this gate fail on
+# they are compared against. Running them here instead, minutes and two
+# compiler invocations before the bridge lane, is what made this gate fail on
 # a busy box while nothing was wrong with the build: the copying-C baseline
 # landed in a quiet moment and the bridge in a loaded one, and best-of-three
 # per lane cannot cancel that, because the two bests come from different
@@ -222,7 +222,7 @@ EOF
 # slows every measurement in the round it steals it from; dividing one lane by
 # another *inside* the round cancels the machine's speed out of the ratio,
 # where the best of one lane over the best of another leaves that factor in for
-# the budget to absorb — and the two bests can come from moments the machine
+# the budget to absorb, and the two bests can come from moments the machine
 # was running at different speeds, which is a difference no budget can absorb.
 # bench_raw prints its two lanes as two lines, raw then copying C.
 : >"$tmp/raw.txt"

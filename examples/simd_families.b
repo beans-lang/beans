@@ -1,16 +1,5 @@
-// SIMD vector families.
-//
-// A vector type's name is its shape: `Simd` + lane count + element. So
-// `Simd4i32` is four 32-bit signed integers, `Simd16u8` is sixteen bytes, and
-// `Simd2f64` is two doubles. Every family gets the same operations, because the
-// name is parsed into (lanes, element) once and everything downstream is driven by
-// those two numbers.
-//
-// The total width has to be a register the machine actually has. 128-bit works
-// everywhere; 256-bit needs the feature that provides it, so `Simd8i32` compiles
-// for x86-64 with `--features +avx2` and is refused without it, by name.
-//
-// Vectors are raw hardware, so the operations need `unsafe`.
+// SIMD names encode lane count and element type, for example `Simd4i32`.
+// 256-bit vectors require a supporting CPU feature; vector operations require `unsafe`.
 
 import std.io
 
@@ -37,7 +26,7 @@ fn main() {
         // Reductions fold every lane into one scalar.
         io.println("sum {counts.sum()} product {counts.product()}")
 
-        // A comparison gives a mask: every lane is all-ones or all-zeros. That is
+        // A comparison gives a mask, every lane is all-ones or all-zeros. That is
         // the shape `select` takes, so a comparison feeds straight into a choice
         // with no branch anywhere.
         let big: Simd4i32 = counts.gt(Simd4i32.splat(2))
@@ -47,7 +36,7 @@ fn main() {
         io.println("none {counts.gt(Simd4i32.splat(100)).any_true()}")
         io.println("every {counts.ge(Simd4i32.splat(1)).all_true()}")
 
-        // Bitwise and shifts, on integer families only — there is no meaningful
+        // Bitwise operations and shifts apply only to integer families; there is no meaningful
         // bitwise-and of two floats, so those methods are not offered on f32/f64.
         io.println("or {counts.bit_or(ten).lane(0)}")
         io.println("and {counts.bit_and(ten).lane(1)}")
@@ -56,7 +45,7 @@ fn main() {
         io.println("shl {counts.shl(2).lane(1)} shr {ten.shr(1).lane(0)}")
 
         // Sixteen bytes at a time. Unsigned lanes wrap, and the comparison is
-        // unsigned too — 200 is above 100 here, which it would not be if the lanes
+        // unsigned lanes too. Here 200 is above 100; signed lanes would order them differently.
         // were read as signed.
         let bytes: Simd16u8 = Simd16u8.splat(200)
         io.println("u8 lanes {bytes.lane_count()} lane {bytes.lane(0)}")

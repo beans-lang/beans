@@ -5,7 +5,7 @@
 #
 # The archive is exactly what a user downloads and unpacks. It carries the final
 # self-hosted compiler, the standard library, the C runtime sources, a
-# relocatable launcher and — for a `full` package — a complete native C
+# relocatable launcher and, for a `full` package, a complete native C
 # toolchain. It never carries beansc0: stage 0 is internal bootstrap code, it is
 # the packaging host's architecture, and nobody installing Beans has any use
 # for it.

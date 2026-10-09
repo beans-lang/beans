@@ -1,4 +1,4 @@
-// A package's function used as a value — the wall that forced every
+// A package's function used as a value, the wall that forced every
 // example to wrap library functions in lambdas. Direct, aliased, stored,
 // passed, and mixed with explicit type arguments on the package call form.
 package main

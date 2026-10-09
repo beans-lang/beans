@@ -1,4 +1,4 @@
-// `beansc debug-adapter` — the command an editor starts.
+// `beansc debug-adapter`: the command an editor starts.
 //
 // It speaks DAP over stdio with Content-Length framing, the same framing the
 // language server uses. The conversation runs in two halves: everything up to
@@ -351,7 +351,7 @@ fn dap_execute(session: DebugSession, launch: DebugLaunch,
         run_arguments.push(value)
     }
     // `cwd` belongs to the process, and the client sets it when it spawns the
-    // adapter — the same arrangement every DAP adapter uses. Saying so out
+    // adapter: the same arrangement every DAP adapter uses. Saying so out
     // loud beats silently running somewhere else.
     if launch.cwd != "" {
         session.event(

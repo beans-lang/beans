@@ -1,5 +1,5 @@
 // #117: a payload-free enum satisfies `Order`, so sort, max, min and a
-// generic `T implements Order` body work on it — by the declaration-order
+// generic `T implements Order` body work on it, by the declaration-order
 // tag, the number `enum(u8)` already exposes and `bool`'s false-before-true
 // uses, with no representation change and without making a bare `a < b` on
 // two enum values legal (that stays refused, as it is for bool).
@@ -9,7 +9,7 @@
 // `enum(u8)` value is the bare tag. The interpreter carries the tag on the
 // value; the native sort loads it (runtime kind 7) for a plain enum and reads
 // the slot (kind 5) for an `enum(u8)`, and the generic `<` loads the i64 tag
-// or compares the i8. All three legs — interpreter, debug, release — must
+// or compares the i8. All three legs, interpreter, debug, release, must
 // answer the same bytes.
 //
 // Big is an `enum(u8)` of 200 variants: its tags cross 127, where a signed i8

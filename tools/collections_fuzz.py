@@ -113,9 +113,7 @@ def gen_set(rng, ops):
 
     # A second set, drawn from the same value range so it overlaps, then every
     # algebra method against the first. Each is emitted both as s.op(t) and
-    # t.op(s): when the two sets differ in size — the common case for two random
-    # subsets — that single pair takes both the walk-smaller and the
-    # clone-larger branch, so a branch selected wrong is a wrong answer here.
+    # Unequal set sizes exercise both walk-smaller and clone-larger branches.
     # A set is order-independent, so results are summed and counted, never
     # listed; predicates print their bool.
     body.append("    var t: collections.Set<int> = new()")
@@ -200,7 +198,7 @@ def gen_deque(rng, ops):
     # The random walk above stays under a hundred elements, so with a 512-slot
     # block the deque never leaves its head block: no crossover, no inner-block
     # get, no spare reuse. Grow it deterministically past 2*BLOCK on BOTH ends,
-    # read get in every region, then drain each way so every crossover fires —
+    # read get in every region, then drain each way so every crossover fires;
     # all mirrored in the model so the answers still have to match exactly.
     # Values are kept small and the checksum is reduced each step, so the Python
     # model and the 64-bit Beans arithmetic agree.
@@ -223,7 +221,7 @@ def gen_deque(rng, ops):
         expected.append(f"g {gp} {opt_int(model[gp])}")
         gp += 517
     # Drain the whole deque from the FRONT: the front side empties, then the
-    # entire multi-block back side crosses over — crossover_to_front on two or
+    # entire multi-block back side crosses over; crossover_to_front on two or
     # more full blocks, the shape the alternating middle-drain never reaches
     # (there the far side is down to one block by the time a side empties).
     body.append("    var fifo: int = 0")
@@ -305,7 +303,7 @@ def gen_pqueue(rng, ops):
         expected.append(f"{label} " + ",".join(str(v) for v in order))
         entries.clear()
 
-    # Phase 1: random small ops with per-op peek/pop checks — the cross-backend
+    # Phase 1: random small ops with per-op peek/pop checks; the cross-backend
     # coverage of tiny, oddly shaped heaps.
     for _ in range(ops):
         choice = rng.random()
@@ -328,7 +326,7 @@ def gen_pqueue(rng, ops):
     # Phase 2: a deep, dense-tie fill on top of whatever phase 1 left, then a
     # full drain. The size crosses 1024 and a narrow band puts hundreds of
     # entries on one priority, so the drain is a FIFO tie-break at scale over a
-    # ~11-level heap — a shape the 30–90 random ops never reach.
+    # ~11-level heap, a shape the 30–90 random ops never reach.
     deep_fill(rng.choice([1200, 1600, 2000]), rng.choice([2, 3, 4]))
     drain("deep", "drain")
 

@@ -1,7 +1,7 @@
 // A panic inside a defer that a contained unwind is running is the one
 // unrecoverable case (spec/CONCURRENCY.md), exactly as it is for a brewed
 // fiber's unwind: there is no second unwind to give it, so both reports go out
-// and the process stops. A catch frame does not change that — the runtime
+// and the process stops. A catch frame does not change that, the runtime
 // asks "is this fiber already unwinding" before it asks anything else, and the
 // tree walker's fail_with_text asks the same question in the same order.
 import std.io

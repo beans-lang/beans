@@ -34,7 +34,7 @@ class TargetDescription {
         self.pointer_bits = pointer_bits
         self.stack_align = stack_align
         // The i386 System V ABI caps every fundamental scalar at 4-byte
-        // alignment — `long long` and `double` included, where every other
+        // alignment: `long long` and `double` included, where every other
         // 32-bit target here (Win32 x86, ARM EABI, RV32) keeps 8. SSE vectors
         // stay 16 through the uncapped vector path. Getting this wrong put a
         // struct's i64 (and everything after it) one slot too far out: Error's
@@ -51,9 +51,9 @@ class TargetDescription {
     fn pointer_size() -> int { return self.pointer_bits / 8 }
 
     // Does this target carry the controlled unwind a contained panic needs
-    // (spec/CONCURRENCY.md)? The mechanism is the Itanium C++ ABI unwinder —
+    // (spec/CONCURRENCY.md)? The mechanism is the Itanium C++ ABI unwinder:
     // `invoke`/`landingpad` cleanup pads walked by _Unwind_ForcedUnwind with
-    // __gcc_personality_v0 — so it needs a DWARF-EH object format and an
+    // __gcc_personality_v0, so it needs a DWARF-EH object format and an
     // architecture whose _Unwind_Exception matches that ABI. COFF wants SEH
     // funclets instead of landing pads, wasm has no unwinder and no fibers,
     // and 32-bit ARM's EHABI is a different personality with a wider
@@ -329,7 +329,7 @@ class TargetDescription {
                 if self.is_simulator() { "iphonesimulator" } else { "iphoneos" })
             if sdk == "" { return [] }
             // The two variants take *different* minimum-version flags, and
-            // clang silently ignores the wrong one rather than refusing it — so
+            // clang silently ignores the wrong one rather than refusing it: so
             // a simulator build given the device flag gets whatever the SDK
             // defaults to, and every availability warning it produces is about
             // a version nobody chose. 14 is the floor UIKit's own modern API
@@ -388,7 +388,7 @@ class TargetDescription {
     /// `.dylib` and `-dynamiclib`, Apple's own Security and CoreFoundation
     /// frameworks, an SDK that cannot be vendored and must be found on the
     /// machine, and `-fblocks` for the TLS bridge. Every site that used to ask
-    /// `os == "macos"` for one of those reasons asks this instead — adding
+    /// `os == "macos"` for one of those reasons asks this instead: adding
     /// `|| os == "ios"` at twenty call sites would work until the twenty-first
     /// was written.
     ///
@@ -400,7 +400,7 @@ class TargetDescription {
 
     /// Whether this target runs in the iOS Simulator rather than on a device.
     ///
-    /// Same architecture, different SDK and a different LLVM triple — the
+    /// Same architecture, different SDK and a different LLVM triple: the
     /// simulator's is `arm64-apple-ios-simulator`, and a binary built with the
     /// device triple will not load in it.
     pub fn is_simulator() -> bool {
@@ -424,7 +424,7 @@ class TargetDescription {
     }
 
     fn llvm_triple() -> string {
-        // Android carries its API level *in the triple* — that is how the NDK
+        // Android carries its API level *in the triple*: that is how the NDK
         // selects which version of bionic's headers and stubs to link, and a
         // triple without one links against the newest, which then refuses to
         // load on an older phone.
@@ -475,7 +475,7 @@ pub fn android_clang() -> string {
 /// Whether an operating system name is one of Apple's.
 ///
 /// The string form, for the places that carry an OS name rather than a whole
-/// target description — the `csrc` cache and the manifest selectors. Same rule
+/// target description: the `csrc` cache and the manifest selectors. Same rule
 /// as `TargetDescription.is_apple`, and the two must agree.
 fn apple_os(name: string) -> bool {
     return name == "macos" || name == "ios"
@@ -565,10 +565,7 @@ fn supported_targets() -> List<TargetDescription> {
         new TargetDescription(
             "riscv64-unknown-linux-musl", "riscv64", "linux", "musl",
             "elf", 64, 16, [8, 16, 32, 64], true, ["m", "a", "c", "f", "d"]),
-        // 32-bit x86 Linux — same Arch as i686 Windows, but probed facts differ:
-        // stack is 16-byte aligned (S128, not the Windows cdecl 4), ELF not COFF,
-        // portable decimal is available. 64-bit atomics stay (CMPXCHG8B), and
-        // SSE2 is the shared x86 baseline so 128-bit SIMD is available.
+        // Linux i686 uses 16-byte stack alignment, ELF, CMPXCHG8B atomics, and SSE2; Windows i686 uses different ABI and object-format settings.
         new TargetDescription(
             "i686-unknown-linux-gnu", "x86", "linux", "gnu",
             "elf", 32, 16, [8, 16, 32, 64], true, ["sse2"]),

@@ -2,7 +2,7 @@
 # Copy the one version source into a form the self-hosted compiler can read.
 #
 # The compiler cannot read VERSION at build time, so before this existed the
-# version was spelled out by hand in three .b sources — and bumping the
+# version was spelled out by hand in three .b sources, so bumping the
 # version file left the compiler that actually ships a release behind.
 # Generating the file instead means VERSION is still the only place a human
 # edits, and test/version.sh refuses a stale copy.

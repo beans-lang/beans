@@ -2,7 +2,7 @@
 //
 // remove() releases the entry's value, and for a class value that runs user
 // deinit code. Contained by brew/join, a panic there unwinds out of the
-// runtime frame, so the entry has to be unlinked *before* the release runs —
+// runtime frame, so the entry has to be unlinked *before* the release runs,
 // the rule beans_map_set already states for its own hit path (issue #44).
 // Releasing first left the native backend reporting the key still present,
 // holding a value whose deinit had already run, while the interpreter
@@ -16,7 +16,7 @@ import std.io
 
 // Only the key being removed is loud. A map full of panicking deinits would
 // panic again while the unwind released the rest, and that is the documented
-// double-panic abort — it would say nothing about the entry's state.
+// double-panic abort, it would say nothing about the entry's state.
 class Loud {
     pub name: string
     pub loud: bool

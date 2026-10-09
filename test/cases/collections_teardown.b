@@ -26,8 +26,8 @@
 //
 // The rule they all break is the one the runtime containers already follow:
 // a container is settled before it drops anything, and it stays usable after a
-// contained panic. A change of shape is published with a single store — the
-// deque swaps its shape object, the queue its view, the map its root — so a
+// contained panic. A change of shape is published with a single store, the
+// deque swaps its shape object, the queue its view, the map its root, so a
 // reader between two writes sees the whole old shape or the whole new one,
 // never a torn one. `List` and `Map` are printed alongside as the reference.
 //
@@ -107,7 +107,7 @@ fn panic_during_clear() {
     }
     let hd: Brew<int> = brew wipe_deque(d)
     match hd.join() { ok(v) => {} err(e) => {} }
-    // The container must be usable — and empty — the moment the panic is
+    // The container must be usable, and empty, the moment the panic is
     // contained. A torn deque answers its old length over empty storage, and
     // the next read panics from inside the stdlib.
     io.println("deque after contained panic: len {d.len()} empty {d.is_empty()} first {d.first().is_some()}")
@@ -280,7 +280,7 @@ fn crossover_under_release() {
 // A `push` or a `pop` sifts the heap through a hole, so between its first write
 // and its last the root slot holds a stale entry while `entries.len()` has
 // already changed. `len()` and `peek()` reading the heap directly would see a
-// count and a smallest that disagree — that was #92. The fix answers reads from
+// count and a smallest that disagree, that was #92. The fix answers reads from
 // a view the operation republishes with one store, so this probe must never see
 // them disagree.
 //
@@ -288,7 +288,7 @@ fn crossover_under_release() {
 // N-1 down to 0 (a partial refill holds {N-j .. N-1}) and drained by popping
 // the min (a partial drain holds {k .. N-1}). At every settled point the
 // smallest is `base` and the count is `N - base`, so peek_priority() + len()
-// is exactly N — a self-relating invariant with a FIXED N, true no matter which
+// is exactly N, a self-relating invariant with a FIXED N, true no matter which
 // round's data the queue currently holds, so a probe that outlives its round
 // still checks the truth. The payload is priority * 2, checked too, so a torn
 // read where `peek` and `peek_priority` fall on different entries is caught.
@@ -362,7 +362,7 @@ fn pq_under_release() {
 // and the keys disagree.
 //
 // Every key ever inserted is in {0 .. 139}, so at any settled point len() is
-// exactly the number of those keys `contains_key` answers true for — a
+// exactly the number of those keys `contains_key` answers true for, a
 // self-relating invariant true for any subset and any round.
 class SmProbe {
     peer: Option<SmProbe> = none
@@ -425,7 +425,7 @@ fn sm_under_release() {
 fn main() {
     // The queue and the map churn first, while the heap is small and the
     // collector's threshold is low, so a collection lands *inside* a push, a
-    // pop, an insert or a remove — where the tear would be — rather than only
+    // pop, an insert or a remove, where the tear would be, rather than only
     // after they settle. The deque parts follow; the crossover allocates enough
     // to collect on its own however large the heap has grown.
     pq_under_release()

@@ -6,7 +6,7 @@
 // runtime frame, so the container has to be showing the program the state it
 // will have afterwards before the first release runs. The native runtime
 // released first and updated the container after, so it was left reporting
-// every element it had just destroyed — `len` unchanged, `contains_key` true,
+// every element it had just destroyed, `len` unchanged, `contains_key` true,
 // and `Box.get` handing back the value the box had just dropped instead of the
 // one it was given. The interpreter, which replaces the storage outright
 // (`items = []`, `map_values = {}`), reported them empty. One checked program,

@@ -1,7 +1,7 @@
 package main
 
-// Invariant fuzz for typed JSON decoding. Typed decoding has one engine — the
-// yyjson DOM is parsed and walked straight into the target structs — so there
+// Invariant fuzz for typed JSON decoding. Typed decoding has one engine, the
+// yyjson DOM is parsed and walked straight into the target structs, so there
 // is no second implementation to diff against. This holds it to properties it
 // must have on its own, and to a golden transcript that pins the exact error
 // code and byte offset of every refusal.
@@ -14,8 +14,8 @@ package main
 //     scalars of every width, optionals present and absent, nested structs,
 //     boxed options, lists of scalars, strings and structs at n = 0, 1, 2 and
 //     many, and a root list.
-//  2. Fixed point. Any document the decoder accepts — including a mutated one
-//     it happens to still accept — must re-encode to bytes that decode and
+//  2. Fixed point. Any document the decoder accepts, including a mutated one
+//     it happens to still accept, must re-encode to bytes that decode and
 //     re-encode to themselves again. A decoder that half-filled a record shows
 //     up here.
 //  3. Truncation. Every proper prefix of a valid object document is an
@@ -24,8 +24,8 @@ package main
 //
 // Byte flips are recorded, not asserted: flipping a byte inside a number or a
 // string payload often leaves a valid document, so "a flip is refused" is not
-// a property. What each flip DOES produce — the verdict, and for a refusal the
-// code and the byte offset — is in the golden, so a change is loud.
+// a property. What each flip DOES produce, the verdict, and for a refusal the
+// code and the byte offset, is in the golden, so a change is loud.
 //
 // The transcript is deterministic for a given FUZZ_SEED and FUZZ_ROUNDS, and
 // the gate diffs it against a checked-in golden per seed.

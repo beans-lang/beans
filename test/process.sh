@@ -400,7 +400,7 @@ if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer' \
 fi
 diff -u "$tmp/interp" "$tmp/asan.out"
 # Note: `leaks` is not used on this example. It attaches to the process and cannot
-# follow a fork, so it hangs rather than reporting — ASan covers the same ground here.
+# follow a fork, so it hangs rather than reporting, ASan covers the same ground here.
 
 echo "ok processes: no shell, both streams drained, start failures distinct, all reaped"
 

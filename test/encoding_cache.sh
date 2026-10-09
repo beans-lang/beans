@@ -8,7 +8,7 @@ set -euo pipefail
 #
 # Every build here must succeed. A build that fails produces no object, and
 # "no object" would otherwise read as "a different object" and pass a test
-# that proved nothing — so build failures are fatal and their output is
+# that proved nothing, so build failures are fatal and their output is
 # printed.
 
 cd "$(dirname "$0")/.."

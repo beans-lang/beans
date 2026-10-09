@@ -31,13 +31,13 @@ extern "C" fn beans_tree_ffi_invoke_bridge(
 extern "C" fn beans_tree_stored_close(
     value: RawPtr<u8>)
 // The fiber core (spec/CONCURRENCY.md): the interpreter hosts each brewed
-// fiber on a real fiber stack and re-enters the tree walker inside it —
+// fiber on a real fiber stack and re-enters the tree walker inside it:
 // one scheduler, the same queues as native. The join parks the walker's
 // own fiber, which is what lets the child run.
 extern "C" fn beans_worker_bootstrap() -> RawPtr<u8>
 extern "C" fn beans_worker_current() -> RawPtr<u8>
 // Runtime-side externs (the fiber-parking socket calls) live inside this
-// very process, where the dynamic loader cannot always see them — an ELF
+// very process, where the dynamic loader cannot always see them: an ELF
 // executable exports nothing without --export-dynamic, a PE one nothing at
 // all. The runtime answers their addresses itself, and calls them itself:
 // an address is only usable by the word ABI below, which does not cover
@@ -67,10 +67,10 @@ extern "C" fn beans_fiber_set_cancel_handler(
 extern "C" fn beans_fiber_mask_cancel(masked: i32)
 extern "C" fn beans_fiber_exit_cancelled()
 // TaskGroup delivery: next()/wait_all park the walker's fiber directly,
-// and each finishing child's entry tail wakes it — the tree mirror of
+// and each finishing child's entry tail wakes it: the tree mirror of
 // the native group's done hook and waiter field.
 extern "C" fn beans_fiber_current() -> RawPtr<u8>
-// Non-zero for the root fiber — the promoted worker thread that runs main.
+// Non-zero for the root fiber: the promoted worker thread that runs main.
 // A panic on the root leaves the process; a panic on a brewed (non-root)
 // fiber is contained and unwinds its frames. This is the same predicate the
 // native backend's beans_panic uses to decide containment, so both backends
@@ -84,7 +84,7 @@ extern "C" fn beans_fiber_resume(fiber: RawPtr<u8>)
 extern "C" fn beans_stored_callback_close(
     value: RawPtr<u8>)
 // Tree Gates are host Gates: wait must park the walker's own fiber, and
-// open must wake fibers parked inside other interpreter threads — exactly
+// open must wake fibers parked inside other interpreter threads: exactly
 // what the host object already does. The handle leaks by design: a gate
 // is a handful of bytes, its copies alias freely across tree threads, and
 // the walker has no last-copy hook to release it from.
@@ -94,7 +94,7 @@ extern "C" fn beans_gate_open(gate: RawPtr<u8>)
 extern "C" fn beans_gate_is_open(
     gate: RawPtr<u8>) -> int
 // Display width is one table, in the runtime, and both compilers read it
-// through this one function — the tree walker cannot answer a column count
+// through this one function: the tree walker cannot answer a column count
 // differently from the native backend because it is not answering it.
 // Spelling it as a method here would need a bootstrap compiler that already
 // knows string.width, so the call goes through the C name until one ships.
@@ -148,14 +148,14 @@ class TreeInterpreter {
     entry_returned: bool
     // A contained panic (one raised on a brewed, non-root fiber) does not
     // abandon its frames: it unwinds them, running each function's defers and
-    // dropping each owned local, exactly as a return would — the same thing
+    // dropping each owned local, exactly as a return would: the same thing
     // the native backend does with the platform unwinder. The unwind is a
     // fact about one fiber, so it is kept per fiber, keyed by the address
     // the fiber core hands out: the entry maps the fiber to the message of
     // the panic being unwound (kept aside because the cleanup path clears
     // panic_text while it runs a defer or a deinit), and it is removed when
     // the fiber's body has unwound to its entry. A fiber parked inside a
-    // cleanup action — a defer that joins, a deinit that sends — lets other
+    // cleanup action (a defer that joins, a deinit that sends) lets other
     // fibers run, finish and panic; none of that touches this fiber's entry,
     // which is what the native runtime's per-fiber unwind_status gives it. A
     // panic raised while the *same* fiber is already unwinding is the
@@ -164,8 +164,8 @@ class TreeInterpreter {
     unwinds: Map<u64, string>
     // How many `contained` catch frames stand on each fiber's walk
     // (spec/CONCURRENCY.md). A panic raised on a fiber with one is contained
-    // whether or not that fiber is a brewed one — the boundary is the call,
-    // not the fiber — so this is the second half of panic_is_contained, and
+    // whether or not that fiber is a brewed one: the boundary is the call,
+    // not the fiber, so this is the second half of panic_is_contained, and
     // the tree mirror of the native runtime's per-fiber contained_depth. Kept
     // per fiber for the same reason the unwind entry is: a catch frame on a
     // sibling's stack is not one this failure can reach, and a fiber parked
@@ -178,8 +178,8 @@ class TreeInterpreter {
     // that object's `deinit` a `self` whose fields the initializer never
     // reached (#120). Held as one id rather than a flag on the value because
     // it describes ONE release: the one the construction unwind performs
-    // right after it is armed, with no interpreted code — and therefore no
-    // park and no other fiber — in between. If that release is not the
+    // right after it is armed, with no interpreted code, and therefore no
+    // park and no other fiber: in between. If that release is not the
     // object's death, some reference escaped the initializer (legal only once
     // every field is assigned) and the object is an ordinary one from there;
     // end_unwind disarms the id so its eventual death runs `deinit` normally.
@@ -191,7 +191,7 @@ class TreeInterpreter {
     // interpreted object (weak loads revive extra wrappers). The LAST
     // wrapper's host deinit is the object's death: it runs the interpreted
     // deinit chain and drops the registry entry, after which every weak
-    // slot reads none — the same order the native runtime keeps.
+    // slot reads none: the same order the native runtime keeps.
     weak_track: bool
     weak_registry: Map<int, TreeValue>
     weak_wrappers: Map<int, int>
@@ -205,8 +205,8 @@ class TreeInterpreter {
     encoding_handles: Map<string, int>
     encoding_error: string
     // Why the JSON serializer refused, recorded where the refusal
-    // happens rather than worked out afterwards. yyjson — the writer
-    // the native backend runs — stops at the FIRST value it cannot
+    // happens rather than worked out afterwards. yyjson: the writer
+    // the native backend runs: stops at the FIRST value it cannot
     // write in document order and reports that one, so a value that
     // carries both a string that is not UTF-8 and a NaN reports
     // whichever comes first. Set true only by the float leaf of
@@ -245,7 +245,7 @@ class TreeInterpreter {
     debugger: Option<DebugSession>
     active_functions: List<string>
     // Name lookups used to walk `program.functions` and
-    // `program.declarations` on every call, twice each — exact qualified
+    // `program.declarations` on every call, twice each: exact qualified
     // name, then a short-name fallback. That is linear in the size of the
     // whole program, so a call cost what the imports cost: measured at
     // 7.5 microseconds with none, 47.5 with eight packages loaded, on the
@@ -546,7 +546,7 @@ class TreeInterpreter {
                     // loader refuses to open, and a bare runtime package
                     // carries only the versioned object. The loadable file
                     // is lib<name>.so.<n>, so those spellings are
-                    // candidates too — libm.so.6, libX11.so.6, libGL.so.1
+                    // candidates too: libm.so.6, libX11.so.6, libGL.so.1
                     // all land inside this range.
                     for suffix: int in 0..10 {
                         names.push(
@@ -618,10 +618,7 @@ class TreeInterpreter {
             "runtime panic at {node.line}:{col}: {message}")
     }
 
-    // Both engines refuse a callback structurally changing the list it is
-    // sorting (rt_sort_check in beans_rt.c): the merge would otherwise
-    // permute stale storage. The runtime has no source position there, so
-    // it prints 0:0 — this must render the identical line.
+    // Match the runtime's 0:0 source location for a list mutated during sorting.
     fn check_sort_shape(receiver: TreeValue, pinned: int) {
         if self.failed { return }
         if receiver.data().items.len() == pinned { return }
@@ -635,17 +632,17 @@ class TreeInterpreter {
     fn fail_with_text(text: string) -> TreeValue {
         if !self.failed && self.fiber_unwinding() {
             // A panic raised while THIS fiber is already unwinding a contained
-            // failure, AND while no panic is currently in flight — meaning it
+            // failure, AND while no panic is currently in flight: meaning it
             // came from a defer or a deinit the unwind is running, which clear
             // the poison so their body executes. There is no second unwind to
-            // give it — the one unrecoverable case (spec/CONCURRENCY.md) — so
+            // give it (the one unrecoverable case (spec/CONCURRENCY.md)) so
             // both reports go out and the process stops, the same answer the
             // native backend gives when beans_panic sees the fiber unwinding.
             //
             // The !self.failed guard is what keeps this from firing on the
             // ordinary poison walk: a node that computes on a poisoned value
             // and then calls fail (a `?` on the unit a panicked call left, say)
-            // is not a second panic — the poison is already set, so fail below
+            // is not a second panic: the poison is already set, so fail below
             // no-ops and the first panic stands.
             self.report_double_panic(text)
         }
@@ -656,7 +653,7 @@ class TreeInterpreter {
             // tree-level unwind so its frames run their defers and drop what
             // they own on the way out, instead of being abandoned. A panic on
             // the root fiber (or before any fiber exists) leaves the process,
-            // which is what run() already does — no unwind is armed for it.
+            // which is what run() already does: no unwind is armed for it.
             if self.panic_is_contained() {
                 self.begin_unwind(text)
             }
@@ -673,7 +670,7 @@ class TreeInterpreter {
     }
 
     // The address of the fiber running the walker right now, or 0 before any
-    // fiber exists. Identity, not liveness — used only to tell the fiber that
+    // fiber exists. Identity, not liveness: used only to tell the fiber that
     // owns an in-flight unwind apart from a sibling that panics beside it.
     fn current_fiber_address() -> u64 {
         unsafe {
@@ -730,7 +727,7 @@ class TreeInterpreter {
         self.unbuilt_object = -1
     }
 
-    // Is a panic raised right now contained — will something catch it and
+    // Is a panic raised right now contained: will something catch it and
     // turn it into a value? Two things do, and both are asked of the fiber
     // running the walker. A brewed, non-root fiber always is: its failure is
     // delivered at its join. Any fiber is while a `contained` call stands on
@@ -760,7 +757,7 @@ class TreeInterpreter {
     // A fresh fiber has no catch frames, whatever the record at this address
     // was doing before it. Fiber records are pooled and their addresses
     // reused, and a fiber cancelled at a park inside a contained call leaves
-    // through the runtime without ever reaching its leave — so the count
+    // through the runtime without ever reaching its leave, so the count
     // under that address outlives the fiber it described. Native gets this
     // free: beans_fiber_spawn zeroes a reused record. The tree says it here,
     // beside the unwind entry that is cleared for the same reason.
@@ -769,7 +766,7 @@ class TreeInterpreter {
     // writing down rather than discovering later: the count is read in one
     // place, panic_is_contained, and every address a pool can hand back
     // belongs to a brewed fiber, which already answers yes there. The root
-    // fiber — the only one where the count decides anything — is allocated
+    // fiber (the only one where the count decides anything) is allocated
     // once at bootstrap and never pooled, so it cannot inherit an entry. The
     // line is here because the two per-fiber facts must be reset together;
     // the moment either is read anywhere else, a stale one is a wrong answer.
@@ -818,7 +815,7 @@ class TreeInterpreter {
     // Natively thread_main (runtime/beans_rt.c) has no capture, so the panic
     // walks straight out through beans_panic: the buffered output goes first,
     // the report goes to stderr, and the process ends with 3. Nothing else is
-    // open to it — Thread<T>.join() answers T, not Result<T>, so a thread's
+    // open to it: Thread<T>.join() answers T, not Result<T>, so a thread's
     // failure has no value-shaped place to land, and a detached or
     // never-joined thread has no join at all. Containment is what `brew`
     // is for (spec/CONCURRENCY.md); a thread is the raw primitive.
@@ -975,8 +972,8 @@ class TreeInterpreter {
 
     // The declaration-order tag of an enum variant, the number `Order`
     // compares by. A variant value carries it in `int_data` so the two
-    // type-erased comparators — tree_value_less (sort, min, max) and the
-    // binary `<` path — can order two variants without the declaration in
+    // type-erased comparators: tree_value_less (sort, min, max) and the
+    // binary `<` path: can order two variants without the declaration in
     // hand, the same tag the native backend loads from the enum object or
     // reads as the `enum(u8)` value. Payload variants also get it; only a
     // payload-free enum satisfies `Order`, but stamping every variant keeps
@@ -1082,7 +1079,7 @@ class TreeInterpreter {
     // backend into a walk of the parsed document straight into the target
     // struct. Nothing replaced the stdlib body here, so under `beansc run`
     // the call answered that body's own
-    // `err("typed JSON decoding was not lowered", "unsupported")` — an
+    // `err("typed JSON decoding was not lowered", "unsupported")`: an
     // ordinary Result failure, with no diagnostic and no panic. A program
     // that branches on the result therefore took a *different branch* under
     // the interpreter than in its own binary, silently, which is the worst
@@ -1095,7 +1092,7 @@ class TreeInterpreter {
     // runtime/encoding/beans_enc_json.c, and test/json_typed_decode.sh runs
     // both legs over the JSONTestSuite corpus so the two stay together.
     //
-    // The target shape is already narrow — validate_json_decode in
+    // The target shape is already narrow: validate_json_decode in
     // src/expression.b proves it is a struct or List<struct> whose fields are
     // scalars, an Option of one, a List of one, or a nested struct, with no
     // generics, no recursion, no nested Option and no defaulted field (an
@@ -1128,7 +1125,7 @@ class TreeInterpreter {
         return ""
     }
 
-    // The XML half of the same gap, and it stays open — deliberately, and
+    // The XML half of the same gap, and it stays open: deliberately, and
     // loudly rather than silently.
     //
     // `xml.decode<T>` is native only. Its stdlib body answered
@@ -1136,15 +1133,15 @@ class TreeInterpreter {
     // is an ordinary Result failure: a program that branches on the result
     // took a different branch under `beansc run` than in its own binary, with
     // nothing said. The JSON half could be closed because both backends parse
-    // through one vendored yyjson — `json.parse` is an extern "C" call on
-    // either side — so only the mapping from document to struct had to be
+    // through one vendored yyjson: `json.parse` is an extern "C" call on
+    // either side, so only the mapping from document to struct had to be
     // written twice, and test/json_typed_decode.sh diffs the two over the
     // JSONTestSuite corpus and the fuzz.
     //
     // XML has no such shared floor. pugixml hands back element text and
-    // beans_enc_xml.cpp converts it with parsers of its own —
+    // beans_enc_xml.cpp converts it with parsers of its own:
     // beans_xml_integer, beans_xml_double with its strtod fallback, and a
-    // bool that takes "true"/"1"/"false"/"0" after trimming — none of which
+    // bool that takes "true"/"1"/"false"/"0" after trimming: none of which
     // any Beans code calls. A second set written here would be a second
     // implementation of exactly the thing this project keeps one of, with no
     // answer sheet to hold it to (there is no XML corpus beside the
@@ -1222,7 +1219,7 @@ class TreeInterpreter {
     // the number came back an integer on a re-parse) and a large magnitude
     // ("-5.764607523034235e+17" against "-576460752303423500.0"). Typed
     // encoding therefore answered different bytes on the two backends for any
-    // struct carrying a float — silently, for a value neither side refused.
+    // struct carrying a float: silently, for a value neither side refused.
     //
     // Two calls through the stdlib is a slow way to format one number, and it
     // is the only way to get yyjson's own dtoa without writing a second one:
@@ -1253,7 +1250,7 @@ class TreeInterpreter {
     }
 
     // "null", "boolean", "integer", "unsigned_integer", "floating", "text",
-    // "array", "object" — json.Kind's own variant names, which are yyjson's
+    // "array", "object": json.Kind's own variant names, which are yyjson's
     // eight value kinds. "" means the call could not be made at all.
     fn tree_json_node_kind(value: TreeValue) -> string {
         match self.tree_json_value_call(value, "kind") {
@@ -1266,7 +1263,7 @@ class TreeInterpreter {
     }
 
     // The payload of a Result the stdlib handed back, or none for its err
-    // arm — every json.Value accessor answers Result<T>.
+    // arm: every json.Value accessor answers Result<T>.
     fn tree_json_ok(
         answer: Option<TreeValue>) -> Option<TreeValue> {
         match answer {
@@ -1320,8 +1317,8 @@ class TreeInterpreter {
     // One JSON value into one field type. `none` is a refusal; the caller
     // turns it into the decoder's single error.
     //
-    // The depth is this value's own — the root object is 1 and a field value
-    // sits one below the object that names it — and it is checked here as the
+    // The depth is this value's own: the root object is 1 and a field value
+    // sits one below the object that names it, and it is checked here as the
     // walk descends, exactly as beans_json_typed_value_direct checks it.
     fn tree_json_typed_value(
         value: TreeValue, type: HirType,
@@ -1347,7 +1344,7 @@ class TreeInterpreter {
         }
         if hir_is_integer(type) {
             // A number written with a fraction or an exponent is a real to
-            // yyjson and is refused for an integer field on both backends —
+            // yyjson and is refused for an integer field on both backends:
             // `{"age": 7.0}` does not decode into an `int`.
             if kind != "integer" &&
                kind != "unsigned_integer" {
@@ -1810,8 +1807,8 @@ class TreeInterpreter {
 
     // Encodes a JSON string, or `none` when the bytes are not valid UTF-8.
     // Both native writers (the direct writer and yyjson) reject a string that
-    // is not well-formed UTF-8 — overlong forms, surrogates, anything past
-    // U+10FFFF, truncated or stray continuation bytes — so the interpreter
+    // is not well-formed UTF-8: overlong forms, surrogates, anything past
+    // U+10FFFF, truncated or stray continuation bytes, so the interpreter
     // has to reject the very same set, or the two backends disagree on a
     // struct that carries such a string (encode returns a value on one side
     // and an error on the other). The multibyte classification below is byte
@@ -1924,7 +1921,7 @@ class TreeInterpreter {
             // libc writes nan for either sign and a Windows CRT writes
             // -nan(ind). Matching a list of spellings therefore accepted a
             // NaN on Linux/x86-64 and wrote it into the document, where the
-            // native writers — which read the value — refused it.
+            // native writers (which read the value) refused it.
             //
             // `v - v` is zero for every finite value and NaN for an infinity
             // or a NaN, and NaN compares false against everything, so one
@@ -2021,8 +2018,8 @@ class TreeInterpreter {
     }
 
     // A checked encode can fail at runtime on a NaN or infinity float, or on
-    // a string whose bytes are not valid UTF-8. yyjson — the writer the
-    // native backend runs — stops at the first of those it meets in document
+    // a string whose bytes are not valid UTF-8. yyjson: the writer the
+    // native backend runs: stops at the first of those it meets in document
     // order and names that one, so a value carrying both reports whichever
     // came first. tree_json_value collapses every refusal into `none`, and
     // json_write_nan carries the reason out from the leaf that refused; a
@@ -2281,7 +2278,7 @@ class TreeInterpreter {
 
     // The declaration a callable is a member of, or none for a free
     // function. Reflection files one row per open declaration, so this is
-    // what a member's declared types are measured against — the same
+    // what a member's declared types are measured against: the same
     // question the native emitter asks through
     // `callable_owner_declaration`.
     fn reflect_owner_declaration(function: HirFunction) ->
@@ -3044,9 +3041,9 @@ class TreeInterpreter {
                     // (llvm_emit_reflect.b `reflection_field_action`), and
                     // both backends read the one predicate in hir.b.
                     //
-                    // Refused where the runtime refuses a missing thunk —
+                    // Refused where the runtime refuses a missing thunk:
                     // after the receiver check, and after the value check on
-                    // a write (beans_rt.c `beans_reflect_field_set`) — so a
+                    // a write (beans_rt.c `beans_reflect_field_set`), so a
                     // caller that also passed the wrong value type is told
                     // about that first on both backends rather than one.
                     var erased: bool = false
@@ -3466,7 +3463,7 @@ class TreeInterpreter {
                                 }
                                 receiver = some(value)
                                 // Prefer the body the receiver's runtime
-                                // class declares — but only one a receiver
+                                // class declares, but only one a receiver
                                 // can pick. A `static fn` wearing the same
                                 // name declares no `self`, so substituting
                                 // it handed the receiver to a function with
@@ -4783,11 +4780,11 @@ class TreeInterpreter {
         return false
     }
 
-    // Does an object of `type_name` reach `target_name` — the test behind
+    // Does an object of `type_name` reach `target_name`: the test behind
     // `as?`. Both relations count: a class reaches its base by `extends` and
     // an interface it names by `implements`, and an interface reaches the
     // interfaces it extends the same way. Walking `extends` alone answered
-    // `none` for `tile as? Named` where `Tile implements Named` — a downcast
+    // `none` for `tile as? Named` where `Tile implements Named`: a downcast
     // that holds, refused silently, while the native backend refused to
     // build the program at all (#195).
     fn is_instance(type_name: string,
@@ -4951,8 +4948,8 @@ class TreeInterpreter {
     // afterwards by the host runtime's own cascade, not by hand here. A
     // wrapper owns nothing but the one fields box it points at, so when the
     // host frees the wrapper it releases that box, and a fully-reserved fields
-    // map — every declared slot taken base-class-first in declaration order
-    // (#82's reserve_field_slots) — releases back to front. That IS the
+    // map: every declared slot taken base-class-first in declaration order
+    // (#82's reserve_field_slots): releases back to front. That IS the
     // canonical order: the object's own class first in reverse declaration
     // order, then each base up the chain.
     //
@@ -4960,7 +4957,7 @@ class TreeInterpreter {
     // child (release_fields removed an entry, the host released the child
     // wrapper, its deinit re-entered here), so a deep chain of objects that
     // declare a `deinit` overflowed the stack where the same chain WITHOUT a
-    // `deinit` — released entirely by the host's iterative cascade — did not
+    // `deinit` (released entirely by the host's iterative cascade) did not
     // (issue #96). Handing every field release to that one cascade closes the
     // gap: the chain unwinds in constant host stack, matching the native
     // backend's beans_release, which likewise runs the deinit then hands the
@@ -4970,7 +4967,7 @@ class TreeInterpreter {
         // An object whose `init` never returned dies without its `deinit`
         // body: the initializer may not have reached every field, and a
         // body that reads one it never assigned is reading a slot that
-        // holds nothing (#120). The fields that WERE assigned still go —
+        // holds nothing (#120). The fields that WERE assigned still go:
         // this only skips the interpreted chain; the host cascade releases
         // the fields box afterwards either way. The object this stands for
         // is the one whose construction unwind armed the id, and only for
@@ -4988,7 +4985,7 @@ class TreeInterpreter {
             // owned locals still run their deinit on the way out (#81); and the
             // exit-time cycle sweep, where the host destroys the garbage the
             // program left even though an uncontained panic is on its way out of
-            // the process — the native runtime runs those deinits, so the
+            // the process: the native runtime runs those deinits, so the
             // interpreter must too, rather than skipping them and printing a
             // shorter teardown (#107). Each owned child the host cascade reaches
             // next re-opens this same window on its own, and the panic is
@@ -5005,7 +5002,7 @@ class TreeInterpreter {
             self.deinit_chain(object.text, object)
             if self.failed {
                 // The deinit itself panicked. In the exit sweep that is an
-                // uncontained panic in teardown with no walker above it —
+                // uncontained panic in teardown with no walker above it:
                 // surface it and leave with 3, the same as the normal branch
                 // below and the same as the native runtime. In a contained
                 // unwind it is the double-panic case fail_at aborts on; leave
@@ -5029,7 +5026,7 @@ class TreeInterpreter {
             // An uncontained panic raised by a deinit the exit-time cycle sweep
             // is running, after run_entry returned. There is no walker frame
             // left above it to carry the failure to run(), so it would be lost
-            // and the process would exit 0 with the program dead in teardown —
+            // and the process would exit 0 with the program dead in teardown:
             // a death that looks successful to a shell or a CI job (issue #107).
             // Surface it where the native runtime's beans_panic does at the same
             // point: flush the program's own buffered output, report, and leave
@@ -5084,15 +5081,7 @@ class TreeInterpreter {
         return true
     }
 
-    // The body to run for `method` on a value whose runtime type is
-    // `type_name`. This walked `extends` only, and only the first one, so a
-    // default body an interface supplies was unreachable: a class reaches its
-    // interface through `implements`. The call then fell back to whatever the
-    // checker had resolved statically, which for a receiver typed as a
-    // super-interface is the bodyless declaration — and running that answered
-    // a value with no type at all, which failed on the first field read with
-    // an empty name in the message. The native backend had always been right
-    // here.
+    // Search parent classes and implemented interfaces to find the runtime method body, including inherited interface defaults.
     //
     // Breadth-first from the runtime type, so a nearer override wins over the
     // one it overrides, and both relation kinds are followed.
@@ -5146,9 +5135,9 @@ class TreeInterpreter {
              node: HirNode) -> TreeValue {
         match frame.get(node.binding_id) {
             some(value) => {
-                // references can chain — an inout taken on a binding
+                // references can chain: an inout taken on a binding
                 // a closure captured reaches the value through the
-                // shared cell — so follow them to the end
+                // shared cell, so follow them to the end
                 var current: TreeValue = value
                 for current.kind == "reference" {
                     var advanced: Option<TreeValue> =
@@ -5183,7 +5172,7 @@ class TreeInterpreter {
     // class instance renders as Name { field: value } in declaration order.
     // `path` holds the object ids whose rendering has begun and not
     // finished, so a class reference that loops back prints <cycle> instead
-    // of recurring until the stack is gone — the same guard the runtime
+    // of recurring until the stack is gone: the same guard the runtime
     // driver keeps for the native backend.
     fn render_for_string_top(value: TreeValue) -> string {
         var cycle_path: List<int> = []
@@ -5206,7 +5195,7 @@ class TreeInterpreter {
             return "err({self.render_for_string(value.data().items[0], inout cycle_path)})"
         }
         // The builtin Error prints as its message, the string a caller passed
-        // to err(...) — matched to the native backend, which reads the same
+        // to err(...): matched to the native backend, which reads the same
         // field.
         if value.kind == "error" {
             match value.data().fields.entries.get("msg") {
@@ -5252,7 +5241,7 @@ class TreeInterpreter {
     }
 
     // A struct or class instance as Name { field: value }, fields in
-    // declaration order — the order the native backend reads them — with the
+    // declaration order (the order the native backend reads them) with the
     // static fields dropped and the object marked on the render cycle_path so a
     // cycle stops at <cycle>.
     fn render_object_for_string(value: TreeValue,
@@ -5292,7 +5281,7 @@ class TreeInterpreter {
                 var pieces: List<string> = []
                 for field: HirField in declaration.fields {
                     if field.is_static { continue }
-                    // A weak field prints as <weak> without being followed —
+                    // A weak field prints as <weak> without being followed:
                     // the same non-owning edge the cycle collector leaves
                     // alone, matched to the native backend.
                     if field.is_weak {
@@ -5316,7 +5305,7 @@ class TreeInterpreter {
                 return "{simple} \{ {pieces.join(", ")} \}"
             }
             none => {
-                // No declaration to order fields by — fall back rather than
+                // No declaration to order fields by: fall back rather than
                 // invent a shape; the checker keeps this off the printable
                 // cycle_path, so this is only a diagnostic safety net.
                 return tree_value_text(value)
@@ -5961,14 +5950,7 @@ class TreeInterpreter {
         }
         if left.kind == "string" &&
            right.kind == "string" {
-            // No `+` row here on purpose. The language has no `+` for
-            // strings and the native backend never had one, so a row that
-            // joined them made the tree the only executor that answered —
-            // exactly the disagreement this pair of backends exists to
-            // catch. The checker refuses `+` on a string now, so nothing
-            // well-formed reaches this; anything that does falls to the
-            // "cannot evaluate" refusal below rather than quietly working
-            // on one backend.
+            // Keep string addition unsupported here, matching the checker and native backend.
             if node.value == "==" {
                 return TreeValue.boolean(
                     left.text == right.text)
@@ -6004,7 +5986,7 @@ class TreeInterpreter {
                 return TreeValue.boolean(
                     left.bool_data != right.bool_data)
             }
-            // `Order` on a bool is false before true — what
+            // `Order` on a bool is false before true: what
             // tree_value_less has always answered for sort, max and min.
             // Only a generic body reaches these: a bare `a < b` on two
             // bools is refused as an unordered operand. Without them the
@@ -6025,9 +6007,9 @@ class TreeInterpreter {
             }
         }
         // `Order` on a payload-free enum: compare the declaration-order tags
-        // the variants carry. Only a generic body reaches these — a bare
+        // the variants carry. Only a generic body reaches these: a bare
         // `a < b` on two enum values is refused as an unordered operand, the
-        // same rule bool has — and only a payload-free enum satisfies Order,
+        // same rule bool has, and only a payload-free enum satisfies Order,
         // so there is never a payload to break the tie. == and != went
         // through tree_value_equal above. This is the tag compare the native
         // backend emits (icmp on the i8 value or the loaded i64).
@@ -6092,7 +6074,7 @@ class TreeInterpreter {
         if node.value == "move" {
             // A move transfers ownership here, at the `move`, not at the
             // spent binding's scope exit: the value now belongs to whatever
-            // takes it — a parameter, a `let`, a field, an element — and
+            // takes it (a parameter, a `let`, a field, an element) and
             // dies with that owner. The frame slot has to let go, or the
             // host keeps the value alive behind the new owner's back and the
             // `deinit` runs at the wrong end of the program (#155).
@@ -6513,7 +6495,7 @@ class TreeInterpreter {
                     // head-and-body pair from the given offset, and joining
                     // head and body into one buffer and sending that from the
                     // offset writes exactly those bytes and takes exactly as
-                    // many of them per call — so a short write lands at the
+                    // many of them per call, so a short write lands at the
                     // same boundary the vectored entry would leave it at.
                     // Compiled programs reach the allocation-free vectored
                     // entry below the ABI; the join here is the interpreter's
@@ -7337,7 +7319,7 @@ class TreeInterpreter {
             let n: int = data.len()
             // Match beans_bytes_get_varint's own checks, in its order, so a
             // read that runs off the end reports the interpreted call site
-            // (not this compiler's line) with the runtime's exact words —
+            // (not this compiler's line) with the runtime's exact words:
             // whether it fails at `pos` or midway through a continuation.
             // Only the bounds are re-walked here; the value is still decoded
             // once, by the shared host builtin, after the read is known safe.
@@ -10055,7 +10037,7 @@ class TreeInterpreter {
             let to: int = arguments[2].int_data
             // The same range the runtime refuses, refused here first. Left
             // to the runtime, the panic would carry the position of the
-            // call below — a line in this compiler — because that is the
+            // call below (a line in this compiler) because that is the
             // only source position the runtime can see from inside a
             // `beansc run`.
             if from < 0 || to < from ||
@@ -10184,7 +10166,7 @@ class TreeInterpreter {
            arguments.len() == 3 {
             // The bounds are the program's to fail, not this interpreter's:
             // handing an out-of-range index to the host list panicked the
-            // interpreter itself — the report carried this file's position,
+            // interpreter itself: the report carried this file's position,
             // and on a brewed fiber the interpreter's own runtime abandoned
             // the fiber, so the program's join never returned. The message
             // is the native runtime's (beans_list_insert), so both backends
@@ -10374,7 +10356,7 @@ class TreeInterpreter {
             // (list_merge_sort in beans_rt.c), block for block: comparisons
             // read the live items, each merged block lands in a buffer and
             // is copied back only when the block completes. Structural
-            // identity is the point — an insertion sort gives a different
+            // identity is the point: an insertion sort gives a different
             // permutation for a predicate that is not a strict weak
             // ordering, and the two backends must agree for ANY predicate.
             // Keys are extracted first, one call per item, before the first
@@ -10515,11 +10497,7 @@ class TreeInterpreter {
             }
             if self.failed && node.value != "sort" &&
                receiver.data().items.len() == snapshot.len() {
-                // an ordinary comparator panic: put the items back. A
-                // mutation refusal leaves the list as the mutation made it
-                // — the lengths differ and there is nothing coherent to
-                // restore (rt_sort_check stands its guard down the same
-                // way).
+                // Restore the snapshot after comparator failure; mutation refusals keep their changed list because its length may no longer match the snapshot.
                 var restore: int = 0
                 for restore < snapshot.len() {
                     receiver.data().items[restore] =
@@ -10976,7 +10954,7 @@ class TreeInterpreter {
             // belongs to the caller. The tree used to cache a copy on the
             // handle instead, which made a second join answer the same value
             // where native ends the process, and kept the handle owning a
-            // value it had already handed over — so the value's deinit ran
+            // value it had already handed over, so the value's deinit ran
             // when the handle died rather than when the binding that took it
             // did. The cleared handle is the joined marker, the same one
             // detach already sets.
@@ -11110,7 +11088,7 @@ class TreeInterpreter {
                             "a brewed fiber panicked with no join to catch it: {work.panic_message}")
                     }
                     // The result nobody claimed dies here, in the
-                    // synthesized join itself — the moment
+                    // synthesized join itself: the moment
                     // beans_brew_scope_join's brew_drop_result picks. A
                     // panic above escalated before this line, leaving the
                     // result on the row for the handle's own death, which
@@ -11233,7 +11211,7 @@ class TreeInterpreter {
             match receiver.group_work {
                 some(state) => {
                     // Newest-first cancels, then join everyone and drop
-                    // every outcome — handling by discard, the spec's
+                    // every outcome: handling by discard, the spec's
                     // cancel_all contract.
                     var index: int = state.children.len()
                     for index > 0 {
@@ -11510,13 +11488,13 @@ class TreeInterpreter {
 
     // A closure used to keep its whole creation frame alive. A local in
     // that frame holding the closure back (through an object field) then
-    // made a host-level cycle the program never wrote — frame -> object
-    // -> closure -> frame — and the frame's deinits never ran, where the
+    // made a host-level cycle the program never wrote: frame -> object
+    // -> closure -> frame, and the frame's deinits never ran, where the
     // native backend runs them at end of scope. Capture only the
     // bindings the body actually names, each promoted to the shared
     // cell TreeFrame.snapshot uses, so mutation stays shared through
     // the cell and nothing else rides along. A closure that names the
-    // object holding it still cycles — the same cycle the native
+    // object holding it still cycles: the same cycle the native
     // reference counts would leak, per the TreeObjectValue note.
     fn closure(node: HirNode,
                frame: TreeFrame) -> TreeValue {
@@ -11622,7 +11600,7 @@ class TreeInterpreter {
         }
     }
 
-    // brew — evaluate the hoisted argument bindings, wrap the fabricated
+    // brew: evaluate the hoisted argument bindings, wrap the fabricated
     // closure in a stored callback, and start it on a child fiber of this
     // worker. The tree walker re-enters on the fiber's own stack when the
     // walker's current fiber parks.
@@ -11661,7 +11639,7 @@ class TreeInterpreter {
         // A plain class, aliased by the handle and the entry closure: the
         // fiber is pinned to this thread, so the entry rides the
         // same-thread LocalStoredCallback and nothing needs a lock. (A
-        // Mutex here would be held across the child's parks — the first
+        // Mutex here would be held across the child's parks: the first
         // parked child would deadlock its own join.)
         let work: TreeBrewState =
             new TreeBrewState(self, closure_value, node)
@@ -11704,14 +11682,14 @@ class TreeInterpreter {
         return result
     }
 
-    // contained — evaluate the hoisted argument bindings, then run the
+    // contained: evaluate the hoisted argument bindings, then run the
     // fabricated closure right here, on the walker's own fiber, with a catch
     // frame standing (spec/CONCURRENCY.md). No fiber is spawned and nothing
     // parks: what makes the panic catchable is the frame, not a child.
     //
     // The three moments mirror the native emission exactly. The hoists run
     // OUTSIDE the frame, so a panic while evaluating an argument is not
-    // contained — natively the enter call sits after the operands for the
+    // contained: natively the enter call sits after the operands for the
     // same reason. The frame stands across the call, which is what makes
     // panic_is_contained true for every panic raised under it and so arms
     // the tree-level unwind that runs the frames' defers and drops their
@@ -11775,7 +11753,7 @@ class TreeInterpreter {
     }
 
     // Parks until the fiber finishes, then retires the C record and closes
-    // the entry callback — exactly once.
+    // the entry callback: exactly once.
     fn tree_brew_reap(work: TreeBrewState) {
         if work.reaped { return }
         unsafe {
@@ -11798,8 +11776,7 @@ class TreeInterpreter {
         work.entry_context = 0
     }
 
-    // group.brew — the fleet flavor of tree_brew (spec/CONCURRENCY.md,
-    // F3): the same hoist-and-spawn, but the group keeps the row and the
+    // `group.brew` uses the hoist-and-spawn path; the group keeps the row and the
     // entry's tail stamps completion order and wakes the group's parked
     // waiter. Panics included: an interpreted panic still returns through
     // run(), so a panicked child gets its stamp exactly as native's fiber
@@ -11924,7 +11901,7 @@ class TreeInterpreter {
         return best
     }
 
-    // Joins one finished row and dresses its outcome as Result<T> — the
+    // Joins one finished row and dresses its outcome as Result<T>: the
     // tree mirror of the boxed join arm the native next() builds. The
     // value MOVES out of the row: taskgroup_detach takes the row off the
     // list and beans_brew_value zeroes h->value, so the arm that claimed
@@ -11956,7 +11933,7 @@ class TreeInterpreter {
     }
 
     // A group that has handed out every row empties its list, so a
-    // drained group is reusable — the reset taskgroup_detach makes.
+    // drained group is reusable: the reset taskgroup_detach makes.
     fn tree_group_retire(state: TreeTaskGroupState) {
         if state.delivered == state.children.len() {
             state.children = []
@@ -11965,7 +11942,7 @@ class TreeInterpreter {
     }
 
     // Parks the walker's own fiber as the group's one waiter. Wakes can
-    // be spurious, and cancellation stays interim-invisible — the caller
+    // be spurious, and cancellation stays interim-invisible: the caller
     // loops on its condition, the contract every std park holds to.
     // try_next, and the reason it is not just one pick: the children are on
     // this fiber's own scheduler, so a drain loop has to hand over or starve
@@ -12657,7 +12634,7 @@ class TreeInterpreter {
         } else if name == "Bytes" {
             kind = "bytes"
         } else if name == "Error" {
-            // `new Error(message)` / `new Error(message, kind)` — the same
+            // `new Error(message)` / `new Error(message, kind)`: the same
             // object `err("message", "kind")` builds, so the two spellings
             // stay one representation on this backend too.
             let message: string =
@@ -12861,7 +12838,7 @@ class TreeInterpreter {
             }
         }
         if self.failed {
-            // Construction did not finish — a field initializer or the
+            // Construction did not finish: a field initializer or the
             // initializer body panicked, and this object never became one
             // the program can be handed. The unwind releases it next; that
             // release runs no `deinit` body (#120).
@@ -12943,7 +12920,7 @@ class TreeInterpreter {
     }
 
     // Every declared field takes its slot before anything writes a value,
-    // base class first and in declaration order within each class — the
+    // base class first and in declaration order within each class: the
     // order a native build lays the same object out in. The host runtime
     // releases a map's entries back to front, so fixing the storage order
     // here is what makes the interpreter's field release order the
@@ -13002,9 +12979,9 @@ class TreeInterpreter {
 
     // One walk, base class first, that both evaluates defaults and reserves
     // the slots for the fields the initializer will write. Base first is the
-    // order a native build evaluates defaults in — an object's fields
+    // order a native build evaluates defaults in: an object's fields
     // initialize in declaration order, and a base class's fields are
-    // declared first — and it is the order they must sit in storage for the
+    // declared first, and it is the order they must sit in storage for the
     // release cascade to run them last-first.
     fn apply_declaration_defaults(
         declaration: HirDeclaration,
@@ -13175,7 +13152,7 @@ class TreeInterpreter {
         // An unsigned subject compares in u64 space, the way a range
         // pattern below already does and the way the emitter's icmp does.
         // Reading `int_data` sign-extends everything above the signed
-        // maximum, so 255u8 read as -1 and matched no literal at all —
+        // maximum, so 255u8 read as -1 and matched no literal at all:
         // the arm ran under the native backend and fell through to the
         // wildcard here, on the same program.
         if value.int_unsigned {
@@ -13215,9 +13192,7 @@ class TreeInterpreter {
             if value.int_unsigned {
                 // An unsigned subject compares in u64 space, the way the
                 // emitter's uge/ule do. Reading `int_data` instead would
-                // sign-extend everything above the signed maximum — 150u8
-                // would read as -106 and fall outside 100..=200 — and a
-                // u64 bound near 2^64 has no signed form to compare in.
+        // Sign extension would turn 150u8 into -106 and misclassify it in 100..=200; a u64 bound near 2^64 has no signed form to compare.
                 let subject: u64 = value.uint_data
                 let low: u64 =
                     tree_parse_unsigned(
@@ -13469,7 +13444,7 @@ class TreeInterpreter {
             // pushes the defaulted ones ahead of the written ones. Reserve
             // the slots in declaration order first so the record's storage
             // order is its declaration order, the way a native struct is
-            // laid out — a record's fields are released back to front.
+            // laid out: a record's fields are released back to front.
             // A union stores one active field over shared bytes, so it has
             // no per-field storage order to fix.
             match self.declaration(node.type.name) {
@@ -13915,8 +13890,8 @@ class TreeInterpreter {
         return self.expression(node, frame)
     }
 
-    // A `?` anywhere in an assignment — target receiver, index key, or the
-    // right-hand side — short-circuits the statement the way it does in every
+    // A `?` anywhere in an assignment: target receiver, index key, or the
+    // right-hand side: short-circuits the statement the way it does in every
     // other position: the function returns the propagated value. Answering
     // `next()` for a target's `?` threw the error away and ran on, so the
     // interpreter finished a function the native backend had already left.
@@ -13936,14 +13911,7 @@ class TreeInterpreter {
             return TreeExec.next()
         }
         let target: HirNode = node.children[0]
-        // Source order: a target's receiver — and an index target's key —
-        // evaluate before the right-hand side, which is the order MIR
-        // lowers and so the order a native build runs. The interpreter
-        // evaluated the value first, and a side-effecting receiver, key and
-        // value observably swapped on the backends. A field target had the
-        // second half of the same fault: the compound read re-evaluated the
-        // whole target, so `holder().n += 1` called holder() twice here and
-        // once natively.
+        // Evaluate the target receiver and index key before the RHS, matching MIR and native ordering; compound field assignment must not evaluate the target twice.
         let index_first: bool =
             target.kind == "index" &&
             target.children.len() == 2
@@ -13996,11 +13964,11 @@ class TreeInterpreter {
         var value: TreeValue = written
         if node.value != "=" {
             // A compound element read uses the hoisted receiver and key,
-            // so the index expression runs exactly once — as MIR lowers
+            // so the index expression runs exactly once: as MIR lowers
             // it, and as the native backend now does for a slice too. A
             // slice reached the expression fallback below while it could
             // not build natively; once the emitter gained the store, that
-            // fallback re-ran the whole target — a side-effecting index
+            // fallback re-ran the whole target: a side-effecting index
             // then read one cell and the hoisted store wrote another, and
             // the two backends disagreed on both the value and the call
             // count. The slice arm reads through the hoist, the same
@@ -14055,8 +14023,8 @@ class TreeInterpreter {
                 } else {
                     self.expression(target, frame)
                 }
-            // A panic from the compound operator itself — a divide by zero,
-            // a decimal overflow — reports where the operator ran. The
+            // A panic from the compound operator itself: a divide by zero,
+            // a decimal overflow: reports where the operator ran. The
             // native backend anchors an index-target assignment at the
             // index's own position (src/mir.b, target.line/col), so for
             // `v[i] /= 0` pass that original node to the numeric helper.
@@ -14168,7 +14136,7 @@ class TreeInterpreter {
             // The storage the field lives in, not a copy of it. A plain
             // read of a record hands back an independent wrapper, so a
             // write through `n.inner.x` would land in that wrapper and
-            // vanish — the same reason the element-assignment path has
+            // vanish: the same reason the element-assignment path has
             // always walked the place instead of evaluating it. It is the
             // receiver hoisted above the right-hand side, so it is walked
             // once whatever the operator is.
@@ -14315,13 +14283,7 @@ class TreeInterpreter {
         return TreeExec.next()
     }
 
-    // One turn of a `for` loop: bind the element, run the body, and say
-    // whether the loop is over. `some(exec)` is what the loop must hand back
-    // — a `return` or panic travels out through it, a `break` ends the loop
-    // cleanly — and `none` means take another turn. Every element driver
-    // below goes through this, so they cannot drift on what `break` and
-    // `return` mean, which is the kind of drift that put the list and the
-    // native backend a rule apart in the first place.
+    // Bind one loop element and run its body; return `some(exec)` for return, panic, or break, and `none` to continue.
     fn iteration_turn(node: HirNode,
                       binding: HirNode,
                       value: TreeValue,
@@ -14344,7 +14306,7 @@ class TreeInterpreter {
         return none
     }
 
-    // `for x in xs` reads the list itself, one element at a time — the same
+    // `for x in xs` reads the list itself, one element at a time: the same
     // thing the native loop does. Replacing an element is visible on the next
     // turn; a structural change (push, pop, insert, remove, clear, reverse,
     // sort) is not survivable, so the loop stops before reading again, the
@@ -14534,10 +14496,7 @@ class TreeInterpreter {
                iterable.data().items[0].int_unsigned {
                 // An unsigned range counts in u64 space and hands the body a
                 // value of the element's own width and signedness. Counting
-                // through `int_data` instead would sign-extend every endpoint
-                // above the signed maximum — `for v: u8 in 254..=255` would
-                // bind -2 and -1 — and a u64 endpoint near 2^64 has no signed
-                // representation to count through at all.
+        // Sign extension would bind -2 and -1 for `for v: u8 in 254..=255`; a u64 endpoint near 2^64 has no signed representation.
                 let bits: int = iterable.data().items[0].int_bits
                 var value: u64 = iterable.data().items[0].uint_data
                 let end: u64 = iterable.data().items[1].uint_data
@@ -14586,7 +14545,7 @@ class TreeInterpreter {
             if iterable.kind == "array" {
                 // A fixed array is a value: the loop walks the value the
                 // array had when it started, and a write to the array during
-                // the loop does not reach this copy. Both backends agree —
+                // the loop does not reach this copy. Both backends agree:
                 // examples/fixed_arrays.b pins it.
                 for value: TreeValue in iterable.data().items {
                     values.push(value)
@@ -14822,7 +14781,7 @@ class TreeInterpreter {
             }
         }
         // Drop the records now: each holds its registration frame, and
-        // that back-reference is a frame cycle — left in place it would
+        // that back-reference is a frame cycle: left in place it would
         // outlive the function and hold every deferred scope's values
         // past their deinit point ("defers first, then the frame
         // releases" is a pinned contract).
@@ -15474,15 +15433,7 @@ class TreeInterpreter {
         self.ffi_pack_argument(argv, "-o")
         self.ffi_pack_argument(argv, library_path)
         let environment: Bytes = new Bytes(0)
-        // clang writes its intermediate object to the system temp directory, so a
-        // child handed only PATH cannot compile the bridge on Windows: unlike
-        // POSIX clang, which falls back to /tmp, Windows clang has no default and
-        // dies with "unable to make temporary file". The failure surfaced as a
-        // bare "C symbol not found: fabsf" — fabsf reaches the bridge because
-        // msvcrt exports no float-suffixed math symbol for the module walk to
-        // find, and the swallowed clang error left only the generic message. The
-        // stage-0 interpreter hands clang the whole environment for this helper;
-        // forward at least PATH and the temp-dir variables it needs.
+        // Forward PATH and temp-directory variables so clang can create its intermediate object when building the interpreter bridge, including on Windows.
         self.ffi_forward_env(environment, "PATH")
         self.ffi_forward_env(environment, "TMPDIR")
         self.ffi_forward_env(environment, "TEMP")
@@ -15566,7 +15517,7 @@ class TreeInterpreter {
         var storage: List<RawPtr<u8>> = []
         unsafe {
             // The bridge indexes these slots as void**, so each one is a host
-            // pointer, not a fixed u64 — on a 32-bit host args[1] would land
+            // pointer, not a fixed u64: on a 32-bit host args[1] would land
             // in the high half of a widened slot and read as null.
             let pointers: RawPtr<RawPtr<u8> > =
                 RawPtr.alloc(arguments.len())
@@ -15674,8 +15625,8 @@ class TreeInterpreter {
                    "CFunctionPtr" {
                     // A returned pointer can land inside one of the host
                     // copies made for the pointer arguments. Map it back to
-                    // the interpreter memory the copy mirrors — exactly what
-                    // the direct word path does — before ffi_sync_and_free
+                    // the interpreter memory the copy mirrors: exactly what
+                    // the direct word path does: before ffi_sync_and_free
                     // frees the copy and the address dangles.
                     var raw_address: u64 = 0
                     if self.program.target.pointer_size() ==
@@ -15731,7 +15682,7 @@ class TreeInterpreter {
     // dlsym(RTLD_DEFAULT, ...) finds libc's symbols because libc is a shared
     // library and exports them. Windows links the CRT's math and string helpers
     // out of a static archive, so they belong to no module's export table and no
-    // walk of the loader's module list can reach them — fabsf resolves nowhere
+    // walk of the loader's module list can reach them: fabsf resolves nowhere
     // while memset, which msvcrt.dll does export, resolves fine. The C compiler
     // can still name either one, so a symbol the loader cannot find is asked for
     // the same way c_global_address asks for a thread-local: compile a shim that
@@ -15740,7 +15691,7 @@ class TreeInterpreter {
     // Resolves and caches the shared bridge library for one std.encoding
     // feature. The library is compiled once per host from the same vendored
     // sources `beansc build` links, cached content-addressed under
-    // BEANS_HOME, and reused across runs — so `beansc run` needs the C
+    // BEANS_HOME, and reused across runs, so `beansc run` needs the C
     // driver at most once per checkout or upgrade.
     fn ensure_encoding_bridge(feature: string) -> int {
         match self.encoding_handles.get(feature) {
@@ -16366,22 +16317,7 @@ class TreeInterpreter {
     // inside the process, because an address alone is not enough to call one.
     fn extern_symbol_address(
         function: HirFunction) -> int {
-        // **The program's own C is asked first, and the order is the whole
-        // point.** A package that vendors a C library — `community-libs/sqlite`
-        // ships SQLite's amalgamation — compiles it into the csrc library this
-        // interpreter loads, and its symbols must be the ones that program
-        // gets. The global namespace holds whatever else the process happens
-        // to have dragged in, and on macOS that includes `/usr/lib/libsqlite3`
-        // the moment anything links AppKit.
-        //
-        // Asked the other way round it is a wrong answer that compiles, which
-        // is the worst kind: `beansc run` on a program using both cortado and
-        // sqlite prepared its statements with the system's SQLite 3.51 and
-        // bound them with the vendored 3.53, and SQLite answered
-        // SQLITE_MISUSE — from a call whose every argument was correct. The
-        // native backend never had it, because the linker binds the vendored
-        // copy at link time; so the two engines disagreed about a program
-        // neither had any reason to refuse.
+        // Prefer symbols from the program's csrc library over process globals; this keeps packages such as SQLite bound to their vendored library version.
         let linked: int =
             self.manifest_symbol_address(
                 function.extern_name)
@@ -16475,7 +16411,7 @@ class TreeInterpreter {
         if self.failed {
             // A shim that will not link means the symbol is genuinely absent.
             // Say that, rather than blaming the bridge the caller never asked
-            // for — the message has to match what every other platform prints.
+            // for: the message has to match what every other platform prints.
             self.panic_text =
                 "runtime panic at {function.line}:{function.col}: C symbol not found: {function.extern_name}"
             return 0
@@ -16487,7 +16423,7 @@ class TreeInterpreter {
 
     // Calls one of the entries the runtime answers from inside this process.
     // The arguments are packed exactly the way the direct word path packs
-    // them — a pointer as its host address, an integer as its value — and the
+    // them (a pointer as its host address, an integer as its value) and the
     // runtime casts each word back to the type its own entry declares. That
     // last part is what makes this correct where the direct path is not even
     // usable: on a 32-bit host a word spans two argument slots, so the direct
@@ -16525,7 +16461,7 @@ class TreeInterpreter {
         // `bool` is refused along with `float`, and for a sharper reason than
         // "the invoker cannot carry it". It can: the word comes back whole.
         // But a native build would read the same call as a C `_Bool`, which
-        // Clang takes from the low byte of the returned register — so a status
+        // Clang takes from the low byte of the returned register, so a status
         // of 256, or an address ending in a zero byte, is `false` there and
         // `true` here. Every one of these entries returns a whole `long long`;
         // a declaration that narrows it to one bit is wrong, and the two
@@ -16610,7 +16546,7 @@ class TreeInterpreter {
             // 0 cannot arrive here: the caller only takes this path after the
             // runtime answered this name's own address. -1 is the runtime
             // refusing the call, because the declaration in the program does
-            // not fit the entry it names. Refusing is the point — routing it
+            // not fit the entry it names. Refusing is the point: routing it
             // to a compiled shim instead would call the same function with the
             // wrong words wherever a C compiler happens to exist.
             self.ffi_sync_and_free(bridges)
@@ -16642,8 +16578,8 @@ class TreeInterpreter {
     fn call_extern(
         function: HirFunction,
         arguments: List<TreeValue>) -> TreeValue {
-        // The runtime's own entries — the fiber-parking socket calls,
-        // std.term's bridge, the display-width table — are called inside this
+        // The runtime's own entries: the fiber-parking socket calls,
+        // std.term's bridge, the display-width table: are called inside this
         // process whatever their shape. Everything below this line exists to
         // reach a symbol the dynamic loader owns: the word ABI for the shapes
         // it covers, and a C shim written and compiled with Clang at run time
@@ -16927,7 +16863,7 @@ class TreeInterpreter {
                 // entry in place makes the caller's argument vehicle a second
                 // owner that outlives the callee, and the value's `deinit`
                 // then runs when the *calling expression* finishes rather
-                // than when the callee returns — a whole frame late once the
+                // than when the callee returns: a whole frame late once the
                 // callee forwards it on (#155). An `inout` parameter is the
                 // opposite case and keeps its entry: it aliases the caller's
                 // storage on purpose and owns nothing.
@@ -16969,7 +16905,7 @@ class TreeInterpreter {
     // Static fields and singletons live for the whole process: nothing
     // releases them, so nothing runs a deinit for what they still hold
     // (spec/SYNTAX.md, issue #74). The walker models that the only way a
-    // reference-counted host can — by parking its singleton state in a
+    // reference-counted host can: by parking its singleton state in a
     // static of the compiler's own, which the compiler never tears down for
     // exactly the same reason. The interpreted values stay reachable to the
     // last instruction of the process, so their host wrappers never die and

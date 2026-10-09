@@ -1,4 +1,4 @@
-// The nasty-condition matrix for std.net — the conditions real networks
+// The nasty-condition matrix for std.net, the conditions real networks
 // produce and test suites usually skip: partial IO under load, a connect
 // refused via SO_ERROR, a reset mid-write, half-close, zero-length and
 // truncated datagrams, resolver candidate order, backlog overflow, and
@@ -153,7 +153,7 @@ fn check_connect_refused() {
 // ---- 3. reset mid-write --------------------------------------------------------
 //
 // The peer accepts and closes without reading. Once the RST lands, a write
-// must report kind `reset` — EPIPE and ECONNRESET both map there — rather
+// must report kind `reset`, EPIPE and ECONNRESET both map there, rather
 // than pretending the bytes went somewhere.
 fn check_reset_mid_write() {
     match net.TcpListener.bind("127.0.0.1", 0) {
@@ -199,7 +199,7 @@ fn check_reset_mid_write() {
 // ---- 4. half-close is a direction, not a hangup -------------------------------
 //
 // shutdown_write says "done sending". The peer's read sees EOF, but the
-// reverse direction still carries a reply — the whole point of half-close.
+// reverse direction still carries a reply, the whole point of half-close.
 fn check_half_close() {
     match net.TcpListener.bind("127.0.0.1", 0) {
         ok(listener) => {
@@ -297,7 +297,7 @@ fn check_zero_length_datagram() {
 // ---- 6. datagram truncation is silent and bounded ------------------------------
 //
 // A datagram larger than the buffer fills the buffer and drops the rest on
-// every platform — Winsock dresses it as WSAEMSGSIZE and the runtime strips
+// every platform, Winsock dresses it as WSAEMSGSIZE and the runtime strips
 // that back to the POSIX behaviour. `max` is the protocol's frame bound.
 fn check_udp_truncation() {
     match net.UdpSocket.bind("127.0.0.1", 0) {
@@ -374,7 +374,7 @@ fn check_localhost_order() {
 
 // A match binding borrows its Result's payload, so owning the stream out of
 // a fallible connect takes the `?` road through a helper. The caller's list
-// keeps the probe sockets alive — and their backlog slots occupied.
+// keeps the probe sockets alive, and their backlog slots occupied.
 fn probe_backlog_slot(port: int, keep: List<net.TcpStream>) -> Result<bool> {
     let pending: net.TcpStream =
         net.TcpStream.connect_timeout("127.0.0.1", port, 300)?
@@ -422,7 +422,7 @@ fn check_backlog_overflow() {
             })
             // Drain whatever the queue holds until the visitor's greeting
             // arrives; the queued probes are all closed by their deinit when
-            // `parked` goes away, so reads may see resets — also fine.
+            // `parked` goes away, so reads may see resets, also fine.
             var greeted: bool = false
             var rounds: int = 0
             for !greeted && rounds < 8 {

@@ -6,14 +6,14 @@
 // instantiation on the native side and interpreted from one body with a type
 // frame on the other, so a promoted parameter is exactly the kind of thing the
 // two get to answer differently: which body runs, what the result type is, and
-// — because the payload here is a reference-counted class — when the value it
+// The payload is a reference-counted class, so the test also checks when the value it
 // builds is released.
 //
 // Five Loud values are built and five released: one through `wrap`, one
 // through a static that reaches another static, one held in the `List<T>` a
 // static returns, one moved through a move-only parameter, and one copied into
 // both fields of a generic struct's factory result. `wrap` is also called at a
-// second instantiation, `Holder<int>`, which builds nothing — that one is here
+// second instantiation, `Holder<int>`, which builds nothing, that one is here
 // so the two instantiations of one static exist side by side. The markers pin
 // the count, so a promoted parameter that made a factory run twice on BOTH
 // backends would still fail here, which a backend-to-backend diff cannot see.

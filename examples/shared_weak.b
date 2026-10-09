@@ -1,11 +1,11 @@
 /*
-Shared<T> and Weak<T> — many owners, and an observer that owns nothing.
+Shared<T> and Weak<T> provide shared ownership and non-owning observers.
 
 Shared<T>:
   A thread-safe shared-ownership handle around one control block. Copying the
   handle (`let alias = shared`) adds a strong owner; the value lives until the
   last strong handle dies. `get()` returns a copy of the value. Shared<T> and
-  Weak<T> are Send and Sync only when T is — which is what lets `number` below
+  Weak<T> are Send and Sync only when T is. This lets `number` below
   cross into a spawned thread.
 
 Weak<T>:
@@ -16,7 +16,7 @@ Weak<T>:
   `expired()` asks the same question without taking a handle.
 
 Use Shared when:
-  - A value has no single obvious owner — a cache, a config, a connection
+  - A value has no single obvious owner, such as a cache, config, or connection
     pool read by several places.
   - You need to hand a value to another thread and both sides keep using it.
   - You need the value dropped exactly once, whenever the last user is done.
@@ -30,7 +30,7 @@ Use Weak when:
     not keep the target alive.
   - You are caching something and would rather see it disappear than pin it.
 
-Don't use Shared when a single owner is obvious — Box<T> is cheaper, no atomic
+Use Box<T> when one owner is sufficient; it avoids atomic reference counts.
 refcount. And for mutation across threads, reach for Mutex<T>; Shared gives you
 shared ownership, not a lock.
 

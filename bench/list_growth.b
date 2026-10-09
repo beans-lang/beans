@@ -3,7 +3,7 @@
 // O(n) remove, so a list that reloaded its header from the heap on every
 // push went unmeasured (beans #77). Each round builds a list from empty, so
 // the growth path is walked ~16 times per round, then drains it with a
-// reduction body — the shape whose per-operation change-count store used to
+// reduction body, the shape whose per-operation change-count store used to
 // stop the vectorizer.
 import std.io
 import std.os

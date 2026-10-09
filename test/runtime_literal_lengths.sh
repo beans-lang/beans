@@ -1,29 +1,6 @@
 #!/usr/bin/env bash
-# A string literal written in runtime C must never be labelled with a byte
-# count that is not its own.
-#
-# Beans strings carry an explicit length and may hold NUL, so every runtime
-# entry that takes bytes takes the count beside them — `str_make(p, n)`,
-# `rt_write(fd, p, n)`, `show_out(c, p, n)`. When the bytes are a literal the
-# count used to be typed out by hand, and one of them was wrong: issue #160,
-# `str_make("receiver type does not match", 27)` for a 28-byte message, so the
-# native runtime returned 27 bytes of it and the tree interpreter — which keeps
-# its own copy of that string — printed all 28. Same program, same error code,
-# two different strings.
-#
-# Two directions matter and both are checked here. A count that is too short
-# truncates; a count that is too long reads past the literal, which is a
-# heap-buffer-overread that nothing else in this tree would catch, because the
-# emitter writes no sanitizer attributes and generated code is never built
-# under ASan.
-#
-# `BEANS_LIT(s)` / `str_lit(s)` in runtime/beans_rt.c derive the count from the
-# literal, so converted call sites cannot be wrong at all. This gate covers
-# what a macro cannot reach: the bridges, which are separate translation units
-# with their own headers, libc calls like memcmp, and any new hand-written
-# count somebody adds tomorrow.
-#
-# Vendored sources (runtime/*/vendor/**) are upstream code and are not checked.
+# Check runtime literal lengths across bridges and authored C sources for truncation and overreads.
+
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -50,10 +27,10 @@ if len(SOURCES) < 15:
 
 VERBOSE = "-v" in sys.argv[1:]
 
-# Callees whose argument after a string literal is NOT that literal's length.
-# Everything else is checked, so a new (bytes, length) entry is covered the day
-# it is written — the burden is on the exception, not on the check. Each name
-# here must still appear in the sources, so the list cannot quietly rot.
+# Each exception must name a real callee and explain why its argument is not a byte length.
+
+
+
 NOT_A_LENGTH = {
     "beans_panic":   "line and column of the panic site",
     "REFLECT_NAME":  "the kind value the type name maps to",
@@ -239,11 +216,11 @@ KEYWORDS = {"if", "for", "while", "switch", "return", "sizeof", "defined",
             "do", "else", "case"}
 
 failures, checked, exempted, seen_names = [], 0, 0, set()
-# How many argument lists holding a string literal the scan actually walked.
-# `checked` is allowed to reach zero — every remaining count could legitimately
-# be converted to BEANS_LIT one day — so it cannot stand in for "the scan
-# worked". This can: it stays in the thousands whatever the call sites do, and
-# a parser that stopped understanding the sources drops it to nothing.
+# Keep the walked-argument count as an independent guard when all counts migrate to BEANS_LIT.
+
+
+
+
 walked = 0
 
 for path in SOURCES:

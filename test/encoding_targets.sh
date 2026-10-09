@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Cross-target verification for the std.encoding bridges: compile all three
 # for a target, link them with the plain C driver, and RUN a C smoke program
-# that exercises every bridge — including the byte-order-sensitive paths.
+# that exercises every bridge, including the byte-order-sensitive paths.
 #
 # Each target that cannot be reached from this machine skips with the exact
 # reason. Nothing here reports a target as working without having executed
@@ -247,7 +247,7 @@ if run_target big-endian; then
 fi
 
 # The C smoke program covers the bridges, but std.encoding.binary is pure
-# Beans and has no bridge — its byte-order handling is compiled Beans code,
+# Beans and has no bridge, its byte-order handling is compiled Beans code,
 # so it has to be executed as a Beans program on the big-endian machine.
 # beansc cross-emits LLVM IR for s390x (no sysroot needed), and the
 # container's own clang turns that into a native binary beside the runtime.

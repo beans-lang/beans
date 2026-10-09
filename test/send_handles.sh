@@ -14,9 +14,9 @@ diff -u test/cases/send_handles.out "$tmp/native.out"
 
 echo "ok cross-thread move and destruction for Send standard-library handles"
 
-# A Mutex owns what it locks. For a move-only value that is the whole story —
+# A Mutex owns what it locks. For a move-only value that is the whole story,
 # the constructor consumes it and with_lock hands out a borrow nothing may
-# store — so the Mutex is Send and Sync without the class promising anything.
+# store, so the Mutex is Send and Sync without the class promising anything.
 # The counters are exact because the lock serializes; a hole in the rule shows
 # up as a wrong total, not as a flake.
 ./build/beansc run test/cases/mutex_confined.b >"$tmp/mutex.interp"

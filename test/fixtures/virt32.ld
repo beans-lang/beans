@@ -1,10 +1,10 @@
-/* RISC-V `virt` under QEMU, booted with -bios none.
- *
- * One region: QEMU loads the ELF into DRAM at 0x80000000 and jumps to the entry point, so
- * nothing has to be copied out of flash. The __data_* symbols still exist because the
- * startup code is shared with the Cortex-M board — here the copy is a no-op, which costs
- * one comparison and keeps the two boards on one code path.
- */
+/* QEMU virt loads the ELF at 0x80000000; shared startup's .data copy is a no-op. */
+
+
+
+
+
+
 MEMORY {
     DRAM (rwx) : ORIGIN = 0x80000000, LENGTH = 64M
 }

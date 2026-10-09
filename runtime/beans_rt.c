@@ -1,11 +1,10 @@
-// beans native runtime — reference-counted heap + cycle collector.
+// beans native runtime: reference-counted heap + cycle collector.
 // Every heap value has a 16-byte header just before its payload:
 //   { long long rc, long long meta }   (rc ops turn atomic at first spawn)
 // meta bits 0-2 = kind, bits 3-60 = per-kind shape payload:
 //   0 leaf | 1 fixed (bitmask of pointer slots) | 2 list (elem_ptr)
 //   3 map (key_ptr | val_ptr<<1) | 4 chan (elem_ptr) | 5 mutex (inner_ptr)
-//   6 OS resource (shape bit 0: 0 = file — drop closes the fd,
-//                               1 = mmap — drop unmaps)
+//   6 OS resource (shape bit 0: 0 = file, drop closes the fd; 1 = mmap, drop unmaps)
 //   7 arena (elem_ptr)
 // meta bits 61-62 = collector color, bit 63 = in the root buffer.
 // String constants carry an immortal header emitted by the compiler.
@@ -18,9 +17,7 @@
 // start, each Beans thread owns a private root buffer and trial-deletes only
 // its thread-local graph. Publication barriers mark graphs that cross worker
 // boundaries and keep later shared pointer writes out of local collection.
-// That bounds local cycles without stopping unrelated workers or adding
-// safepoints to their loops. Everything is iterative — a million-node ring
-// must not overflow the C stack.
+// Local collection does not stop unrelated workers or add loop safepoints; its traversal is iterative.
 // ---- runtime profile -------------------------------------------------------
 //
 // BEANS_RT_PROFILE decides how much of this file exists. The levels below are
@@ -35,8 +32,7 @@
 //   1 freestanding  no operating system at all: memory and output come from
 //                   hooks, and threads are gone with the rest
 //
-// The core — reference counting, the cycle collector, strings, lists, maps and
-// bytes — is in every profile, because none of it needs an OS.
+// Reference counting, collection, and core containers are available in every runtime profile.
 #ifndef BEANS_RT_PROFILE
 #define BEANS_RT_PROFILE 3
 #endif
@@ -66,7 +62,7 @@
 // Fibers need real threads, mmap guard pages, and a scheduler to run on;
 // restricted profiles and WASI build without them. The checker refuses
 // `brew` and every parking operation there, so checked code never reaches
-// this gate — it exists so those builds stay honest at link time.
+// this gate: it exists so those builds stay honest at link time.
 #define BEANS_RT_FIBERS (BEANS_RT_PROFILE >= BEANS_RT_MINIMAL && !BEANS_RT_WASI)
 #if BEANS_RT_FIBERS
 #include "beans_fiber.h"
@@ -77,7 +73,7 @@
 // call sites pay a few register saves until it is. Generated IR never names
 // the convention, so dropping it here cannot mismatch a caller.
 //
-// 32-bit x86 (`__i386__`, a clang *target* predefine — this reads the target
+// 32-bit x86 (`__i386__`, a clang *target* predefine: this reads the target
 // being compiled for, not the host) is here for a harder reason: LLVM's i686
 // backend segfaults in the CFI-insertion pass on a `preserve_most` function
 // (it crashes lowering `beans_do_deinit`). PowerPC is excluded too: the
@@ -94,51 +90,18 @@
 #define BEANS_DEINIT_ATTR __attribute__((noinline, cold, preserve_most))
 #endif
 
-// The container structs (BList, BArena, BMap) keep a `{ptr data; i64 len, cap;
-// ...}` prefix that generated code reads by *hardcoded byte offset* — len at 8,
-// cap at 16 — because `list.len()`/`map.len()` are direct field loads in the IR.
-// That is only right when the i64 fields sit at 8-byte offsets, which holds on
-// every target except 32-bit x86: there a pointer is 4 bytes and `long long`
-// aligns to 4, so `len` would land at offset 4 and every direct load would read
-// garbage (it did — a bogus length then drove out-of-bounds loops into SIGSEGV).
-// Forcing the i64 fields to 8-byte alignment pads the pointer to 8 on i686 and
-// makes the prefix layout identical on every target, so the IR's fixed offsets
-// stay correct without the compiler ever emitting a target-specific offset. It
-// is a no-op wherever `long long` is already 8-aligned (all 64-bit targets, and
-// wasm/ARM/RISC-V 32-bit, whose ABIs align it to 8).
+// Align i64 fields to 8 so generated IR's len/cap loads at byte offsets 8/16 work on 32-bit x86; other supported targets already align long long to 8.
 #define RT_LEN8 __attribute__((aligned(8)))
 
-// A source literal and its own byte count, as the two arguments every
-// (bytes, length) runtime API takes. Beans strings carry an explicit length
-// and may hold NUL, so those APIs cannot fall back on strlen — the count has
-// to come from the call site, and for years it came from a human counting
-// characters. One of those counts was wrong (`beans_reflect_error_message`
-// case 3 said 27 for a 28-byte message), and the native runtime then printed
-// a different string from the tree interpreter for the same error. Deriving
-// the count from the literal removes the whole class: there is no number left
-// to get wrong. The `"" s` concatenation is the guard — it fails to compile on
-// anything that is not a string literal, so `sizeof` can only ever be the
-// literal's own array size. Embedded NULs are counted, which is the point.
+// Beans strings carry explicit byte lengths and may contain NUL; `"" s` restricts this compile-time byte count to literals, including embedded NUL bytes.
 #define BEANS_LIT(s) ("" s), (long long)(sizeof(s) - 1)
 // The same rule for the common case: a string built straight from a literal.
 #define str_lit(s) str_make(BEANS_LIT(s))
 
-// Ask glibc for POSIX 2008 before anything is included. Without it, compiling with
-// `-std=c11` rather than `-std=gnu11` sets __STRICT_ANSI__, and glibc then declares only
-// ISO C — `strdup` and `lstat` disappear and the filesystem section stops compiling.
-// macOS hides this: Darwin's headers expose POSIX regardless, so a Linux-only failure sat
-// unnoticed until the container gate was re-run. Defining _DEFAULT_SOURCE alone is
-// deliberate; adding _POSIX_C_SOURCE would *suppress* the BSD extras it implies.
+// Define before headers so strict -std=c11 builds expose glibc POSIX/BSD APIs; _POSIX_C_SOURCE would hide _DEFAULT_SOURCE's BSD extensions.
 #define _DEFAULT_SOURCE 1
 
-// Large-file support on 32-bit Linux, which has the same must-precede-every-
-// include rule. The default `off_t` there is 32-bit and `readdir` returns a
-// 32-bit `struct dirent`, so an inode number past 2^32 — routine on overlayfs
-// and tmpfs, i.e. most container filesystems — overflows the conversion and
-// `readdir` returns NULL. `Dir.list` then came back empty and file offsets
-// truncated. LFS makes `readdir` resolve to `readdir64`, `off_t` 64-bit and
-// `stat` to `stat64`. 64-bit Linux already has all of this, so scope it to
-// ILP32 to keep those builds byte-identical.
+// Enable before headers on 32-bit Linux so off_t, readdir, and stat use 64-bit offsets and inode values; 64-bit Linux already does.
 #if defined(__linux__) && !defined(__LP64__)
 #define _FILE_OFFSET_BITS 64
 #endif
@@ -179,10 +142,8 @@
 #include <sys/event.h>
 #endif
 #endif
-// stdarg, stdint, stddef and limits are *freestanding* headers: the compiler provides
-// them with no sysroot at all. Everything else here is libc, and a real freestanding
-// target — wasm32 without a sysroot, a bare-metal board — does not have the files, let
-// alone the functions. Removing the calls was not enough; the includes had to go too.
+// stdarg, stdint, stddef, and limits are compiler-provided even without a sysroot.
+// Hosted headers and calls are excluded from freestanding builds.
 #include <limits.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -213,14 +174,14 @@
 #endif
 #if defined(_WIN32)
 // _setmode/_fileno live here. The CRT otherwise opens the standard streams in
-// text mode and rewrites \n to \r\n, which no POSIX platform does — it would
+// text mode and rewrites \n to \r\n, which no POSIX platform does: it would
 // break byte-identical differential testing, and worse, silently corrupt
 // binary output a program writes to stdout.
 #include <io.h>
 // Every hosted Windows profile needs Win32, not just the full one: the minimal
 // tier already sleeps through Sleep() and reads the environment through
 // GetEnvironmentVariable. This used to be included with the filesystem shim far
-// below, which compiled on the full profile and nowhere else — `--runtime
+// below, which compiled on the full profile and nowhere else: `--runtime
 // minimal` for Windows failed on undeclared Sleep and DWORD.
 // WIN32_LEAN_AND_MEAN must stay attached to it: without it windows.h drags in
 // the original winsock.h, which collides with the winsock2.h the sockets
@@ -428,14 +389,14 @@ extern char** environ;
 // to implement it:
 //
 //   void* beans_host_alloc(unsigned long long size, unsigned long long align)
-//       Returns `size` bytes, **zeroed**, aligned to at least `align` — always a
+//       Returns `size` bytes, **zeroed**, aligned to at least `align`: always a
 //       power of two, never less than 16 (the reference-count header's own
 //       alignment, so the payload after it lands where the compiler expects).
 //       `size` is never 0. NULL means out of memory and the runtime panics.
 //
 //   void* beans_host_realloc(void* block, unsigned long long size)
 //       Grows or shrinks, moving if it must, preserving the bytes that fit.
-//       Bytes beyond the old size are **not** required to be zero — the runtime
+//       Bytes beyond the old size are **not** required to be zero: the runtime
 //       writes them before reading. NULL means out of memory.
 //
 //   void beans_host_free(void* block)
@@ -454,7 +415,7 @@ extern char** environ;
 //       Floating-point text, which cannot be done in a few lines correctly.
 //       mode 'g' asks for `places` significant digits, 'f' for `places` decimals.
 //       A program that never prints or parses a float never calls these, so the
-//       weak defaults below panic rather than being absent — a missing symbol
+//       weak defaults below panic rather than being absent: a missing symbol
 //       would fail the link for programs that do not need it.
 //
 //       They come as a pair. A bare `{x}` asks for the shortest text that reads
@@ -482,7 +443,7 @@ extern char** environ;
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 // Hosted: the hooks exist and are weak, so a program can replace any of them,
 // but the runtime itself uses libc directly. That keeps the generated code for
-// the default profile exactly what it was — a hook on the allocation hot path
+// the default profile exactly what it was: a hook on the allocation hot path
 // would cost every program to serve the one that overrides it.
 #ifdef BEANS_RT_ALLOC_FAILTEST
 // Test-only allocation-failure injection (test/oom.sh). NOT compiled into any
@@ -521,8 +482,8 @@ __attribute__((weak)) void* beans_host_alloc(unsigned long long size,
 #if defined(_WIN32)
     // MSVCRT has no posix_memalign, and _aligned_malloc's blocks may not be
     // handed to plain free(), which this hook's contract requires. The runtime
-    // itself never asks this hook for more than 16 on Windows — beans_raw_alloc
-    // carries its own wrapped representation there — so anything stricter is
+    // itself never asks this hook for more than 16 on Windows: beans_raw_alloc
+    // carries its own wrapped representation there, so anything stricter is
     // honestly refused rather than quietly under-aligned.
     if (align <= 16) return calloc(1, (size_t)size);
     return NULL;
@@ -594,16 +555,16 @@ __attribute__((weak)) int beans_host_parse_f64(const char* text, double* out,
 
 #if defined(_WIN32) && BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 // The runtime owns stdout buffering on Windows. Differential testing diffs
-// the two streams merged, and glibc's discipline — a redirected stdout is
+// the two streams merged, and glibc's discipline: a redirected stdout is
 // fully buffered, so a mid-run stderr line lands before stdout's exit-time
-// flush — is part of what "byte-identical" means. MSVCRT's setvbuf would be
+// flush: is part of what "byte-identical" means. MSVCRT's setvbuf would be
 // the natural spelling, but Wine's msvcrt does not reliably honour it, so
 // the buffer lives here where no CRT can reinterpret it. A console stays
 // write-through: buffering an interactive prompt would be correctness for
 // the test harness at the price of a broken user experience.
 // The buffer is process-wide, so every thread that prints shares it. An SRWLOCK
 // rather than a pthread mutex: it is statically initializable, needs no
-// teardown, and an uncontended acquire costs a few instructions — which matters
+// teardown, and an uncontended acquire costs a few instructions, which matters
 // because this is on the path of every println. Threads print concurrently in
 // examples/threads.b; without the lock two of them race in realloc and memcpy
 // and the result is lost output or a corrupted heap.
@@ -628,7 +589,7 @@ static void win_out_flush(void) {
 
 #if defined(_WIN32) && BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 // Beans strings are UTF-8. The A-suffixed Windows functions decode their
-// arguments with the process ANSI code page, which is almost never UTF-8 — so a
+// arguments with the process ANSI code page, which is almost never UTF-8, so a
 // path, argument or environment value outside ASCII either turns to mojibake or
 // fails outright. Every Windows call that takes text converts here, once, at the
 // boundary, and uses the W form. Both return malloc'd memory the caller frees;
@@ -684,7 +645,7 @@ static void rt_write(int stream, const char* bytes, unsigned long long len) {
         char* grown = realloc(win_out_buf, (size_t)next);
         if (!grown) {
             // No room to buffer this piece. Drain what is already held and
-            // write it straight through rather than dropping it — output that
+            // write it straight through rather than dropping it: output that
             // vanishes under memory pressure is worse than output that
             // interleaves differently.
             win_out_flush_locked();
@@ -708,7 +669,7 @@ static void rt_write(int stream, const char* bytes, unsigned long long len) {
 
 // The one flush anything outside this file should call. On Windows the pending
 // stdout bytes are in the buffer above, not in stdio's, so a bare fflush(NULL)
-// drains nothing — which is exactly how the interpreter's panic line ended up
+// drains nothing, which is exactly how the interpreter's panic line ended up
 // ahead of the program's own output on real Windows and nowhere else.
 void beans_out_flush(void) {
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
@@ -720,7 +681,7 @@ void beans_out_flush(void) {
 }
 
 // Unzeroed allocation, for buffers the caller fills immediately. Separate from
-// rt_zalloc so the hosted profiles keep using malloc where they always did — a
+// rt_zalloc so the hosted profiles keep using malloc where they always did: a
 // blanket calloc would zero every list growth for the benefit of nobody.
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 #ifdef BEANS_RT_ALLOC_FAILTEST
@@ -734,40 +695,9 @@ static void* rt_alloc(unsigned long long n) {
 static void* rt_alloc(unsigned long long n) { return beans_host_alloc(n, 16); }
 #endif
 
-// ---- large-block allocator: a freed big buffer must leave RSS --------------
-//
-// macOS keeps MADV_FREE pages resident until the whole machine is under
-// pressure, so a one-megabyte response body that has been freed still shows in
-// `ps`; only munmap hands the address space back at once. So a Bytes or List
-// backing whose byte size is past a threshold — the shape a large response
-// body has — is mapped, not malloc'd, and freeing it returns its pages then and
-// there.
-//
-// There is no per-block header and no size hidden anywhere: a mapped block is
-// exactly its page-rounded byte length, and the mmap/malloc choice is a pure
-// function of the byte size. So the caller, which always knows a backing's byte
-// size (its cap times its element stride), passes that size to the free and the
-// realloc — and rt_big_free's `byte_size >= threshold` test lands on exactly
-// the branch rt_big_alloc took, with no guessing and no per-allocation cost. A
-// below-threshold backing is a plain calloc/malloc/realloc/free, byte for byte
-// what it was, so the allocation-heavy self-build sees no new work on the small
-// blocks that are almost all of it.
-//
-// That purity is load-bearing, which is why a failed mapping is a refusal and
-// never a heap fallback: a block at or past the threshold that was not mapped
-// would be handed to munmap by its free.
-//
-// Only the full hosted profile on a real POSIX maps. Minimal and freestanding
-// are one thread with no mmap to assume; Windows keeps malloc, whose RSS is not
-// the MADV_FREE problem this solves. In those builds the four are a
-// pass-through to the plain rt_* allocators (the size arguments ignored), so
-// they stay byte-for-byte what they were.
-//
-// Under a sanitizer the map path is off too: ASan and its kin instrument
-// malloc/free but pass raw mmap through, so a mapped block would lose the
-// redzones and use-after-free tracking a plain one has. Falling back to the
-// plain allocators there keeps a big block as instrumented as a small one; the
-// map path's own arithmetic is covered by the non-sanitized RSS gate instead.
+// Map large POSIX backings so munmap returns pages immediately; macOS may retain MADV_FREE pages in RSS.
+// Allocation choice depends only on byte size, which callers pass to free and realloc; mapping failure never falls back to malloc.
+// Other profiles and sanitizer builds use the existing allocator path so platform support and memory instrumentation remain intact.
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
 #define RT_BIG_SANITIZED 1
 #elif defined(__has_feature)
@@ -780,47 +710,8 @@ static void* rt_alloc(unsigned long long n) { return beans_host_alloc(n, 16); }
 #define RT_BIG_SANITIZED 0
 #endif
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL && !defined(_WIN32) && !defined(__wasm__) && !RT_BIG_SANITIZED
-// 256 KB. Below the threshold a block stays on malloc, whose free reuses a
-// warm, already-faulted region; at or above it a block is mapped, so freeing
-// one returns its pages.
-//
-// The threshold is a trade, not a free win, and the number is where the trade
-// is worth making. A mapped block is fresh address space every time, so each
-// allocation faults its pages in one by one where malloc handed back memory
-// that was already resident. Churning one — allocate, write, free, repeat, the
-// shape a server has with a per-request body — measured at 50k iterations:
-//
-//     buffer     write        malloc   mapped
-//     101 KB     all of it    0.216s   (stays on malloc at both thresholds)
-//     200 KB     all of it    0.392s   1.073s     2.7x
-//     247 KB     all of it    0.525s   1.286s     2.4x
-//     1 MiB      all of it    0.235s   0.563s     2.4x   (6k iterations)
-//     247 KB     ends only    0.070s   0.247s     3.5x
-//
-// The "ends only" row is the syscall pair alone; the rest of the "all of it"
-// gap is the page faults. So every size above the threshold pays roughly 2.4x
-// to be churned, and the threshold decides which sizes that is.
-//
-// 256 KB, not lower, because a buffer that grows by doubling lands on 131072
-// on its way to anything over 64 KB, and that step is everywhere — a 128 KB
-// threshold would map it and make every such buffer 2.7x more expensive to
-// churn. The first doubling step 256 KB captures is 262144, which is where a
-// 247 KB response body's backing actually ends up, so the /records-sized body
-// this exists for is mapped and returns its pages at this threshold anyway.
-// Below it, a 101 KB /echo body and the compiler's own allocations are
-// untouched: the self-build measures 7.29-7.41s with the map path and
-// 7.31-8.05s without it, which is the same number.
-//
-// An earlier revision of this file used 128 KB on the strength of the 101 KB
-// row alone — a size that stays on malloc at every candidate threshold, so the
-// measurement could not see the cost it was choosing.
-//
-// The churn cost is removable, and this does not remove it: a small bounded
-// cache of freed mappings would let a churning caller reuse one instead of
-// unmapping and re-faulting, at the price of holding that many blocks
-// resident. It needs a size-keyed free list and a lock on a path that has
-// neither today, and it must re-zero what it hands to rt_big_zalloc, so it is
-// a change with its own measurement to make, not a line to add here.
+// The 256 KiB threshold avoids mapping the common 128 KiB doubling step while covering 247 KiB response backings.
+// Mapping costs more for repeated writes, so smaller allocations remain on malloc.
 #define RT_BIG_MMAP_MIN (256u * 1024u)
 
 static size_t rt_big_page(void) {
@@ -838,7 +729,7 @@ static size_t rt_big_maplen(unsigned long long n) {
 // BEANS_RT_BIG_NOMMAP set, every large-block mapping fails, so the refusal
 // paths below are reachable without exhausting the machine's address space.
 // It is compiled out of a release build for the same reason the rest of the
-// injection is — an inherited environment variable must not be able to change
+// injection is: an inherited environment variable must not be able to change
 // a shipped binary's allocator.
 static int rt_big_nomap(void) {
     static int state = -1;            // benign race: every writer stores the same value
@@ -865,20 +756,17 @@ static void* rt_big_alloc_impl(unsigned long long n, int zero) {
         // No heap fallback here, on purpose. rt_big_free decides munmap-or-free
         // from the byte size alone, so a block at or past the threshold has to
         // BE a mapping: a malloc'd one reaching munmap unmaps live heap, and a
-        // large malloc is page-aligned often enough on macOS that the unmap
-        // would succeed and corrupt silently rather than fail with EINVAL. A
-        // mapping of this size failing means the address space is gone, where
-        // malloc's own large path — mmap on both glibc and macOS — would fail
-        // too, so the honest answer is the refusal every caller already turns
-        // into the documented "out of memory" panic.
+        // large malloc is page-aligned often enough on macOS that munmap could
+        // succeed and corrupt the heap. If this mapping fails, the allocator's
+        // own large mmap path would fail too, so return allocation failure.
         return p == MAP_FAILED ? NULL : p;
     }
     return zero ? rt_zalloc(n) : rt_alloc(n);
 }
 static void* rt_big_zalloc(unsigned long long n) { return rt_big_alloc_impl(n, 1); }
 static void* rt_big_alloc(unsigned long long n)  { return rt_big_alloc_impl(n, 0); }
-// byte_size is the block's allocated byte length — cap times stride for a List,
-// cap for a Bytes — the same number rt_big_alloc was given for it.
+// byte_size is the block's allocated byte length: cap times stride for a List,
+// cap for a Bytes. It is the size passed to rt_big_alloc.
 static void rt_big_free(void* p, unsigned long long byte_size) {
     if (!p) return;
     if (byte_size >= RT_BIG_MMAP_MIN) munmap(p, rt_big_maplen(byte_size));
@@ -895,13 +783,9 @@ static void* rt_big_realloc(void* p, unsigned long long old_bytes,
     // release the old mapping or block. realloc does not zero grown bytes, so
     // neither does this; a caller that grows a list fills the new tail itself.
     //
-    // The overlap is min(old, new), so this is also a correct shrink, including
-    // one that crosses back below the threshold onto the heap. No caller shrinks
-    // a backing — bytes_grow, beans_bytes_resize and beans_list_reserve all
-    // return early when the request fits, and push and insert only double — so
-    // the direction that runs is the grow, which test/cases/big_realloc.b drives
-    // through this arm from both sides of the threshold. Writing the general
-    // realloc rather than a grow-only one keeps that the caller's choice.
+    // The overlap is min(old, new), so shrinking across the threshold is also
+    // correct. Current callers grow backing storage; push and insert double
+    // capacity, while resize and reserve return early when the request fits.
     void* np = rt_big_alloc(new_bytes);
     if (!np) return NULL;
     unsigned long long copy = old_bytes < new_bytes ? old_bytes : new_bytes;
@@ -910,17 +794,11 @@ static void* rt_big_realloc(void* p, unsigned long long old_bytes,
     else rt_free(p);
     return np;
 }
-// beans_alloc's non-pooled objects carry no byte size the free path can read
-// back — meta holds the shape, not the length — so a large one is mapped behind
-// a 16-byte prefix that records the mapping's length; a malloc'd one records 0
-// there and is freed the plain way. The prefix keeps the object's 16-byte
-// alignment, and non-pooled objects are both large and rare (the pooled hot
-// path never reaches here), so it costs nothing that shows on the self-build.
-//
-// Because that prefix records the origin, this path CAN fall back to the heap
-// when a mapping fails and still free correctly — which is exactly what the
-// header-less backing allocator above cannot do, and the reason the two are
-// written differently rather than sharing one shape.
+// beans_alloc's non-pooled objects carry no byte size in metadata, so large
+// allocations store the mapping length in a 16-byte prefix. Small allocations
+// store zero there and use the ordinary free path. The prefix preserves
+// payload alignment and records the allocation source, so mmap failure can
+// safely fall back to the heap.
 static void* rt_obj_alloc(unsigned long long total) {
     if (total >= RT_BIG_MMAP_MIN) {
         size_t maplen = rt_big_maplen(16 + total);
@@ -952,9 +830,7 @@ static void rt_obj_free(void* obj) {
 
 // ---- formatting without libc ------------------------------------------------
 //
-// The core builds messages — panic text, `show` output, error strings — and every
-// one of them uses only %lld, %llu, %s, %c and %%. Writing those out is a page of
-// code and removes snprintf from the freestanding profile entirely.
+// The core formats panic text, `show` output, and errors with %lld, %llu, %s, %c, and %% to avoid snprintf in freestanding builds.
 //
 // Floats are not here on purpose: correct decimal output for a double is not a
 // page of code, so it stays a host hook.
@@ -1025,7 +901,7 @@ static long long rt_vformat(char* out, unsigned long long cap, const char* fmt,
 
 #ifdef BEANS_RT_FORMAT_CHECK
 // Exposed only for test/freestanding.sh, which compares the hand-written integer
-// formatting against snprintf across the edges — zero, the sign boundary, and
+// formatting against snprintf across the edges: zero, the sign boundary, and
 // LLONG_MIN, whose positive counterpart does not exist.
 long long beans_rt_check_format(char* out, unsigned long long cap, long long value,
                                 int as_unsigned);
@@ -1109,7 +985,7 @@ static void* rt_masked_child(void* value, int slot, int i64_encoded) {
 #define RC_CLS_MAX 4095LL
 #define RC_COUNT(v) ((v) & ((1LL << RC_CLS_SHIFT) - 1))
 #define RC_SHARED (1LL << 60)
-// rc bit 61: this object's class chain has a deinit — user code runs when the
+// rc bit 61: this object's class chain has a deinit: user code runs when the
 // count hits zero. Lives in the rc word (not meta) so pointer-mask walkers and
 // shell frees never see it; retain/release arithmetic can't carry into it.
 #define RC_FIN (1LL << 61)
@@ -1127,7 +1003,7 @@ static void* rt_masked_child(void* value, int slot, int i64_encoded) {
 // targets. On a 64-bit target i64 is already 8-aligned and this is a no-op; on
 // i686, `long long` defaults to 4-byte alignment, so without this Clang lowers
 // every `__atomic_*` on the count to a `__atomic_*_8` libcall (an undefined
-// symbol at link time — i686 has CMPXCHG8B and needs no libatomic). The size
+// symbol at link time: i686 has CMPXCHG8B and needs no libatomic). The size
 // stays 16, so object_abi.h's header layout is unchanged on every target.
 typedef struct {
     long long rc;
@@ -1164,7 +1040,7 @@ static void* rt_extended_child(void* p, long long offset) {
 // plain temporary count edits: the global walk runs only at quiescence, and an
 // owner-local walk stops before every RC_SHARED boundary.
 // Below the minimal profile there are no threads at all, so the multi-threaded
-// half of every count operation is unreachable — and on a 32-bit target it is
+// half of every count operation is unreachable, and on a 32-bit target it is
 // worse than unreachable. `rc` is eight bytes, ARMv7-M and RV32 have no 8-byte
 // atomic instruction, and Clang turns each one into a __atomic_*_8 libcall that
 // a freestanding link cannot satisfy. Folding the flag to a constant deletes
@@ -1188,13 +1064,13 @@ static void cc_set_color(BHead* h, long long c) { h->meta = (h->meta & ~CC_COLOR
 // `meta` is written atomically wherever the color or in-buffer bit moves, because
 // two threads can release references to the same object at the same time. Reads on
 // that path have to match, or the read is a data race: TSan caught exactly this
-// once two worker threads shared one closure environment. Relaxed is enough — the
-// bits are advisory, the object is kept alive by the count — and a relaxed load is
+// once two worker threads shared one closure environment. Relaxed is enough: the
+// bits are advisory, the object is kept alive by the count, and a relaxed load is
 // the same instruction as a plain one, so this costs nothing.
 //
 // Whether these are really atomic is decided in one place, here. Threads exist
 // only at minimal and above; below that there is a single mutator and the plain
-// operation is already correct. That is not just a saving — on a 32-bit
+// operation is already correct. That is not just a saving: on a 32-bit
 // embedded target it is the only option, because ARMv7-M and RV32 have no
 // 8-byte atomic instruction and Clang turns each of these into a __atomic_*_8
 // libcall that a freestanding link cannot satisfy.
@@ -1254,7 +1130,7 @@ static long long cc_meta(BHead* h) { return rt_w_load(&h->meta); }
 // exist only at minimal and above, and there on cc_mt. Routing every count
 // operation through these four keeps the 8-byte atomics out of a freestanding
 // build at *preprocessing* time rather than trusting the optimizer to fold a
-// constant branch — at -O0 an unfolded one is an undefined __atomic_*_8.
+// constant branch: at -O0 an unfolded one is an undefined __atomic_*_8.
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 static long long rt_rc_load(BHead* h) {
     return cc_is_mt() ? __atomic_load_n(&h->rc, __ATOMIC_RELAXED) : h->rc;
@@ -1292,20 +1168,20 @@ static long long rt_rc_dec(BHead* h) { return h->rc -= 1; }
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 static _Atomic long long cc_threads;  // global collection only at 0
 #else
-// Same reason: nothing can raise it, and reading an 8-byte _Atomic on a 32-bit
+// Same reason, nothing can raise it, and reading an 8-byte _Atomic on a 32-bit
 // target is a libcall.
 static const long long cc_threads = 0;
 #endif
 static _Atomic int cc_pending;
 static int cc_collecting;
 // One husk sweep at a time; a second thread crossing the threshold while a
-// sweep runs just skips — the running sweep is already doing its work.
+// sweep runs just skips: the running sweep is already doing its work.
 // Plain int on purpose: the __atomic_* builtins below want an unqualified
 // object, the way beans_in_deinit is accessed.
 static int cc_sweeping;
 // Workers walking their local candidate graphs right now. A parked
 // candidate keeps its fields for the re-trace, so it may still carry an
-// edge to a shared husk another thread is about to free — the sweeper
+// edge to a shared husk another thread is about to free: the sweeper
 // and the walkers exclude each other (seq-cst on both sides, so the
 // store-buffer interleaving where each misses the other cannot happen).
 static int cc_worker_walkers;
@@ -1318,7 +1194,7 @@ static void cc_worker_roots_end(void);
 
 // vtable slot of deinit, emitted by codegen (-1 when no class has one).
 // Deinit runs inside a release cascade, where allocation used to be
-// impossible — beans_in_deinit keeps the collector out of that window,
+// impossible: beans_in_deinit keeps the collector out of that window,
 // because a mid-destroy object must never be walked.
 extern long long beans_deinit_sel;
 // NOT thread-local: a TLS read compiles to a _tlv_get_addr call. A shared
@@ -1366,8 +1242,8 @@ static unsigned long long arc_possible_roots;
 static unsigned long long arc_collections;
 static unsigned long long arc_cycle_objects;
 // Element buffers a List or a Bytes allocated in a block of their own, rather
-// than behind their own header. arc_allocations cannot see these — a backing
-// is not an object and never went through beans_alloc — so without this
+// than behind their own header. arc_allocations cannot see these: a backing
+// is not an object and never went through beans_alloc, so without this
 // counter a list that costs two blocks and a list that costs one report the
 // same number.
 //
@@ -1375,7 +1251,7 @@ static unsigned long long arc_cycle_objects;
 // arc_allocations and nothing here, and its backing bytes land in
 // arc_allocated_bytes because they are part of the object's size. A list with
 // its own backing adds one to each counter, and the backing's bytes appear in
-// neither — rt_big_alloc is not beans_alloc. So allocated_bytes went up when
+// neither: rt_big_alloc is not beans_alloc. So allocated_bytes went up when
 // the inline backing landed without a byte of new memory being asked for; what
 // moved is which counter the same bytes are counted in. The bench report's
 // memory figure is peak RSS and is unaffected.
@@ -1413,26 +1289,8 @@ __attribute__((constructor)) static void arc_setup(void) { atexit(arc_report); }
 #define ARC_ADD(name, value) ((void)0)
 #endif
 
-// deinit, before the children go — outlined and cold: the indirect call must
-// stay out of beans_release's hot loop or the optimizer treats every
-// iteration as clobbered (that cost 50% on the churn bench). Count up to 1
-// and FIN off first: user code in there may retain and release self without
-// re-entering death, and death can't run twice (husk and collector paths see
-// FIN already gone). Count back to 0 after: the husk filter frees a parked
-// shell only when RC_COUNT is 0, so the bump must not outlive the call (it
-// leaked a buffered object's shell once).
-// The deinit body is user code: contained by brew/join, a panic in it
-// unwinds through this frame (issue #44). The death itself does not stop
-// there (issue #81, spec/CONCURRENCY.md) — beans_release finishes it on the
-// way out — so this frame has to leave behind exactly what a returning body
-// leaves behind. Two things: the in-deinit counters must come back down
-// (cc_collect refuses to run while one is up, so a stranded count turns one
-// caught panic into a collector that never runs again for the life of the
-// process), and the count must settle back to zero with FIN off, because the
-// husk filter frees a parked shell only when RC_COUNT is 0 and a stranded
-// bump strands the shell. By the time this runs, the body's own cleanup pad
-// has already dropped whatever it had retained, so the count is back where
-// the normal path finds it. The guard fires only on the unwind; the normal
+// Keep deinit outlined and off beans_release's hot loop. After a contained panic, restore deinit depth and RC_COUNT to zero with FIN clear,
+// so collection resumes and a parked shell remains reclaimable.
 // path does both exactly where it always did.
 typedef struct {
     BHead* h;
@@ -1481,7 +1339,7 @@ BEANS_DEINIT_ATTR static void beans_do_deinit(
 #define POOL_CLASSES 64 // pooled sizes 16..1008 bytes; bigger goes to malloc
 #define POOL_SLAB (64 << 10)
 // Per-thread in the hosted profiles; plain statics in freestanding, which has one
-// thread by construction — thread-local storage is a platform service and there is
+// thread by construction: thread-local storage is a platform service and there is
 // nothing for it to separate.
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 #define POOL_LOCAL _Thread_local
@@ -1505,21 +1363,8 @@ void beans_runtime_hook_leave(void) {
     beans_runtime_hook_depth = 0;
 }
 
-// The allocator pool and the collector's root state share one hot per-thread
-// struct. Reaching it has to be cheap: the hot paths touch it hundreds of times
-// per request. On Darwin a _Thread_local access is an indirect call into
-// libdyld's _tlv_get_addr — clang resolves it once per non-inlined runtime
-// function, and with a dozen such functions on the hot path that one call is
-// the second most expensive symbol on /json (issue #141): ~12% of user time.
-// pthread_getspecific is a direct call to a tiny leaf (a TPIDRRO_EL0 read and
-// an index) that does not thrash the indirect-branch predictor, so Darwin
-// reaches the struct through a runtime-owned key. glibc resolves a
-// _Thread_local in an executable as an %fs-relative load already, so Linux
-// keeps _Thread_local; freestanding has one thread by construction and uses a
-// plain static with no thread-local storage and no pthread dependency. Either
-// way each hot function resolves the struct once into the local the field
-// macros below read (_bhot), so the lookup is still paid once per function —
-// but now it is the cheap one.
+// Pool and collector state share per-thread storage. Darwin uses pthread TLS, Linux uses _Thread_local, and freestanding uses a plain static.
+// Each hot function resolves the pointer once before accessing its fields.
 typedef struct {
     void* pool_free[POOL_CLASSES];
     char* pool_cur;
@@ -1545,21 +1390,21 @@ static pthread_key_t beans_hot_key;
 static pthread_once_t beans_hot_once = PTHREAD_ONCE_INIT;
 // beans_hot_key must NOT be read until the key exists: Darwin's TSD slot 0 is
 // _PTHREAD_TSD_SLOT_PTHREAD_SELF, so pthread_getspecific(0) returns a non-NULL
-// pthread_t that the accessor would use as a BeansHotTls* — silent corruption.
+// pthread_t that the accessor would use as a BeansHotTls*: silent corruption.
 // A constructor in a translation unit the driver links before this one could
 // allocate before pool_setup runs (Darwin honours no cross-TU constructor
 // priority), so the fast path cannot assume the constructor already ran. This
 // flag gates it. Plain, not atomic: the key is only ever created while the
-// process is single-threaded — a worker thread cannot exist before something
+// process is single-threaded: a worker thread cannot exist before something
 // on the main thread allocated, which is what creates the key, and the spawn
-// that starts a worker is itself a barrier — so no worker ever races the write.
+// that starts a worker is itself a barrier, so no worker ever races the write.
 static int beans_hot_key_ready;
 static void beans_hot_drop(void* raw) {
     BeansHotTls* h = (BeansHotTls*)raw;
     if (!h) return;
     // cc_worker_roots is NULL between batches; a worker that somehow exited
-    // mid-batch would otherwise strand that heap array — exactly as the old
-    // _Thread_local struct did — so free it and keep `leaks` clean either way.
+    // mid-batch would otherwise strand that heap array: exactly as the old
+    // _Thread_local struct did, so free it and keep `leaks` clean either way.
     free(h->cc_worker_roots);
     free(h);
 }
@@ -1567,7 +1412,7 @@ static void beans_hot_make_key(void) {
     if (pthread_key_create(&beans_hot_key, beans_hot_drop) != 0) {
         // A key is always available at process start; if it is not, the runtime
         // cannot separate its allocator state per thread, and reading a foreign
-        // TSD slot would corrupt it — fail loudly rather than corrupt silently.
+        // TSD slot would corrupt it: fail loudly rather than corrupt silently.
         // (beans_panic is not usable this early; write+abort is.)
         static const char m[] =
             "beans runtime: cannot create the allocator's thread-local key\n";
@@ -1643,7 +1488,7 @@ void* beans_alloc(long long size, long long meta) {
     ARC_ADD(arc_allocated_bytes, size);
     // allocation is the one safe point: never inside a release cascade,
     // and every stored reference is already counted (a deinit body is the
-    // exception — cc_collect itself bails while one runs, so this exact
+    // exception: cc_collect itself bails while one runs, so this exact
     // condition stays byte-identical to keep clang's fast-path layout)
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
     if (cc_worker_pending && !cc_worker_collecting)
@@ -1688,24 +1533,8 @@ void* beans_alloc(long long size, long long meta) {
     return (char*)h + 16;
 }
 
-// Like beans_alloc, but the pooled recycled path does not zero the payload.
-//
-// Fill-completely contract: the caller MUST write every one of the returned
-// `size` payload bytes before anything reads them — a string's bytes and its
-// NUL terminator, a Bytes buffer's whole length. A caller that leaves any
-// payload byte unwritten reads a previous allocation's bytes; that is a bug in
-// the caller, not here. beans_alloc zeroes a recycled block because most
-// callers expect zeroed slots; the typed JSON decoder fills string payloads
-// end to end, so for those the zeroing is 404 samples of _platform_memset that
-// only writes bytes overwritten the same instant (issue #144).
-//
-// The block is otherwise identical to a beans_alloc block — same size class,
-// same 16-byte header, same shape to the collector, the freelist and every ARC
-// path — because the header is written in full by the rc and meta stores, so
-// no stale header survives, and only the recycled-block *payload* zeroing is
-// skipped. Virgin slab memory is already zero (so the fresh-carve arm needs no
-// memset, exactly as beans_alloc's does not), and the non-pooled arm still
-// zeroes, through the same rt_obj_alloc beans_alloc uses.
+// Like beans_alloc, but recycled pooled payloads are not zeroed. Callers must initialize all `size` bytes before reading them.
+// Headers are initialized as usual; non-pooled allocations remain zeroed.
 void* beans_alloc_bytes(long long size, long long meta) {
     BeansHotTls* _bhot = beans_hot_tls_ptr();
     ARC_ADD(arc_allocations, 1);
@@ -1747,13 +1576,7 @@ void* beans_alloc_bytes(long long size, long long meta) {
         // path reads the size class out of the header and hands every cls == 0
         // block to rt_obj_free, which frees the 16-byte origin prefix
         // rt_obj_alloc writes in front of the object. A plain rt_zalloc block
-        // here is freed at ptr - 16 — a pointer no allocator returned — so a
-        // decoded string of 992 bytes or more (total >= 1024 leaves the pooled
-        // classes) either aborts in malloc or silently fails to munmap. The
-        // sanitizer lanes cannot see it: RT_BIG_SANITIZED replaces this whole
-        // allocator with plain malloc/free under ASan. rt_obj_alloc zeroes the
-        // block the way rt_zalloc did, so the large arm still hands back
-        // zeroed payload.
+        // Use rt_obj_alloc so the release path can read its 16-byte prefix; large decoded strings otherwise free an invalid base pointer. It also zeroes the payload.
         h = rt_obj_alloc(total);
         if (!h) beans_panic("out of memory", 0, 0);
         h->rc = 1;
@@ -1820,7 +1643,7 @@ typedef struct {
 // mark it, and both must hold:
 //
 //   * kind-2 shape bit 1 says this object was allocated with room behind its
-//     header. It is written once, at allocation, and never cleared — nothing
+//     header. It is written once, at allocation, and never cleared, nothing
 //     mutates `meta` on a hot path, and the collector owns the other bits.
 //     Bit 0 is "elements carry owned pointers" and is what beans_release's
 //     `cyclic` test reads for kind 2, so bit 1 is invisible to it.
@@ -1829,8 +1652,8 @@ typedef struct {
 //
 // The pointer test cannot answer a false yes: for a flagged object the inline
 // address is inside its own live block, so no allocator can hand the same
-// address to anything else. For an unflagged object — every Bytes, and every
-// list whose backing was too big to fit — the flag is 0 and the address is
+// address to anything else. For an unflagged object, every Bytes, and every
+// list whose backing was too big to fit: the flag is 0 and the address is
 // never compared.
 #define LIST_INLINE_SHAPE (1LL << 4)
 // How many bytes of backing are worth carrying behind the header. 128 puts a
@@ -1849,7 +1672,7 @@ static int list_backing_is_inline(BList* l, long long meta) {
 // Whether `capacity` elements of `stride` bytes fit behind a header. Written
 // as a division rather than as `capacity * stride <= LIST_INLINE_MAX` on
 // purpose: the product overflows for a capacity and a stride the callers
-// already accept — the reserve ceiling alone is 2^58 — and an overflowed
+// already accept: the reserve ceiling alone is 2^58, and an overflowed
 // product wrapping to something small would answer "it fits" for a list whose
 // elements are nowhere near the block. The stride is validated positive by
 // both callers before this is asked, so the division is safe.
@@ -1862,7 +1685,7 @@ typedef struct {
     long long stride, ptr_mask, cycle_mask;
 } BArena;
 typedef struct {
-    long long* data; // key,value interleaved — len stays at
+    long long* data; // key,value interleaved: len stays at
     RT_LEN8 long long len, cap; // offset 8: map.len() is a direct field load in IR
     // open-addressed index over data: (hash hi32 << 32) | (pos+2), 0 empty,
     // 1 tombstone. NULL until the map outgrows a linear scan.
@@ -1886,8 +1709,8 @@ typedef struct {
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 #if BEANS_RT_FIBERS
 // One parked fiber in a FIFO wait line (channels now, Event next). The
-// record lives on the waiting fiber's own stack — alive exactly as long
-// as the park — so a wait line costs no allocation.
+// record lives on the waiting fiber's own stack: alive exactly as long
+// as the park, so a wait line costs no allocation.
 typedef struct BFiberWaiter {
     BeansFiber* fiber;
     struct BFiberWaiter* next;
@@ -2039,7 +1862,7 @@ static void* shared_shell_drop(void* p, long long extra) {
 }
 
 // free the box and its side allocations WITHOUT touching child refs
-// _bhot is threaded in by the caller: every caller frees shells in a loop
+// _bhot is threaded in by the caller, every caller frees shells in a loop
 // (a release cascade, a husk sweep, a collector's white set), so resolving the
 // hot struct once at the top of that loop and passing it here turns a
 // per-shell lookup into one per walk.
@@ -2082,12 +1905,12 @@ static void* cc_free_shell(void* p, long long meta, BeansHotTls* _bhot) {
 #endif
     } else if (kind == 6 && (extra & 2)) {
         deferred_child = shared_shell_drop(p, extra);
-    } else if (kind == 6) { // OS resource — dropping the last ref is the safety
+    } else if (kind == 6) { // OS resource: dropping the last ref is the safety
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL || BEANS_RT_WASI
         // close whatever is still open at the OS level, whether the handle was
         // never closed or its close was deferred while threads ran (fd/p left
         // valid, the logical `closed` flag already set). The last ref is gone,
-        // so no thread can be mid-op here — releasing now is safe.
+        // so no thread can be mid-op here: releasing now is safe.
         if ((meta & CC_SHAPE) >> 3 & 1) { // shape bit 0: 0 = file, 1 = mmap
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL
             BMMap* m = p;
@@ -2155,7 +1978,7 @@ static void cc_visit_push(void* c, void* ctx) {
 // their frees (issue #44). Each frame arms one of these and disarms after
 // its own teardown: the normal path is unchanged, and the unwind path
 // frees the grown buffer instead of stranding it. What a panicking pass
-// had not yet destroyed stays abandoned — the stance the spec already
+// had not yet destroyed stays abandoned: the stance the spec already
 // takes for the panicking object itself.
 typedef struct {
     CCStack* st;
@@ -2166,7 +1989,7 @@ static void rt_stack_unwound(RtStackUnwound* g) {
     if (g->st->v && g->st->v != g->st->local) rt_free(g->st->v);
 }
 
-// A stack of references the frame still owes a release to — the children a
+// A stack of references the frame still owes a release to: the children a
 // collector pass deferred past its lock, say. Those are not marking work:
 // dropping them on an unwind loses the objects for good. So this guard
 // finishes the drain (issue #81), and the drain itself is the same function
@@ -2188,7 +2011,7 @@ static void rt_owed_stack_unwound(RtOwedStackUnwound* g) {
 }
 
 // The same rule for a plain array a frame copied out before it could run
-// user code — a wide map value's children, say — where a CCStack would be
+// user code: a wide map value's children, say, where a CCStack would be
 // more machinery than the array is.
 typedef struct {
     void** v;
@@ -2318,7 +2141,7 @@ static void cc_mark_shared_graph(void* root) {
 // shared value is constant time.
 // cc_is_mt() is not the right gate on its own: beans_shared_new marks its
 // payload the moment the Shared is built, which can be long before the first
-// spawn, and cc_walk has no case for the Shared handle — so a graph published
+// spawn, and cc_walk has no case for the Shared handle, so a graph published
 // into that payload while still single-threaded could never be marked
 // afterwards. This flag stands for "some RC_SHARED mark exists", which both
 // cc_enable_mt and beans_shared_new set, so the barrier's fast path stays the
@@ -2351,9 +2174,9 @@ void beans_cc_write_typed(void* owner, void* value, long long ptr_mask) {
 }
 // A static field is a process-global slot with no heap owner to carry the
 // shared mark, so there is nothing to test against. Nor can this wait for
-// cc_is_mt(): nothing walks a static, so a graph stored there before the
+// cc_is_mt(), nothing walks a static, so a graph stored there before the
 // first spawn would never be marked, and the worker that reads the slot
-// would find it still owner-local. Mark on the store, always — statics are
+// would find it still owner-local. Mark on the store, always: statics are
 // rare next to field writes, and the walk stops at the first shared shell.
 void beans_cc_write_static(void* child) {
     if (child) cc_mark_shared_graph(child);
@@ -2370,7 +2193,7 @@ static void cc_mark_shared_children(void* owner) {
 // The compiler's static pointer mask cannot describe every layout: a slot
 // past bit 57, an unaligned reference inside a packed record, an array whose
 // stride is unknown. Those values still carry owned references, so the write
-// falls back to this — the owner's own runtime shape always describes the
+// falls back to this: the owner's own runtime shape always describes the
 // field, and walking it after the store publishes whatever landed there.
 void beans_cc_publish(void* owner) {
     if (cc_shared_owner(owner)) cc_mark_shared_children(owner);
@@ -2421,7 +2244,7 @@ static int cc_shared_boundary(BHead* h) {
 }
 #else
 // One thread by construction, so cc_is_mt() can never become true and the lock
-// would be dead weight — and a referenced pthread symbol in a profile that has no
+// would be dead weight, and a referenced pthread symbol in a profile that has no
 // pthreads.
 #define CC_LOCK() ((void)0)
 #define CC_UNLOCK() ((void)0)
@@ -2436,12 +2259,12 @@ static int cc_shared_boundary(BHead* h) {
 // and memory bounded.
 
 // The collector's cheap half, runnable while workers are alive. A parked
-// shell whose death cascade already finished — count zero, blackened as the
-// cascade's last touch — is unreachable: the root buffer holds its only
+// shell whose death cascade already finished: count zero, blackened as the
+// cascade's last touch: is unreachable: the root buffer holds its only
 // pointer, so freeing it here cannot race anything. Live candidates (any
 // count above zero, or a cascade still purple between its decrement and its
 // blacken) stay parked for the real collector. Without this, a process that
-// keeps worker threads alive — every threaded server — could never reclaim
+// keeps worker threads alive, every threaded server: could never reclaim
 // husks, because cc_collect waits for cc_threads to reach zero.
 static void cc_sweep_husks(void) {
     if (__atomic_exchange_n(&cc_sweeping, 1, __ATOMIC_SEQ_CST)) return;
@@ -2457,17 +2280,17 @@ static void cc_sweep_husks(void) {
     RtOwedStackUnwound deferred_unwound = {&deferred, 0, 1};
     CC_LOCK();
     if (cc_len < cc_threshold) {
-        // nothing due — this attempt came from a walk exit re-arming the
+        // nothing due: this attempt came from a walk exit re-arming the
         // sweep, and a winner already re-armed the threshold. Keeping the
         // early-out under the lock keeps the O(n) scan off that path.
         CC_UNLOCK();
         __atomic_store_n(&cc_sweeping, 0, __ATOMIC_RELEASE);
         return;
     }
-    // Bounded slice per sweep: every entry scanned here holds the global
+    // Bounded slice per sweep, every entry scanned here holds the global
     // lock every worker's release path needs, so an unbounded scan of a
     // large candidate buffer is a multi-millisecond stall for the whole
-    // fleet — it was the p99 of a loaded server. Scanning from the tail
+    // fleet: it was the p99 of a loaded server. Scanning from the tail
     // with swap-removal keeps the pass restartable at any budget; the
     // re-arm below decides how soon the next slice runs.
     enum { CC_SWEEP_BUDGET = 8192 };
@@ -2534,8 +2357,8 @@ static void cc_append_roots(void** roots, long long count) {
 
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 // Takes the resolved struct like the rest of this path. Resolving it here
-// instead cost twice: the lookup is redundant — every caller reached this
-// function through cc_possible_root_hot, which already holds the pointer — and
+// instead cost twice: the lookup is redundant, every caller reached this
+// function through cc_possible_root_hot, which already holds the pointer, and
 // the call it added to a four-line function pushed it past the inliner's
 // threshold, so a release cascade that parks a root per node went from an
 // inlined append to a call per node. That, not the lookup itself, was most of
@@ -2581,7 +2404,7 @@ static void cc_worker_roots_end(void) {
     BeansHotTls* _bhot = beans_hot_tls_ptr();
     if (!cc_worker_root_batching) return;
     // Detach the buffer before publishing anything. cc_append_roots can
-    // sweep husks, and that sweep runs beans_release outside the lock — a
+    // sweep husks, and that sweep runs beans_release outside the lock: a
     // release that parks another root would otherwise land in the buffer
     // this function is about to free, stranding the object with CC_BUF set
     // and no buffer that owns it, where nothing can ever reclaim it.
@@ -2603,7 +2426,7 @@ static void cc_worker_roots_end(void) {
 #endif
 
 // The _hot form takes the resolved struct. A release loop that parks a root
-// per node — a tree traversal's retain/release is exactly this — would
+// per node: a tree traversal's retain/release is exactly this: would
 // otherwise resolve the struct once per node: clang hoists a _Thread_local
 // access out of such a loop for free, but pthread_getspecific is an opaque call
 // it cannot hoist, so the loop must hand the resolved pointer in. Every caller
@@ -2639,7 +2462,7 @@ static int weak_live;
 // The rest of a death, after the deinit body has run: hand the children to
 // the cascade's work stack and give the shell back (or park it, if a
 // collector buffer still points at it). Its own frame because the release
-// cascade reaches it twice — once on the ordinary path, once from the
+// cascade reaches it twice: once on the ordinary path, once from the
 // unwind guard below.
 __attribute__((always_inline)) static inline void rt_finish_death(
     void* p, CCStack* st, BeansHotTls* _bhot) {
@@ -2647,7 +2470,7 @@ __attribute__((always_inline)) static inline void rt_finish_death(
     long long meta = cc_meta(h);
     cc_release_children(p, meta, st);
     if (meta & CC_BUF) {
-        // parked — the buffer still points here, so a collector
+        // parked: the buffer still points here, so a collector
         // or husk sweep frees the shell later; mark black: this
         // is a dead husk. The blacken is this thread's last
         // access, and the fence orders everything before it so a
@@ -2666,8 +2489,8 @@ __attribute__((always_inline)) static inline void rt_finish_death(
 // A deinit that panics does not stop the death that was running it (issue
 // #81, spec/CONCURRENCY.md). Contained by brew/join, that panic unwinds out
 // of beans_do_deinit and through this frame, and everything the cascade had
-// not reached — the object's own fields, its shell, and every node still on
-// the work stack — would be lost with it: unreachable from the program and
+// not reached: the object's own fields, its shell, and every node still on
+// the work stack: would be lost with it: unreachable from the program and
 // never freed, O(n) per caught panic, while the tree interpreter destroyed
 // all of it. So the guard finishes the cascade instead of abandoning it.
 // The destruction runs while the fiber is already unwinding, which is
@@ -2697,8 +2520,8 @@ static void rt_cascade_unwound(RtCascadeUnwound* g) {
 
 void beans_release(void* p) {
     if (!p) return;
-    // Resolved lazily and once for the whole cascade. The common case — a
-    // decrement that does not reach zero — touches the hot struct not at all,
+    // Resolved lazily and once for the whole cascade. The common case: a
+    // decrement that does not reach zero: touches the hot struct not at all,
     // so it must pay no lookup (a tree traversal is mostly these). A death that
     // drops a K-node subtree loops here, and rt_finish_death frees each node's
     // shell; the first death resolves the struct and every later node in the
@@ -2748,7 +2571,7 @@ void beans_release(void* p) {
                 // `!= 0` is load-bearing, not style. __builtin_expect takes
                 // `long`, which is 32 bits on a 32-bit target, so passing the
                 // raw `nrc & RC_FIN` truncated bit 61 away and made this branch
-                // dead: every deinit was silently skipped on RV32 and thumb.
+                // dead, every deinit was silently skipped on RV32 and thumb.
                 // Comparing first hands it a 0 or a 1, which no width can lose.
                 if (__builtin_expect((nrc & RC_FIN) != 0, 0)) {
                     // A panic in there leaves the rest of this death, and
@@ -2762,7 +2585,7 @@ void beans_release(void* p) {
             } else {
                 // could this shape sit on a cycle? leaves, pointer-free
                 // containers, and objects with an empty pointer mask never can
-                // — a cycle member needs an outgoing edge — which keeps
+                // A cycle member needs an outgoing edge, which keeps
                 // int-field churn off the buffer
                 if (!mt && cyclic) {
                     if (!_bhot) _bhot = beans_hot_tls_ptr();
@@ -2781,8 +2604,8 @@ void beans_release(void* p) {
 // real byte layout; pointer masks let the common collector walk their nested
 // ARC fields without a type-specific destructor.
 //
-// One walker for every masked aggregate in the runtime — a list element, a
-// map's wide value, a box, an arena slot — so they cannot drift apart. Two
+// One walker for every masked aggregate in the runtime: a list element, a
+// map's wide value, a box, an arena slot, so they cannot drift apart. Two
 // rules ride here:
 //
 //   * last field first, the order a generated struct destructor uses and the
@@ -2838,7 +2661,7 @@ static void release_masked_slots(void* value, long long ptr_mask,
 // Swap a wide slot with the caller's buffer, byte for byte: the slot takes
 // the new value and the caller's buffer parks the old one for the final
 // release. No allocation, and MSVC has no VLA to spill into. Every wide
-// store that has to stand across a panicking deinit goes through this — a
+// store that has to stand across a panicking deinit goes through this: a
 // map entry and a Box alike.
 static void rt_swap_wide(void* slot, void* incoming, size_t n) {
     unsigned char* a = (unsigned char*)slot;
@@ -2862,8 +2685,8 @@ static void release_masked_value(void* value, long long ptr_mask) {
 // collection the frame was permuting in place is put back exactly as it was
 // before the call. Both ride __attribute__((cleanup)): the driver compiles
 // this unit with -fexceptions exactly when it defines BEANS_FIBER_UNWIND, so
-// the cleanups run during the forced unwind — the same pairing glibc uses
-// for pthread cleanup handlers — and on the normal path they are ordinary
+// the cleanups run during the forced unwind: the same pairing glibc uses
+// for pthread cleanup handlers, and on the normal path they are ordinary
 // scope exits, which also retires the hand-written frees they replace.
 #ifndef BEANS_FIBER_UNWIND
 #define BEANS_FIBER_UNWIND 0
@@ -2883,7 +2706,7 @@ static void rt_restore_fire(RtRestore* guard) {
 #define RT_RESTORE __attribute__((cleanup(rt_restore_fire)))
 // Arm before the first callback can run: an unwind from here on puts the
 // array back. Costs one allocation and one copy per interruptible sort, and
-// only in a build that can unwind at all — a program that cannot contain a
+// only in a build that can unwind at all: a program that cannot contain a
 // panic pays nothing. Failing the snapshot panics before anything mutates.
 static void rt_restore_arm(RtRestore* guard, void* target, size_t bytes) {
 #if BEANS_FIBER_UNWIND
@@ -2901,9 +2724,9 @@ static void rt_restore_arm(RtRestore* guard, void* target, size_t bytes) {
 // The permutation completed: keep it. The snapshot is still freed.
 static void rt_restore_done(RtRestore* guard) { guard->target = 0; }
 // A comparator or key function can reach the list it is sorting through a
-// captured reference. Reading it is fine — the widened mirror keeps what it
-// sees identical across backends — but a structural change (push, remove,
-// clear: anything that moves the length or the storage) would leave the
+// captured reference. Reading it is fine: the widened mirror keeps what it
+// sees identical across backends, but a structural change (push, remove,
+// clear, anything that moves the length or the storage) would leave the
 // sort permuting a stale array: a use-after-free on growth, reads past the
 // end on shrink. Both engines refuse it as the program's own panic, checked
 // as each callback returns and before the sort touches the array again.
@@ -2931,10 +2754,7 @@ static void rt_sort_check(RtSortPin* pin) {
               pin->len, now);
     beans_panic(b, 0, 0);
 }
-// malloc and calloc only promise enough alignment for any ordinary scalar —
-// 16 bytes on both supported targets. An `align(64)` record asked for more than
-// that, so anything stricter has to be requested explicitly or align_of would be
-// promising an alignment the allocation does not have.
+// malloc and calloc provide 16-byte alignment on supported targets; request larger alignments explicitly to satisfy align_of contracts.
 #define BEANS_MALLOC_ALIGN 16
 void* beans_raw_alloc(long long count, long long size, long long align,
                       long long min_align, long long line, long long col) {
@@ -2951,8 +2771,8 @@ void* beans_raw_alloc(long long count, long long size, long long align,
     size_t bytes = (size_t)count * (size_t)size;
 #if defined(_WIN32)
     // MSVCRT gives neither posix_memalign nor an aligned block that plain
-    // free() accepts, so on Windows every raw block — whatever its alignment —
-    // uses one wrapped representation: the calloc base rides in the pointer
+    // free() accepts, so Windows raw blocks of every alignment use one wrapped
+    // representation. The calloc base rides in the pointer
     // slot just below the aligned payload, and beans_raw_free unwraps it.
     // Wrapping the small-alignment case too is the point: raw_free sees only
     // the pointer, so there must be exactly one representation to undo.
@@ -3051,9 +2871,9 @@ void beans_box_get_typed(void* box, void* out, long long size) {
 // old value first and copying after left a panicking deinit with the box
 // still pointing at the bytes it had just destroyed and the new value never
 // stored: `box.get()` handed the program freed memory. Swap the caller's
-// buffer into the box — the buffer is consumed by this call either way, and
+// buffer into the box: the buffer is consumed by this call either way, and
 // the emitter hands the reference over before the call (src/llvm_unwind.b's
-// Box row) — and release the old value out of that buffer last.
+// Box row), and release the old value out of that buffer last.
 void beans_box_set_typed(void* box, void* value, long long size,
                          long long ptr_mask, long long cycle_mask) {
     beans_cc_write_typed(box, value, ptr_mask);
@@ -3068,8 +2888,8 @@ void beans_box_set_typed(void* box, void* value, long long size,
 // control block points at the referent WITHOUT owning a count on it. The
 // side table below maps object -> control block, one entry per weakly
 // referenced object; the entry itself holds one weak count on the block.
-// When the referent dies — refcount zero, before its deinit runs, or the
-// cycle collector kills its cycle — the block's value is zeroed and the
+// When the referent dies: refcount zero, before its deinit runs, or the
+// cycle collector kills its cycle: the block's value is zeroed and the
 // entry dropped, so every handle reads back "gone". cc_walk has no kind-6
 // branch, which is exactly why a weak slot never forms a cycle edge.
 typedef struct {
@@ -3523,7 +3343,7 @@ static void cc_scan(void* root, CCStack* st, CCStack* aux) {
         BHead* h = head_of(p);
         if (cc_color(h) != CC_GRAY) continue;
         if (RC_COUNT(h->rc) > 0) {
-            cc_scan_black(p, aux); // externally referenced — restore it all
+            cc_scan_black(p, aux); // externally referenced: restore it all
         } else {
             cc_set_color(h, CC_WHITE);
             cc_walk(p, h->meta, cc_visit_push, st);
@@ -3604,11 +3424,7 @@ static void rt_cycle_deinits_finish(RtCycleDeinits* g) {
         // once whether it happens here or through an ordinary release.
         if (rc & RC_FIN) beans_do_deinit(member, h, rc);
     }
-    // Park before dropping the hold: a member that dies on the release below
-    // then finds itself buffered and leaves its shell for the collector,
-    // exactly as any other parked death does. Only the members still held —
-    // a resumed pass must not touch one it has already let go — and parking
-    // is idempotent, so repeating it for those costs nothing.
+    // Park each member before dropping its hold so a resumed pass cannot touch a freed shell; parking is idempotent.
     for (long long i = g->dropped; i < g->len; i++) cc_possible_root(g->dead[i]);
     // A release here can still reach user code: a member whose deinit body
     // dropped an internal edge dies on its own hold, and its children go with
@@ -3621,14 +3437,14 @@ static void rt_cycle_deinits_unwound(RtCycleDeinits* g) {
     g->armed = 0;
     rt_cycle_deinits_finish(g);
 }
-// A cycle's members die like any other object, deinit included — but a deinit
+// A cycle's members die like any other object, deinit included, but a deinit
 // body is user code, and user code needs the counts it can see to be true.
 // Trial deletion destroyed them for this set, so give them back first: the
 // cycle becomes ordinary uncollected garbage again, with working retain,
 // release and death for everything a body touches.
 //
 // Nothing here is freed. The set is parked as candidates instead and the next
-// collection re-derives it from scratch — with the deinits already run and
+// collection re-derives it from scratch: with the deinits already run and
 // RC_FIN off so they cannot run twice, and with anything a body resurrected
 // now genuinely reachable and no longer part of the answer. One extra
 // collection buys a body that may allocate, may drop what it owns, and may
@@ -3656,11 +3472,7 @@ static int cc_run_cycle_deinits(void** dead, long long len, int owner_local) {
     // really die mid-loop, and this loop must not walk a freed shell.
     for (i = 0; i < len; i++) beans_retain(dead[i]);
 
-    // A member whose deinit panics does not end the pass (issue #81). Every
-    // member is held by the retain above, so abandoning here strands the whole
-    // white set — shells, deinits and all — for the life of the process. The
-    // guard runs the deinits the loop had not reached and then drops the
-    // holds, which is the only path back out of that retain.
+    // If a deinit panics, the guard runs remaining deinits and drops every retained white-set shell before the pass exits.
     __attribute__((cleanup(rt_cycle_deinits_unwound)))
     RtCycleDeinits pass = {dead, len, 0, 0, 1};
     rt_cycle_deinits_finish(&pass);
@@ -3669,7 +3481,7 @@ static int cc_run_cycle_deinits(void** dead, long long len, int owner_local) {
 }
 
 // The white set's shells, for the pass that has no deinit to run. A member
-// that is somehow buffered is left for whoever holds that buffer — black with
+// that is somehow buffered is left for whoever holds that buffer: black with
 // a zero count is exactly the husk the candidate filter already knows how to
 // free, and beans_release takes the same branch for the same reason.
 static void cc_free_cycle_shells(void** dead, long long len, CCStack* deferred) {
@@ -3712,7 +3524,7 @@ static long long cc_walk_min = 256; // adaptive gate for trial deletion
 // Same shape as cc_collecting_unwound: this pass runs user deinits (the
 // cycle bodies, husk releases inside cc_append_roots, the deferred
 // releases), and a contained panic there must not strand the walker count
-// or the collecting flag — both gate every future worker collection.
+// or the collecting flag: both gate every future worker collection.
 static void cc_worker_flags_unwound(int* armed) {
     if (!*armed) return;
     BeansHotTls* _bhot = beans_hot_tls_ptr();
@@ -3773,7 +3585,7 @@ static void cc_worker_collect(void) {
             // Bounded slice per walk: trial deletion is sound on any
             // subset of the candidate set, and an unbounded walk over a
             // backed-off set (the adaptive minimum reaches 2^18) was a
-            // tens-of-milliseconds pause — the p99 of a loaded server.
+            // tens-of-milliseconds pause: the p99 of a loaded server.
             // The oldest candidates go first; survivors and leftovers
             // stay parked for the next allocation-triggered collect.
             enum { CC_WORKER_WALK_BUDGET = 8192 };
@@ -3815,7 +3627,7 @@ static void cc_worker_collect(void) {
                     // slides everything over the published prefix
                     cc_append_roots(cc_worker_roots, walked);
                     long long now = cc_worker_root_len;
-                    // walked == 0 leaves the buffer alone — it may still be
+                    // walked == 0 leaves the buffer alone: it may still be
                     // NULL, and NULL + 0 is undefined pointer arithmetic.
                     if (walked > 0)
                         memmove(cc_worker_roots, cc_worker_roots + walked,
@@ -3839,7 +3651,7 @@ static void cc_worker_collect(void) {
                     cc_worker_collect_white(
                         cc_worker_roots[i], &st, &dead);
                 }
-                // walked == 0 leaves the buffer alone — it may still be
+                // walked == 0 leaves the buffer alone: it may still be
                 // NULL, and NULL + 0 is undefined pointer arithmetic.
                 if (walked > 0)
                     memmove(cc_worker_roots, cc_worker_roots + walked,
@@ -3884,7 +3696,7 @@ static void cc_worker_collect(void) {
     if (__atomic_sub_fetch(&cc_worker_walkers, 1, __ATOMIC_SEQ_CST) == 0) {
         // The sweep yields to active walks, and under steady multi-worker
         // load an append-time attempt almost never lands in a walker-free
-        // gap — husks then float in the fallback buffer for seconds and
+        // gap: husks then float in the fallback buffer for seconds and
         // hundreds of megabytes at a time. The last walker out IS the gap,
         // so attempt the sweep here; the threshold early-out makes the
         // no-husks case one lock probe, and a racing new walk just skips
@@ -3896,16 +3708,15 @@ static void cc_worker_collect(void) {
 
 // The cycle deinits and the deferred releases below run user code after
 // CC_UNLOCK; a contained panic there unwinds out of the pass. The pass still
-// finishes what it started — cc_run_cycle_deinits runs the bodies it had not
-// reached and drops every hold, and the deferred stack drains (issue #81) —
-// and cc_collecting gates every future collection, so it must come back down.
+// finishes what it started: cc_run_cycle_deinits runs the bodies it had not
+// reached and drops every hold, then drains deferred releases (issue #81); cc_collecting must be cleared for future passes.
 static void cc_collecting_unwound(int* armed) {
     if (*armed) cc_collecting = 0;
 }
 static void cc_collect(int force) {
     if (cc_collecting) return;
     // a deinit body is user code running mid-cascade: its allocations must
-    // not start a collection — a mid-destroy object must never be walked.
+    // not start a collection: a mid-destroy object must never be walked.
     // cc_pending stays set, so the next allocation after the cascade retries.
     if (__atomic_load_n(&beans_in_deinit, __ATOMIC_RELAXED)) return;
     ARC_ADD(arc_collections, 1);
@@ -3947,8 +3758,8 @@ static void cc_collect(int force) {
 
     // The filter above is the cheap half and just ran: husk shells free at
     // a steady cadence, so they can never pile past survivors + 256. Trial
-    // deletion is the expensive half — it walks everything reachable from
-    // the survivors — so it only runs once enough purple candidates pile
+    // deletion is the expensive half: it walks everything reachable from
+    // the survivors, so it only runs once enough purple candidates pile
     // up, and it backs off hard when a walk frees nothing: a live tree
     // that gets borrow-pinned on every visit must not be re-walked every
     // few hundred allocations (that made binary-trees 10x slower than Go).
@@ -3981,7 +3792,7 @@ static void cc_collect(int force) {
         rt_free(dead.v);
     }
     // geometric re-arm: survivors stay parked, so the next filter may scan
-    // them again — amortized O(1) per park only if the buffer must grow by
+    // them again: amortized O(1) per park only if the buffer must grow by
     // its own size first. Husk shells thus wait at most 2·survivors + 256
     // parks, which keeps RSS flat in practice (husk-heavy programs have few
     // long-lived survivors)
@@ -4005,7 +3816,7 @@ static void cc_at_exit(void) {
     // The process entry thread starts a private root buffer at first spawn.
     // Collect it even when a detached worker is still alive: those roots are
     // owner-local and need no global quiescence, and publishing them to the
-    // global buffer instead would strand them — the forced sweep below only
+    // global buffer instead would strand them: the forced sweep below only
     // runs at zero workers. Drop the adaptive gate so the trial walk cannot
     // decline this last pass.
     BeansHotTls* _bhot = beans_hot_tls_ptr();
@@ -4029,8 +3840,8 @@ static void cc_at_exit(void) {
     }
     // A cycle member's deinit prints like any other, and on Windows those bytes
     // sit in the runtime's own stdout buffer. That buffer's atexit flush is
-    // registered from beans_os_init — inside main, so after this handler's
-    // constructor — and atexit runs last-registered-first, which drains it
+    // registered from beans_os_init: inside main, so after this handler's
+    // constructor, and atexit runs last-registered-first, which drains it
     // before this pass ever writes. Flush here and the ordering stops
     // mattering; on every other platform it is a no-op fflush.
     beans_out_flush();
@@ -4064,7 +3875,7 @@ void beans_panic(const char* msg, long long line, long long col) {
     if (n > (long long)sizeof text - 1) n = (long long)sizeof text - 1;
 #if BEANS_RT_FIBERS
     // Containment (spec/CONCURRENCY.md): a panic terminates only the fiber it
-    // happened on. Off the root fiber nothing prints here — the message is
+    // happened on. Off the root fiber nothing prints here: the message is
     // delivered at the join. The root fiber (and a program that never brewed,
     // where there is no fiber at all) keeps today's report and exit.
     {
@@ -4085,8 +3896,8 @@ void beans_panic(const char* msg, long long line, long long col) {
         }
         // Two things make a panic unwind rather than end the process, and
         // they are asked of the same fiber. A brewed fiber always unwinds:
-        // its failure is delivered at its join. Any fiber — the root of a
-        // plain program included — unwinds when a `contained` catch frame
+        // its failure is delivered at its join. Any fiber: the root of a
+        // plain program included: unwinds when a `contained` catch frame
         // stands on its stack, because that frame's landing pad is where
         // the unwind stops and the failure becomes a value
         // (spec/CONCURRENCY.md). Depth is read per fiber: a catch frame on
@@ -4119,7 +3930,7 @@ void beans_panic(const char* msg, long long line, long long col) {
 // SIGSEGV and SIGBUS cannot be blocked and read as data the way the watched
 // signals below are: each names an instruction that has already failed. What
 // they can still do is say so. Without this, running the stack out is exit 139
-// against an empty terminal — the program's own stdout is block-buffered when
+// against an empty terminal: the program's own stdout is block-buffered when
 // it is not a tty, so minutes of output die inside stdio with the process and
 // the run reads as "it printed nothing" rather than "it recursed too deep".
 //
@@ -4239,7 +4050,7 @@ long long beans_rt_no_float(void) {
     return 0;
 }
 #endif
-// list bounds — message matches the interpreter's, index and length included
+// list bounds: message matches the interpreter's, index and length included
 void beans_panic_index(long long i, long long len, long long has_len,
                        long long line, long long col) {
     char b[96];
@@ -4261,9 +4072,7 @@ void beans_panic_slice_index(long long i, long long len,
 }
 
 // ---- strings (leaf allocations) ----
-// a string's byte length lives in its meta shape bits (kind 0 uses none of
-// bits 3-60), so len is O(1) and never strlen. Read through beans_slen —
-// masking with CC_SHAPE is mandatory, colors share the word.
+// String length is stored in metadata bits 3-60; use beans_slen to mask out collector color bits.
 static long long beans_slen(char* s) { return (head_of(s)->meta & CC_SHAPE) >> 3; }
 static char* str_make(const char* p, long long n);
 static char* rc_strdup(const char* s) {
@@ -4363,7 +4172,7 @@ static long long rt_round_trip_f64(char* out, unsigned long long cap, double v) 
         double back = 0;
         const char* end = NULL;
         if (!beans_host_parse_f64(out, &back, &end)) {
-            // A host may supply the formatter and not the parser — nothing in
+            // A host may supply the formatter and not the parser, nothing in
             // its program reads a float from text. Keep the fixed ten digits
             // this used to print rather than guess at a shortest form.
             beans_host_format_f64(out, cap, v, 10, 'g');
@@ -4378,7 +4187,7 @@ static long long rt_round_trip_f64(char* out, unsigned long long cap, double v) 
     beans_host_format_f64(out, cap, v, chosen, 'g');
     // %g reaches for exponent notation as soon as the value's exponent
     // reaches the digit count it was given, and the count here is whatever
-    // round-tripping needed — often one, which would print 100 as 1e+02.
+    // round-tripping needed: often one, which would print 100 as 1e+02.
     // Keep the notation the fixed ten-digit format used to choose by asking
     // for enough digits to stay in place-value form over the same range.
     int found = 0;
@@ -4455,7 +4264,7 @@ char* beans_interpolate(long long n, ...) {
     return r;
 }
 // strings carry their byte length and may legally hold NUL (\0 escapes,
-// File.read) — every consumer here is length-based; C-string fns like fputs,
+// File.read), every consumer here is length-based; C-string fns like fputs,
 // strcmp, and strstr would silently stop at the first NUL and diverge from
 // the interpreter
 static char* str_make(const char* p, long long n);
@@ -4537,7 +4346,7 @@ static void* mk_error(const char* msg, const char* kind) {
     return e;
 }
 // like mk_error, but msg is already an rc string carrying its exact byte
-// length — user text can hold NUL and must not pass through strlen
+// length: user text can hold NUL and must not pass through strlen
 static void* mk_error_own(char* msg_rc, const char* kind) {
     BError* e = beans_alloc(sizeof(BError), error_meta());
     e->type_id = -1;
@@ -4555,7 +4364,7 @@ typedef struct {
 } BRes;
 
 static BRes parse_fail(const char* s, const char* what) {
-    // s is the beans receiver string — splice it by its stored length so an
+    // s is the beans receiver string: splice it by its stored length so an
     // embedded NUL keeps the message byte-identical to the interpreter's
     const char* p1 = "can't read '";
     const char* p2 = "' as ";
@@ -4635,8 +4444,8 @@ typedef struct {
 // fact (SysV register-pair, Win64 sret, ARM64-Windows register-pair, ...), and the
 // compiler must not encode it. So every fallible/optional runtime symbol `foo` has a
 // thin `foo_out` wrapper co-located with it (same #if guards): it returns the raw
-// i64 value normally and writes the second word — the error object for BRes, the
-// presence/found flag for BOpt — through an output pointer that is always the LAST
+// i64 value normally and writes the second word: the error object for BRes, the
+// presence/found flag for BOpt: through an output pointer that is always the LAST
 // argument and is always written. C-to-C calls keep using BRes/BOpt directly.
 
 // explicit-length string maker; the terminator byte is already zero
@@ -4673,7 +4482,7 @@ long long beans_str_ends_with(char* s, char* p) {
     long long n = beans_slen(s), pl = beans_slen(p);
     return pl <= n && memcmp(s + n - pl, p, (size_t)pl) == 0;
 }
-// empty needle: find says 0, rfind says len — the C++ side agrees
+// empty needle: find says 0, rfind says len: the C++ side agrees
 BOpt beans_str_find(char* s, char* sub) {
     long long n = beans_slen(s), m = beans_slen(sub);
     if (m == 0) return (BOpt){0, 1};
@@ -4847,8 +4656,8 @@ char* beans_str_repeat(char* s, long long n, long long line, long long col) {
 // way. 2^63 is exact in a double, so the two guards are exact.
 //
 // NaN is recognised from the bits, not by asking whether the value equals
-// itself. On a target with no hardware double — the RV32 and Cortex-M boards
-// this runtime also builds for — an unordered compare lowers to __unorddf2,
+// itself. On a target with no hardware double: the RV32 and Cortex-M boards
+// this runtime also builds for: an unordered compare lowers to __unorddf2,
 // which is a compiler-rt symbol the freestanding profile does not link and
 // test/freestanding.sh refuses. Reading the exponent and mantissa is the same
 // answer with no libcall, and the ordered compares below are all ordinary
@@ -4882,7 +4691,7 @@ static long long list_stride(BList* l) {
 //                            load the 8-byte word at offset 40 and compare it
 //   llvm_emit_collections.b  list_header_note_change bumps the count at 40
 //                            and stores LIST_CHANGE_PUSH or LIST_CHANGE_POP
-//                            at 44 — in a loop holding the header in
+//                            at 44: in a loop holding the header in
 //                            registers, into that cache instead, written
 //                            back on the edge that leaves the loop
 //
@@ -4936,7 +4745,7 @@ static BList* list_new_capacity(long long stride, long long ptr_mask,
 // Growing a list's backing, whichever kind it has. An inline backing is
 // interior to a pooled block, so it cannot be reallocated: place a real one
 // and copy the live bytes across. A heap backing is the realloc it always was.
-// Neither zeroes the new tail — rt_big_realloc never did, and every caller
+// Neither zeroes the new tail: rt_big_realloc never did, and every caller
 // fills what it appends.
 static void list_backing_grow(BList* l, long long new_cap, long long stride,
                               long long line, long long col) {
@@ -5004,7 +4813,7 @@ void* beans_list_new_typed_capacity(long long stride, long long ptr_mask,
 // anything the program did (issue #152). Here rather than there because the
 // encoding bridges must resolve against libc alone (test/encoding_symbols.sh)
 // and _Thread_local puts __tlv_bootstrap in the object on Darwin, so the
-// storage has to sit on this side of the boundary — where thread-local state
+// storage has to sit on this side of the boundary, where thread-local state
 // is already how the runtime keeps a per-thread last error, as
 // reflect_error_code does. The bridge reaches it the only way it is allowed to
 // reach the runtime at all: through a pointer handed to it in the request
@@ -5012,7 +4821,7 @@ void* beans_list_new_typed_capacity(long long stride, long long ptr_mask,
 // beans_bytes_reserve_raw rides the encoder's req[6].
 //
 // Freestanding has one thread by contract and must not pull in a TLS runtime
-// service — the same trade reflect_error_code makes.
+// service: the same trade reflect_error_code makes.
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 static _Thread_local unsigned long long json_decode_probe_words[4];
 #else
@@ -5022,7 +4831,7 @@ static unsigned long long json_decode_probe_words[4];
 // Spelled `unsigned long long` on both sides rather than uint64_t, for the
 // reason beans_bytes_reserve_raw is: calling through a function pointer whose
 // type differs from the callee's declared type is undefined behaviour, and
-// uint64_t is `unsigned long` on LP64 — a different type from the same-width
+// uint64_t is `unsigned long` on LP64: a different type from the same-width
 // `unsigned long long` the bridge would otherwise name.
 void beans_json_decode_probe_publish(unsigned long long status,
                                      unsigned long long code,
@@ -5045,7 +4854,7 @@ long long beans_json_decode_probe(unsigned long long* out) {
 }
 // Exact-capacity construction for results whose whole live range is written
 // right after. The plain constructor always callocs four slots, so slice and
-// clone used to allocate, free, and allocate again for every result — 400k
+// clone used to allocate, free, and allocate again for every result: 400k
 // wasted calloc/free pairs in bench/slices.b alone, against a std::vector
 // range constructor that allocates once. Callers must fill [0, len).
 static BList* list_new_capacity(long long stride, long long ptr_mask,
@@ -5117,15 +4926,15 @@ long long beans_is_a(long long id, long long target) {
 }
 
 // ---- list search helpers (kind: 0 int-ish, 1 f64, 2 string, 3 decimal,
-// 4 unordered — everything compares equal, so sort keeps the original order
+// 4 unordered: everything compares equal, so sort keeps the original order
 // and min/max return the first element, like the interpreter's value_less
 // returning false) ----
 #if BEANS_RT_DECIMAL
 struct BDec;
 int beans_dec_cmp(struct BDec* a, struct BDec* b);
 #endif
-// IEEE 754 totalOrder as an integer key. `<` on a float is IEEE — NaN is
-// unordered with everything, and the two zeros compare equal — which is not
+// IEEE 754 totalOrder as an integer key. `<` on a float is IEEE: NaN is
+// unordered with everything, and the two zeros compare equal, which is not
 // an order at all, so a container that binary-searches or sorts on it gives
 // wrong answers rather than unsorted ones. Flipping the magnitude bits of a
 // negative turns the whole float line into signed integers that compare in
@@ -5169,7 +4978,7 @@ static int slot_cmp(long long a, long long b, long long kind) {
     // kind 7: a payload-free enum value is a pointer at its declaration-order
     // tag word (the same one enum `==` loads), so Order compares the loaded
     // tags. The static tag objects happen to be emitted consecutively, so
-    // pointer order equals tag order on this host — but that is layout luck
+    // pointer order equals tag order on this host, but that is layout luck
     // (private unnamed_addr constants a linker may reorder or fold), not a
     // contract, so comparing the loaded tags is right by contract where
     // comparing the pointers is right by accident. enum(u8) needs no kind
@@ -5186,8 +4995,7 @@ static int slot_cmp(long long a, long long b, long long kind) {
     beans_panic("order kind unknown to this runtime: the compiler and runtime are out of step", 0, 0);
     return 0; // beans_panic does not return; this satisfies the compiler
 }
-// content equality for strings — length header first, bytes second; strcmp
-// would stop at an embedded NUL and lie
+// Compare stored lengths and bytes so embedded NULs remain part of string equality.
 long long beans_str_eq(char* a, char* b) {
     long long n = beans_slen(a);
     return n == beans_slen(b) && memcmp(a, b, (size_t)n) == 0;
@@ -5196,9 +5004,9 @@ long long beans_str_eq(char* a, char* b) {
 // the interpreter's value_eq arm for arm: 0 raw slot (ints, bools, pointer
 // identity), 1 f64 by bit pattern, 2 string content, 3 decimal value,
 // 4 caller-supplied structural eq (enums, Bytes), 5 never equal (maps and
-// resource handles — value_eq's default arm), 6 f32 by bit pattern.
+// resource handles: value_eq's default arm), 6 f32 by bit pattern.
 // A float compares by its bits here, not by `==`: this is the equality that
-// belongs with slot_cmp's totalOrder above, and IEEE `==` is not one — it
+// belongs with slot_cmp's totalOrder above, and IEEE `==` is not one: it
 // made a NaN key write-only (it never equals the key already stored, so
 // every re-insert appended and no read could ever find it) while calling
 // -0.0 and +0.0 one key that sorts as two.
@@ -5216,7 +5024,7 @@ static long long slot_eq(long long a, long long b, long long kind,
 }
 // hashes for the map index, one per equality kind. The contract is only that
 // slot_eq-equal keys hash equal; the interpreter hashes differently and that
-// is fine — nothing observable depends on hash values, iteration walks data.
+// is fine, nothing observable depends on hash values, iteration walks data.
 static unsigned long long beans_mix64(unsigned long long x) {
     // One multiply is enough for an in-process table: unlike a persisted
     // cryptographic hash, this only needs to spread sequential integers and
@@ -5638,7 +5446,7 @@ void beans_reflect_register_field_access(char* owner, char* name,
     }
 }
 
-// The smallest method id whose owner base-matches and name matches — the
+// The smallest method id whose owner base-matches and name matches: the
 // same row the linear owner scan used to return.
 static long long reflect_method_id_on(char* owner, char* name) {
     long long best = -1;
@@ -6421,8 +6229,8 @@ char* beans_reflect_error_message(void) {
         case 6: return str_lit("wrong reflected argument count");
         // No code was set, so nothing here failed and there is nothing to
         // say about it. This used to answer "reflection operation failed",
-        // which the tree interpreter — whose stored message is "" in the
-        // same state — never said, so one program printed two different
+        // which the tree interpreter: whose stored message is "" in the
+        // same state: never said, so one program printed two different
         // things depending on which backend ran it (#193). Any program can
         // reach it: std.reflection is an importable module, and every entry
         // clears the code on the way in, so a successful call leaves this
@@ -6969,7 +6777,7 @@ long long beans_reflect_function_call(char* qualified,
 
 // The resolved core of a reflective method call: flags, receiver and arity
 // checks, virtual dispatch, then one invoke. checked_owner is the name the
-// receiver is validated against — the caller-supplied owner on the string
+// receiver is validated against: the caller-supplied owner on the string
 // path, the declaring owner on the handle path.
 static long long reflect_method_invoke(long long id, char* checked_owner,
                                        long long receiver_raw,
@@ -7223,8 +7031,8 @@ static unsigned long long slot_hash(long long v, long long kind,
     if (kind == 6) return (unsigned long long)beans_f32_hash(v);
     return beans_mix64((unsigned long long)v); // raw, and never-equal keys
 }
-// A typed scalar list stores elements at their real width — List<f32>
-// keeps 4-byte elements — while every slot-oriented reader below speaks
+// A typed scalar list stores elements at their real width: List<f32>
+// keeps 4-byte elements: while every slot-oriented reader below speaks
 // eight-byte slots. Widening through here keeps the kind codes working
 // for both representations (an f32 slot is its bits zero-extended,
 // exactly what the emitter's to_slot produces).
@@ -7255,7 +7063,7 @@ long long beans_list_contains(BList* l, long long v, long long kind, void* eq) {
 // Two lists are equal when they hold the same elements in the same order,
 // which is what the interpreter has always answered. Element equality is the
 // same slot_eq table `contains` scans with, so a list of classes compares by
-// identity and a list of strings by content — matching element-by-element
+// identity and a list of strings by content: matching element-by-element
 // `==` exactly.
 long long beans_list_equal(BList* a, BList* b, long long kind, void* eq) {
     if (a == b) return 1;
@@ -7400,7 +7208,7 @@ void beans_list_reverse(BList* l) {
 // (issue #81, spec/CONCURRENCY.md). Contained by brew/join, that panic
 // unwinds out of this frame, and every element the walk had not reached
 // would be lost: the container already reports itself empty, so nothing in
-// the program can reach them and nothing ever frees them — O(n) per caught
+// the program can reach them and nothing ever frees them: O(n) per caught
 // panic, where the tree interpreter destroyed all of them. The cursor lives
 // in the guard and is decremented before the release, so the unwind resumes
 // at the next element down and nothing is released twice.
@@ -7427,7 +7235,7 @@ void beans_list_clear(BList* l) {
     long long n = l->len;
     l->len = 0;
     if (!l->ptr_mask) return; // nothing to release
-    // last element first — deinit made death order observable, and the
+    // last element first: deinit made death order observable, and the
     // interpreter's vector teardown destroys back to front
     __attribute__((cleanup(rt_list_clear_unwound)))
     RtListClearUnwound g = {l, n, list_stride(l), 1};
@@ -7504,7 +7312,7 @@ BList* beans_list_clone(BList* l) {
     return r;
 }
 
-// bottom-up stable merge — structurally identical to the interpreter's sort
+// bottom-up stable merge: structurally identical to the interpreter's sort
 // branch (src/interpreter.b), block for block, so both backends produce the
 // same order for ANY predicate, even one that is not a strict weak ordering
 static long long sort_less(long long x, long long y, long long kind, void* thunk,
@@ -7517,7 +7325,7 @@ static long long sort_less(long long x, long long y, long long kind, void* thunk
 // sorting through a captured reference, and the two backends must show it
 // the same thing at every call, so a widened sort writes each completed
 // block back through the mirror exactly where the in-place sort (and the
-// interpreter, block for block) commits its own — and the restore guard
+// interpreter, block for block) commits its own, and the restore guard
 // then snapshots the narrow storage the program can actually see.
 static void list_merge_sort(long long* a, long long n, long long kind, void* thunk,
                             void* box, BList* mirror, BList* owner) {
@@ -7601,7 +7409,7 @@ static void list_radix_sort_int(long long* a, long long n) {
     if (src != a) memcpy(a, src, (size_t)n * 8);
 }
 // Sorting speaks eight-byte slots. A 4-byte typed list widens into a
-// temporary slot array, sorts there, and narrows back — the permutation
+// temporary slot array, sorts there, and narrows back: the permutation
 // is what matters, and n*8 scratch is what sort_by_key already pays.
 static long long* list_widen_slots(BList* l) {
     long long n = l->len;
@@ -7655,7 +7463,7 @@ static void list_sort_by_key_slots(BList* l, void* thunk, void* box,
     if (n < 1) return;
     // every key call runs before the first write to the list, so a
     // panicking key function leaves the list untouched; the scratch is
-    // unwind-owned. `observed` is the program's own list — for a widened
+    // unwind-owned. `observed` is the program's own list: for a widened
     // sort `l` is a slot view over scratch the callback cannot reach.
     RT_SCRATCH long long* keys = rt_alloc((size_t)n * 8);
     if (!keys) beans_panic("out of memory", 0, 0);
@@ -7809,7 +7617,7 @@ BMap* beans_map_new_typed_value(long long key_ptr, long long value_stride,
     return m;
 }
 // (re)build the index sized for the current entry count, dropping tombstones
-// and compacting holes. Only moves slots and writes index words — never
+// and compacting holes. Only moves slots and writes index words: never
 // retains or releases.
 static void map_reindex_to(BMap* m, long long kind, long long (*hf)(long long),
                            long long reserve) {
@@ -8057,8 +7865,8 @@ static void map_insert_miss_typed(BMap* m, long long key, void* value,
 //
 // Hit-path order is load-bearing (issue #44, spec/CONCURRENCY.md): the old
 // value's release runs user deinit code, and contained by brew/join a panic
-// there unwinds out of this frame. The store must stand on that panic — the
-// interpreter's rule — so the entry takes the new value, the duplicate key
+// there unwinds out of this frame. The store must stand on that panic: the
+// interpreter's rule, so the entry takes the new value, the duplicate key
 // is dropped, and the old value's release comes LAST, when everything else
 // is already consistent. Nothing before it can panic: the store and the
 // write barrier are plain code, a duplicate string key frees without user
@@ -8098,8 +7906,7 @@ void beans_map_set(BMap* m, long long key, long long val, long long kind, void* 
 // held for the whole iterator family, which left `for k, v in m` making three
 // calls per pair to read sixteen bytes out of a flat array. Measured on an M1
 // at --release --lto: iteration 2.51 -> 0.60 ns a pair, the rest about 5%.
-// test/map_inline.sh holds this set to the rule, so the next entry point
-// added here cannot quietly miss it.
+// Keep this table aligned with the emitter-named entry points tested by test/map_inline.sh.
 //
 // None of this changes what runs. Inlining a panic (iter_next) or a release
 // (remove_raw, insert_raw, set_raw) keeps its unwind edge: the emitter
@@ -8374,9 +8181,7 @@ __attribute__((always_inline)) static void map_unlink_entry(
         m->used -= 1;
         if (m->tombs > m->len) map_reindex(m, kind, hf);
     } else {
-        // indexed: zero the pair into a hole — no entry moves, so no index
-        // position needs fixing and delete is O(1). Reindex compacts once
-        // holes outnumber live entries, so the cost is amortized.
+        // Zero the pair into a hole without moving entries; reindex compacts when holes outnumber live entries.
         m->data[i * 2] = 0;
         m->data[i * 2 + 1] = 0;
         if (m->wide_values)
@@ -8620,7 +8425,7 @@ void beans_map_clear(BMap* m) {
     m->tombs = 0;
     if (!(flags & 3) && !m->value_ptr_mask) return; // nothing to release
     // reverse, value before key: the interpreter's pair teardown runs members
-    // last-first, entries back to front — observable once a deinit prints
+    // last-first, entries back to front: observable once a deinit prints
     __attribute__((cleanup(rt_map_clear_unwound)))
     RtMapClearUnwound g = {m, used, -1, flags, 1};
     rt_map_clear_from(&g);
@@ -8675,7 +8480,7 @@ char* beans_list_join(BList* l, char* sep, long long kind) {
 }
 
 // UTF-8 sequences, one string per character; a malformed lead or truncated
-// tail comes through one byte at a time — byte slicing, no validation
+// tail comes through one byte at a time: byte slicing, no validation
 BList* beans_str_chars(char* s) {
     long long len = beans_slen(s);
     BList* l = beans_list_new(1);
@@ -8739,7 +8544,7 @@ __attribute__((always_inline)) long long beans_str_count_chars(
 // beside bytes (len) and scalars (chars): a padded column wants neither.
 //
 // The tables below are generated from the Unicode Character Database by
-// tools/gen_width_table.py — see its header for which files and which
+// tools/gen_width_table.py: see its header for which files and which
 // properties. The rules on top of them are the ones every terminal follows:
 //
 //   * a zero-width scalar (combining mark, control, format character,
@@ -8748,7 +8553,7 @@ __attribute__((always_inline)) long long beans_str_count_chars(
 //     two;
 //   * everything else takes one;
 //   * U+200D ZERO WIDTH JOINER welds the next scalar onto the current
-//     glyph, so that scalar takes no column either — one emoji, one glyph,
+//     glyph, so that scalar takes no column either: one emoji, one glyph,
 //     however many scalars spell it;
 //   * U+FE0F promotes the pictograph before it from one column to two and
 //     U+FE0E pulls it back to one;
@@ -8757,7 +8562,7 @@ __attribute__((always_inline)) long long beans_str_count_chars(
 //
 // Invalid UTF-8 is not silently dropped: each bad byte counts as one column,
 // which is what a terminal draws for the replacement character it substitutes.
-/* BEGIN GENERATED display-width tables — Unicode 17.0.0.
+/* BEGIN GENERATED display-width tables : Unicode 17.0.0.
    Regenerate with tools/gen_width_table.py; do not edit by hand.
    zero: Mn/Me/Cf marks, Cc controls, Hangul jamo V/T, and the emoji
    skin-tone modifiers, less U+00AD which terminals draw.
@@ -8989,7 +8794,7 @@ static int width_of_scalar(unsigned int cp) {
 // whatever its value happens to be: *bad is set, the walk advances one byte,
 // and the caller charges the one column a terminal draws for the replacement
 // it substitutes. Reading a stray continuation byte as its own scalar counted
-// it zero, because U+0080..U+009F are C1 controls — one bad byte then measured
+// it zero, because U+0080..U+009F are C1 controls: one bad byte then measured
 // as no column at all.
 static long long width_decode(const char* p, long long n, unsigned int* out,
                               int* bad) {
@@ -9172,7 +8977,7 @@ static void show_leave_step(BShowCtx* c, long long v) {
     (void)v;
     if (c->plen > 0) c->plen -= 1;
 }
-// 1 when this object is already on the path — the caller prints a cycle
+// 1 when this object is already on the path: the caller prints a cycle
 // marker and pushes no leave. 0 when it has just been put there.
 long long beans_show_enter(BShowCtx* c, long long v) {
     for (long long i = 0; i < c->plen; i++) {
@@ -9252,8 +9057,7 @@ char* beans_show_run(void* fn, long long v) {
 }
 // A list of wide inline values joined the way an interpolation renders it.
 // beans_list_join_show cannot serve these: one eight-byte slot does not hold
-// a struct or a decimal, so each element reaches the driver by its address —
-// the stride is the element size the compiler gave beans_list_new_typed.
+// Wide values reach the display driver by address; stride is the element size supplied to beans_list_new_typed.
 char* beans_list_join_wide(BList* l, char* sep, void* elem_step) {
     BShowCtx c = {0, 0, 0, 0, 0, 0, 0, 0, 0};
     long long sl = beans_slen(sep);
@@ -9304,7 +9108,7 @@ BList* beans_str_lines(char* s) {
     return l;
 }
 
-// ---- Bytes: kind 2 with no element pointers — data freed, never walked ----
+// ---- Bytes: kind 2 with no element pointers: data freed, never walked ----
 static BList* bytes_mk(long long n) {
     BList* b = beans_alloc(sizeof(BList), 2);
     long long cap = n < 8 ? 8 : n;
@@ -9364,7 +9168,7 @@ long long beans_bytes_eq(BList* a, BList* b) {
 }
 
 // unsigned LEB128 over the 64-bit two's-complement pattern (negatives take
-// 10 bytes); crc32 is the IEEE polynomial, table-driven — builtins.cpp
+// 10 bytes); crc32 is the IEEE polynomial, table-driven: builtins.cpp
 // computes the identical table
 static void bytes_grow(BList* b, long long need);
 void beans_bytes_append_varint(BList* b, long long x) {
@@ -9476,7 +9280,7 @@ void beans_bytes_reserve(BList* b, long long n, long long line, long long col) {
 // that may not touch BList, so it grows a caller-owned Bytes only through
 // this pointer, handed to it as req[6]. One call both sets the Bytes logical
 // length to `len` (bytes already written into the backing) and ensures the
-// backing can hold `min_cap` bytes; it returns the — possibly moved — base
+// backing can hold `min_cap` bytes; it returns the: possibly moved: base
 // pointer and reports the capacity through *cap_out, so the writer keeps
 // writing straight into the store without a second buffer. Growth failure
 // panics, exactly as every other Bytes append does.
@@ -9487,7 +9291,7 @@ void beans_bytes_reserve(BList* b, long long n, long long line, long long col) {
 // void*-taking pointer is undefined behaviour even though both parameters use
 // the same machine representation. The declared type here and the typedef
 // there have to be the same type, so the handle is void* on both sides and
-// this side — which does know BList — is the one that casts.
+// this side, which does know BList: is the one that casts.
 unsigned char* beans_bytes_reserve_raw(void* handle, unsigned long long len,
                                        unsigned long long min_cap,
                                        unsigned long long* cap_out) {
@@ -9650,7 +9454,7 @@ char* beans_bytes_slice_to_string_full(BList* b, long long from, long long to,
 }
 
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL || BEANS_RT_WASI
-// files, mmap, processes, shared memory and the directory walk: every one of
+// files, mmap, processes, shared memory and the directory walk, every one of
 // these is an operating system service, and none of them exists below the full
 // profile.
 
@@ -9660,8 +9464,8 @@ char* beans_bytes_slice_to_string_full(BList* b, long long from, long long to,
 // and stat are 32-bit there), positional IO (no pread/pwrite), advisory
 // whole-file locks (no flock), and mapping (no sys/mman). Win32 handles come
 // from _get_osfhandle; the CRT descriptor still owns the file. windows.h comes
-// in with the hosted includes at the top of this file — the minimal profile
-// needs it too — so only the filesystem's own header is added here.
+// in with the hosted includes at the top of this file: the minimal profile
+// needs it too, so only the filesystem's own header is added here.
 #include <direct.h>
 typedef struct _stati64 fs_stat_t;
 #define fs_fstat(fd, st) _fstati64((fd), (st))
@@ -9687,10 +9491,7 @@ static int fs_mkdir_utf8(const char* path) {
 // same meaning on the other side of a spawn: the child does not inherit it
 #define O_CLOEXEC _O_NOINHERIT
 #endif
-// Every file the runtime opens is binary: the CRT's text mode rewrites \n to
-// \r\n on the way out and back on the way in, which changes what File.size
-// reports versus what was written — the one-byte-per-line lie differential
-// testing exists to catch.
+// Open files in binary mode because CRT text mode translates newlines and changes byte counts.
 #define FS_O_BINARY _O_BINARY
 static int fs_win_errno(DWORD code) {
     switch (code) {
@@ -9706,7 +9507,7 @@ static int fs_win_errno(DWORD code) {
 }
 // POSIX pread/pwrite leave the file position alone. A synchronous Win32
 // handle moves its position even when the OVERLAPPED offset names one, so
-// both shims save and restore it — without this, a positional read is
+// both shims save and restore it: without this, a positional read is
 // observable through tell().
 static rt_ssize_t fs_pread(int fd, void* buf, size_t n, long long pos) {
     HANDLE h = (HANDLE)_get_osfhandle(fd);
@@ -9767,7 +9568,7 @@ static int fs_ftruncate(int fd, long long n) {
     return 0;
 }
 // The CRT's open() never grants FILE_SHARE_DELETE, which makes every open
-// file undeletable — and removing a file that is still open (or mapped) is
+// file undeletable, and removing a file that is still open (or mapped) is
 // something POSIX programs do as a matter of course. Open through Win32 with
 // the full sharing mask and wrap the handle in a CRT descriptor; every CRT
 // operation (read, write, lseek, chsize) works on it unchanged.
@@ -9837,10 +9638,7 @@ static int fs_unlink_posix(const char* path) {
         free(wpath);
         return 0;
     }
-    // Wine and pre-1607 Windows lack that class. Renaming an open file is
-    // allowed under FILE_SHARE_DELETE, so the caller's name disappears right
-    // now — the observable POSIX fact — and the ghost, marked delete-pending
-    // under its side name, vanishes when the last handle closes.
+    // Wine and pre-1607 Windows emulate unlink by renaming the open file; its delete-pending side name vanishes when the last handle closes.
     size_t wlen = wcslen(wpath);
     wchar_t* side = malloc((wlen + 48) * sizeof(wchar_t));
     if (side) {
@@ -10065,7 +9863,7 @@ BRes beans_file_read_at(BFile* f, long long pos, long long n) {
     if (f->closed) return (BRes){0, closed_err()};
     if (pos < 0 || n < 0) return (BRes){0, mk_error("negative read", "io")};
     // clamp to what the file can actually give: a corrupted length field must
-    // not become a giant allocation — the read comes back short anyway
+    // not become a giant allocation: the read comes back short anyway
     fs_stat_t rst;
     if (fs_fstat((int)f->fd, &rst) == 0 && S_ISREG(rst.st_mode)) {
         long long rem = rst.st_size > pos ? rst.st_size - pos : 0;
@@ -10286,7 +10084,7 @@ BRes beans_file_close(BFile* f) {
     // While worker threads are live, defer the real close(): a racing op on
     // another thread could still be mid-syscall on this fd, and reusing the
     // number for a freshly-opened file would silently corrupt it. The fd stays
-    // open (harmless — same file) until the handle's last ref drops in
+    // open (harmless: same file) until the handle's last ref drops in
     // cc_free_shell, when no thread can hold it. This mirrors the collector's
     // own "don't touch shared resources while mutators run" gate. Zero cost
     // single-threaded, where cc_threads is 0 and the fd closes now.
@@ -10300,7 +10098,7 @@ BRes beans_file_close(BFile* f) {
 }
 long long beans_file_close_out(BFile* f, void** e_out) { BRes r = beans_file_close(f); *e_out = r.err; return r.val; }
 
-// advisory flock — single-writer databases; try_lock's ok(false) means "held
+// advisory flock: single-writer databases; try_lock's ok(false) means "held
 // by someone else", every other failure is a real error
 BRes beans_file_lock(BFile* f) {
     if (f->closed) return (BRes){0, closed_err()};
@@ -10312,7 +10110,7 @@ BRes beans_file_lock(BFile* f) {
         return (BRes){0, op_err_obj("lock", errno)};
     return (BRes){1, NULL};
 #else
-    // a blocking lock is the classic EINTR victim — retry rather than fail
+    // a blocking lock is the classic EINTR victim: retry rather than fail
     while (flock((int)f->fd, LOCK_EX) != 0) {
         if (errno == EINTR) continue;
         return (BRes){0, op_err_obj("lock", errno)};
@@ -10373,7 +10171,7 @@ static void* mmap_closed_err(void) { return mk_error("mmap is closed", "closed")
 // one drain thread per output stream.
 //
 // No shell, on either platform. POSIX argv reaches execvp untouched. Windows has no
-// argv — CreateProcess takes one command line — so proc_win_cmdline rebuilds it under
+// argv: CreateProcess takes one command line, so proc_win_cmdline rebuilds it under
 // exactly the rules the child's CRT uses to split it again, and the round trip is
 // byte-for-byte. Either way a filename containing a space, a quote or a semicolon is
 // just a filename.
@@ -10579,7 +10377,7 @@ BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
         close(out_fd[0]);
         close(err_fd[0]);
         // argv[0] points into the packed Bytes, so it is a plain C string, not a
-        // beans rc string — fs_err_obj_rc would read a length from before it. ASan
+        // beans rc string: fs_err_obj_rc would read a length from before it. ASan
         // caught exactly that.
         void* built = timed_out ? mk_error("process timed out", "timeout")
                                 : fs_err_obj(argv[0], child_errno);
@@ -10705,9 +10503,9 @@ BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
 }
 long long beans_proc_run_out(BList* argv_packed, BList* env_packed, char* cwd, BList* input, long long max_output, void** e_out) { BRes r = beans_proc_run(argv_packed, env_packed, cwd, input, max_output); *e_out = r.err; return r.val; }
 
-#else // _WIN32 — CreateProcess, pipe handles, one drain thread per stream
+#else // _WIN32: CreateProcess, pipe handles, one drain thread per stream
 
-// CreateProcess reports a spawn failure synchronously — the one place this port is
+// CreateProcess reports a spawn failure synchronously: the one place this port is
 // simpler than POSIX, which needs the exec pipe to learn the same thing. These are
 // the codes it speaks that the fs shim never sees; the rest reuse fs_win_errno.
 static int proc_win_errno(DWORD code) {
@@ -10772,7 +10570,7 @@ static char* proc_win_cmdline(char** argv) {
 static int proc_env_cmp(const void* a, const void* b) {
     const wchar_t* x = *(const wchar_t* const*)a;
     const wchar_t* y = *(const wchar_t* const*)b;
-    // CompareStringOrdinal with bIgnoreCase is the exact rule — _wcsicmp folds
+    // CompareStringOrdinal with bIgnoreCase is the exact rule: _wcsicmp folds
     // by the C locale, which is not the same thing outside ASCII.
     int rc = CompareStringOrdinal(x, -1, y, -1, TRUE);
     return rc == CSTR_LESS_THAN ? -1 : rc == CSTR_GREATER_THAN ? 1 : 0;
@@ -10817,7 +10615,7 @@ fail:
     return NULL;
 }
 
-// One variable out of a block, by name, case-insensitively — the block is the
+// One variable out of a block, by name, case-insensitively: the block is the
 // child's environment, so this is how PATH and PATHEXT are read from it rather
 // than from the parent's.
 static const wchar_t* proc_env_lookup(const wchar_t* block, const wchar_t* name) {
@@ -10847,8 +10645,7 @@ static wchar_t* proc_win_resolve(const wchar_t* program, const wchar_t* path,
     static const wchar_t* const fallback_ext = L".COM;.EXE;.BAT;.CMD";
     if (!pathext || !*pathext) pathext = fallback_ext;
 
-    // A name carrying a separator is a path, not something to search for —
-    // exactly the rule execvp follows.
+    // Names containing a separator are paths, matching execvp behavior.
     int is_path = 0;
     for (const wchar_t* p = program; *p; p++)
         if (*p == L'\\' || *p == L'/' || *p == L':') { is_path = 1; break; }
@@ -10896,7 +10693,7 @@ static wchar_t* proc_win_resolve(const wchar_t* program, const wchar_t* path,
 }
 
 // The shared front half of run and start: three pipes, inheritance, CreateProcess.
-// Only the child's ends are made inheritable — a child holding the parent's copy of
+// Only the child's ends are made inheritable: a child holding the parent's copy of
 // its own stdin writer would never read EOF there, and a concurrently spawned
 // sibling holding our read ends would keep them from ever reporting one.
 //
@@ -10904,13 +10701,13 @@ static wchar_t* proc_win_resolve(const wchar_t* program, const wchar_t* path,
 // the child *every* inheritable handle in the process, so two threads spawning at
 // once each inherit the other's pipes and neither child's reader ever sees EOF.
 // PROC_THREAD_ATTRIBUTE_HANDLE_LIST names the three handles that may cross, and
-// the mutex closes the remaining window — the handles are only marked inheritable
+// the mutex closes the remaining window: the handles are only marked inheritable
 // between SetHandleInformation and CreateProcess, so no other spawn can be inside
 // that window at the same time. Either mechanism alone would do; together the
 // guarantee does not depend on the attribute list being honoured.
 static pthread_mutex_t proc_spawn_lock = PTHREAD_MUTEX_INITIALIZER;
 typedef struct {
-    HANDLE proc;               // the child — Windows hands a waiter a handle, not a pid
+    HANDLE proc;               // the child: Windows hands a waiter a handle, not a pid
     HANDLE in_w, out_r, err_r; // the parent's ends
 } ProcWin;
 static int proc_win_spawn(char** argv, BList* env_packed, char* cwd, ProcWin* got,
@@ -11051,8 +10848,7 @@ fail:
 
 // One output stream, drained to EOF on its own thread. The sink grows with plain
 // malloc on purpose: a drain thread is not a registered beans thread, and beans_alloc
-// may start a cycle collection the moment it believes no such thread is running —
-// touching the beans heap from here would race the collector. A broken pipe is how a
+// may start collection when no Beans thread is registered, so this thread must not touch the Beans heap. A broken pipe is how a
 // pipe spells EOF; any other failure also ends the stream, exactly as the POSIX loop
 // treats read errors.
 typedef struct {
@@ -11189,7 +10985,7 @@ BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
     }
 
     // Feed stdin here on the calling thread while the two drains keep both outputs
-    // moving — the same watch-everything-at-once property poll gives POSIX. A child
+    // moving: the same watch-everything-at-once property poll gives POSIX. A child
     // that closed its stdin fails the write; stopping is the same give-up the POSIX
     // loop reads out of POLLERR, and there is no SIGPIPE to dodge.
     long long input_len = input ? input->len : 0;
@@ -11215,7 +11011,7 @@ BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
     DWORD raw = 0;
     GetExitCodeProcess(child.proc, &raw);
     CloseHandle(child.proc);
-    long long code = (long long)(int)raw; // sign-extend — see the section comment
+    long long code = (long long)(int)raw; // sign-extend: see the section comment
     if (timer_up) { SetEvent(watch.finished); pthread_join(timer, NULL); }
     if (watch.finished) CloseHandle(watch.finished);
     if (job) CloseHandle(job);
@@ -11237,7 +11033,7 @@ BRes beans_proc_run(BList* argv_packed, BList* env_packed, char* cwd,
                                                     err_bytes), 0};
 }
 long long beans_proc_run_out(BList* argv_packed, BList* env_packed, char* cwd, BList* input, long long max_output, void** e_out) { BRes r = beans_proc_run(argv_packed, env_packed, cwd, input, max_output); *e_out = r.err; return r.val; }
-#endif // !defined(_WIN32) — beans_proc_run
+#endif // !defined(_WIN32): beans_proc_run
 
 // ---- a running child --------------------------------------------------------
 //
@@ -11250,11 +11046,11 @@ long long beans_proc_run_out(BList* argv_packed, BList* env_packed, char* cwd, B
 // resource a process cannot get more of, and the Beans handle's `deinit` kills and reaps
 // rather than letting one escape.
 
-// [pid][stdin fd][stdout fd][stderr fd]. All three pipes, always — a child with inherited
+// [pid][stdin fd][stdout fd][stderr fd]. All three pipes, always: a child with inherited
 // stdio cannot be talked to, and choosing per stream would multiply the API for no gain
 // while `run` already covers the simple case. On Windows the first slot carries the
-// process HANDLE as an i64, not a pid — waiting and terminating need the handle, and
-// closing it is that port's reap — while the fd slots are CRT descriptors on both.
+// process HANDLE as an i64, not a pid: waiting and terminating need the handle, and
+// closing it is that port's reap: while the fd slots are CRT descriptors on both.
 
 #if !defined(_WIN32)
 // Declared here because the clock section is further down the file and a bounded wait
@@ -11307,7 +11103,7 @@ BRes beans_proc_start(BList* argv_packed, BList* env_packed, char* cwd) {
         close(out_fd[0]); close(out_fd[1]);
         close(err_fd[0]); close(err_fd[1]);
         close(exec_fd[0]);
-        // The parent may be watching signals, which means they are blocked — and a mask
+        // The parent may be watching signals, which means they are blocked, and a mask
         // is inherited across exec. A child that starts with SIGTERM blocked cannot be
         // stopped by anyone, so the mask is cleared here. This is the one place the
         // signal design reaches into process spawning.
@@ -11366,8 +11162,7 @@ long long beans_proc_start_out(BList* argv_packed, BList* env_packed, char* cwd,
 // what `run` reports.
 //
 // waitpid has no timeout, so a bounded wait is WNOHANG against a monotonic deadline with a
-// short sleep between tries. The sleep grows to 20ms so a long wait costs almost no CPU —
-// this is not a spin. A timeout of 0 is one non-blocking check; a negative one blocks in
+// short sleep between tries. The sleep grows to 20ms to limit CPU use. A timeout of 0 is one non-blocking check; a negative one blocks in
 // waitpid with no polling at all.
 BRes beans_proc_status(long long pid, long long timeout_ms) {
     if (pid <= 0) return (BRes){0, mk_error("no such child", "invalid")};
@@ -11404,7 +11199,7 @@ long long beans_proc_status_out(long long pid, long long timeout_ms, void** e_ou
 
 BRes beans_proc_signal(long long pid, long long number) {
     if (pid <= 0) return (BRes){0, mk_error("no such child", "invalid")};
-    // Any signal may be *sent* — including kill and stop, which is the point of being
+    // Any signal may be *sent*: including kill and stop, which is the point of being
     // able to stop a child that ignores politeness. The watchable table restricts what a
     // program can *receive*, which is a different question.
     if (number <= 0 || number >= 64)
@@ -11418,7 +11213,7 @@ BRes beans_proc_signal(long long pid, long long number) {
 }
 long long beans_proc_signal_out(long long pid, long long number, void** e_out) { BRes r = beans_proc_signal(pid, number); *e_out = r.err; return r.val; }
 
-#else // _WIN32 — the handle in `pid` does what waitpid and kill do elsewhere
+#else // _WIN32: the handle in `pid` does what waitpid and kill do elsewhere
 
 BRes beans_proc_start(BList* argv_packed, BList* env_packed, char* cwd) {
     int argc = 0;
@@ -11462,7 +11257,7 @@ BRes beans_proc_start(BList* argv_packed, BList* env_packed, char* cwd) {
 long long beans_proc_start_out(BList* argv_packed, BList* env_packed, char* cwd, void** e_out) { BRes r = beans_proc_start(argv_packed, env_packed, cwd); *e_out = r.err; return r.val; }
 
 // [finished 0/1][status], matching what `run` reports. WaitForSingleObject carries
-// the whole timeout natively — none of the WNOHANG-plus-nap loop POSIX needs — and
+// the whole timeout natively: none of the WNOHANG-plus-nap loop POSIX needs, and
 // closing the handle on the finished path is this port's reap: after it the value in
 // `pid` is dead exactly as a waited-for pid is, and std.process's `reaped` flag keeps
 // every later call away, just as it must on POSIX once a pid can be recycled.
@@ -11493,8 +11288,7 @@ BRes beans_proc_status(long long pid, long long timeout_ms) {
 }
 long long beans_proc_status_out(long long pid, long long timeout_ms, void** e_out) { BRes r = beans_proc_status(pid, timeout_ms); *e_out = r.err; return r.val; }
 
-// No signal is deliverable on Windows, so every number is a hard TerminateProcess —
-// std.process's terminate-then-kill degrades to kill-then-kill, which still keeps
+// Windows cannot deliver signals, so every signal number maps to TerminateProcess; terminate-then-kill becomes kill-then-kill and still keeps
 // stop()'s promise that it returns. The exit code carries -(number) so status
 // reports the same negative the POSIX child would show.
 BRes beans_proc_signal(long long pid, long long number) {
@@ -11502,7 +11296,7 @@ BRes beans_proc_signal(long long pid, long long number) {
     if (number <= 0 || number >= 64)
         return (BRes){0, mk_error("signal number out of range", "invalid")};
     HANDLE h = (HANDLE)(intptr_t)pid;
-    // Already exited is the state the caller wanted — the same ruling POSIX gives
+    // Already exited is the state the caller wanted: the same ruling POSIX gives
     // ESRCH, and kill on a not-yet-reaped zombie succeeds there too.
     if (WaitForSingleObject(h, 0) == WAIT_OBJECT_0) return (BRes){1, NULL};
     if (!TerminateProcess(h, (UINT)(-(int)number))) {
@@ -11513,7 +11307,7 @@ BRes beans_proc_signal(long long pid, long long number) {
     return (BRes){1, NULL};
 }
 long long beans_proc_signal_out(long long pid, long long number, void** e_out) { BRes r = beans_proc_signal(pid, number); *e_out = r.err; return r.val; }
-#endif // !defined(_WIN32) — start/status/signal
+#endif // !defined(_WIN32): start/status/signal
 
 // Plain descriptor I/O, for the child's pipes. Separate from the socket calls because
 // send/recv fail with ENOTSOCK on a pipe. Shared with the Windows port: its fds wrap
@@ -11602,15 +11396,15 @@ long long beans_proc_close_out(long long fd, void** e_out) { BRes r = beans_proc
 //
 // A POSIX shared-memory object, mapped MAP_SHARED so writes are visible to every
 // process that has it open. It comes back as an ordinary MMap, which already has the
-// accessors and the deterministic close — shared memory is a *source* of a mapping,
+// accessors and the deterministic close: shared memory is a *source* of a mapping,
 // not a new kind of thing.
 //
 // The fd is closed as soon as the mapping exists: the mapping keeps the object alive,
 // and holding the descriptor open would leak one per map. The name outlives every
 // process until someone unlinks it, which is why unlink is a separate call.
 // Bionic has no shm_open at all. Android removed POSIX named shared memory
-// deliberately — ashmem and later memfd took its place, and neither offers a
-// name another process can open — so there is nothing to emulate it with: a
+// deliberately: ashmem and later memfd took its place, and neither offers a
+// name another process can open, so there is nothing to emulate it with: a
 // file under /data is not readable by a second application, and a memfd is
 // anonymous by construction.
 //
@@ -11631,11 +11425,7 @@ BRes beans_shm_open(char* name, long long size, long long create) {
     if (size <= 0) return (BRes){0, mk_error("shared memory size must be positive",
                                              "invalid")};
 #if defined(_WIN32)
-    // POSIX shared memory is a file in a well-known place — /dev/shm on
-    // Linux — and the Windows emulation is exactly that: a real file in the
-    // temp directory, mapped shared. The native alternative, a pagefile-backed
-    // *named* mapping, dies with its last handle; the POSIX object outlives
-    // every process until unlink, and a file is how Windows spells that.
+    // Windows emulates POSIX shared memory with a shared-mapped temp file, which persists until unlink like /dev/shm objects.
     char shm_path[MAX_PATH + 64];
     if (fs_shm_path(shm_path, sizeof shm_path, name) != 0)
         return (BRes){0, mk_error("no temp directory for shared memory", "io")};
@@ -11660,11 +11450,7 @@ BRes beans_shm_open(char* name, long long size, long long create) {
         close(fd);
         return (BRes){0, fs_err_obj_rc(name, e)};
     }
-    // The caller always states the size, in both modes. fstat on a shared-memory
-    // object reports a page-rounded size — 16384 for a 64-byte object on macOS — so
-    // trusting it would hand a reader a length its writer never agreed to. The
-    // rounded size is still useful as a bound: mapping past the real end gives SIGBUS
-    // on first touch, so a request that does not fit is refused here instead.
+    // The caller supplies the logical size because fstat reports page-rounded allocation; reject requests beyond that bound to avoid SIGBUS on access.
     long long length = size;
     if (length <= 0) {
         close(fd);
@@ -11723,7 +11509,7 @@ BRes beans_shm_unlink(char* name) {
     return (BRes){1, 0};
 #else
     if (shm_unlink(name) != 0) return (BRes){0, fs_err_obj_rc(name, errno)};
-    return (BRes){1, 0}; // ok(true) — the row is typed Result<bool>
+    return (BRes){1, 0}; // ok(true): the row is typed Result<bool>
 #endif
 }
 long long beans_shm_unlink_out(char* name, void** e_out) { BRes r = beans_shm_unlink(name); *e_out = r.err; return r.val; }
@@ -11773,7 +11559,7 @@ static void mmap_guard(BMMap* m, long long line, long long col) {
 static long long mmap_word(BMMap* m, const char* what, long long pos, long long w,
                            long long line, long long col) {
     mmap_guard(m, line, col);
-    // pos > len - w, never pos + w > len — the sum overflows for huge pos
+    // pos > len - w, never pos + w > len: the sum overflows for huge pos
     if (pos < 0 || w > m->len || pos > m->len - w) {
         char b[96];
         snprintf(b, sizeof b, "%s read at %lld out of range (len %lld)", what, pos,
@@ -11838,8 +11624,8 @@ static int fs_unmap(char* p, long long len) {
 }
 static int fs_msync(char* base, long long pos, long long n, long long fd, int writable) {
     // FlushViewOfFile hands the dirty pages to the file system; page alignment
-    // is not required. It stops there, though — Microsoft is explicit that it
-    // does not flush the hardware cache — and this call is what spec/SYNTAX.md calls
+    // is not required. It stops there, though: Microsoft is explicit that it
+    // does not flush the hardware cache, and this call is what spec/SYNTAX.md calls
     // the durability operation, the same promise msync(MS_SYNC) keeps below.
     // So a writable file mapping follows it with FlushFileBuffers on the
     // backing handle. An anonymous mapping has no handle and a read-only one
@@ -11952,7 +11738,7 @@ BRes beans_mmap_resize(BMMap* m, long long n) {
 long long beans_mmap_resize_out(BMMap* m, long long n, void** e_out) { BRes r = beans_mmap_resize(m, n); *e_out = r.err; return r.val; }
 #endif
 
-// ---- Dir.walk: files and symlinks under root (lstat — never follows a
+// ---- Dir.walk: files and symlinks under root (lstat: never follows a
 // link), paths relative to root, "/"-joined, sorted at the end ----
 typedef struct {
     char** v;
@@ -12074,7 +11860,7 @@ BRes beans_file_open(char* path, char* mode) {
     else if (strcmp(mode, "append") == 0)
         flags = O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | FS_O_BINARY;
     else {
-        // mode is a beans string of any length — heap-build so a long bad
+        // mode is a beans string of any length: heap-build so a long bad
         // mode reports its full text like the interpreter, not a truncation
         size_t n = strlen(mode) + 24;
         char* m = malloc(n);
@@ -12105,10 +11891,7 @@ long long beans_file_exists(char* path) {
 }
 BRes beans_file_size_p(char* path) {
 #if defined(_WIN32)
-    // Path-based stat reads the directory entry, which NTFS updates lazily
-    // while a writable section holds the file — a just-resized mapping
-    // reports its old size there. A handle-based query sees the truth, and
-    // real Windows is where the difference shows; Wine's Unix underlay hid it.
+    // Query the open handle because NTFS may report a stale directory-entry size while a writable mapping is open.
     wchar_t* wpath = win_widen(path);
     if (!wpath) return (BRes){0, fs_err_obj_rc(path, ENOMEM)};
     HANDLE h = CreateFileW(wpath, FILE_READ_ATTRIBUTES,
@@ -12160,7 +11943,7 @@ BRes beans_file_rename(char* from, char* to) {
 #if defined(_WIN32)
     // POSIX rename atomically replaces an existing target; the CRT's rename
     // refuses it. MoveFileEx with REPLACE_EXISTING is the Windows spelling
-    // of the POSIX contract — kv.b's compact-then-rename commit depends on it.
+    // of the POSIX contract: kv.b's compact-then-rename commit depends on it.
     wchar_t* wfrom = win_widen(from);
     wchar_t* wto = win_widen(to);
     // Capture whether both widenings succeeded before the free()s below: reading
@@ -12351,7 +12134,7 @@ BRes beans_dir_make_all(char* path) {
 #if defined(_WIN32)
         // "C:" and friends: creating a bare drive prefix is not a step of
         // make_all, and the CRT would refuse it with a confusing error.
-        // Windows-only — "a:" is a perfectly legal directory name on POSIX.
+        // Windows-only: "a:" is a perfectly legal directory name on POSIX.
         if (cur[1] == ':' && cur[2] == 0) continue;
 #endif
         if (fs_mkdir(cur, 0755) != 0) {
@@ -12538,7 +12321,7 @@ char* beans_dir_temp(void) {
     // can pin the location with one spelling on every platform.
     //
     // "/tmp" is not a place on Windows, so an environment that names none of
-    // the three cannot fall back to it — that answer looks like a directory
+    // the three cannot fall back to it: that answer looks like a directory
     // and fails at the first open. Ask the OS instead: GetTempPath consults
     // the same variables, then the user profile, then the Windows directory,
     // so it effectively cannot fail and what it names really exists. This is
@@ -12741,7 +12524,7 @@ void beans_tree_stored_close(void* value) {
 }
 
 // The program's own arguments, its environment, exit, standard input, the clocks
-// and the OS random source. Printing is *not* here — it is in the core beside the
+// and the OS random source. Printing is *not* here: it is in the core beside the
 // string code, because a freestanding program still has somewhere to put bytes.
 // ---- std.os / std.io --------------------------------------------------------
 static int os_argc;
@@ -12758,7 +12541,7 @@ void beans_os_init(int argc, char** argv) {
     os_argc = __argc;
     // __argv is the ANSI copy: the CRT builds it by folding the real command
     // line through the process code page, so an argument outside it arrives as
-    // '?' — the one place a Beans program cannot recover the text later.
+    // '?': the one place a Beans program cannot recover the text later.
     // __wargv holds the original, and the runtime speaks UTF-8 everywhere else.
     // If the conversion fails there is nothing better to fall back to than the
     // CRT's own answer, which is at least the same length.
@@ -12782,9 +12565,7 @@ void beans_os_init(int argc, char** argv) {
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stderr), _O_BINARY);
-    // The runtime buffers redirected stdout itself (see rt_write); the flush
-    // rides atexit so it runs after any panic message has hit stderr —
-    // glibc's exit-time ordering, which merged-stream diffs depend on.
+    // Flush redirected stdout at exit, after panic output reaches stderr, so merged-stream ordering stays stable.
     atexit(win_out_flush);
 }
 #else
@@ -12802,15 +12583,7 @@ BList* beans_os_args(void) {
 }
 BOpt beans_os_env(char* name) {
 #if defined(_WIN32)
-    // Windows environment names are case-insensitive and the canonical
-    // spelling is "Path", not "PATH"; getenv's case behaviour varies by CRT
-    // (Wine's msvcrt misses the fold entirely), so the Win32 call is the truth.
-    //
-    // A zero return means two different things — the name is absent, or the
-    // value exists and is empty — and only GetLastError tells them apart.
-    // getenv("") on POSIX returns a pointer to "", which is some(""), so
-    // folding both into none would make the same program answer differently on
-    // the two platforms.
+    // Use GetEnvironmentVariableW for case-insensitive lookup and GetLastError to distinguish absent names from empty values.
     wchar_t* wname = win_widen(name);
     if (!wname) return (BOpt){0, 0};
     wchar_t small[512];
@@ -12860,10 +12633,10 @@ void beans_c_set_errno(int32_t value) { errno = (int)value; }
 //
 // Two clocks, and which one a caller wants is never ambiguous:
 //
-//   monotonic — for measuring how long something took. Never goes backwards and is
+//   monotonic: for measuring how long something took. Never goes backwards and is
 //     unaffected by the administrator or NTP setting the date. It has no meaning as
 //     a date; only differences between readings mean anything.
-//   wall — for saying when something happened. Can jump forwards or backwards, so
+//   wall: for saying when something happened. Can jump forwards or backwards, so
 //     measuring a duration with it is a bug, which is why it is a separate name
 //     rather than a flag.
 long long beans_time_monotonic_nanos(void) {
@@ -12900,11 +12673,11 @@ static void beans_wall_timespec(struct timespec* out) {
     out->tv_nsec = (long)(nanos % 1000000000LL);
 }
 // Sleeps at least this long. A signal can cut nanosleep short, so the remaining time
-// is retried rather than returned early — a "sleep 10ms" that sometimes sleeps 2ms
+// is retried rather than returned early: a "sleep 10ms" that sometimes sleeps 2ms
 // is a race waiting to be blamed on something else.
 #if defined(_WIN32)
 // Windows counts a sleep in whole timer ticks, and the tick already in progress
-// when the call is made counts as one of them — so at the default 15.6ms
+// when the call is made counts as one of them, so at the default 15.6ms
 // resolution Sleep(3) can return after a fraction of a millisecond. That is the
 // opposite failure from the POSIX one above (a signal cutting the sleep short),
 // but it breaks the same promise, and it broke it silently: the sleep floor held
@@ -13259,7 +13032,7 @@ char* beans_io_read_all(void) {
 #endif
 
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL
-// sockets, the readiness poller and dynamic libraries — POSIX and Windows
+// sockets, the readiness poller and dynamic libraries: POSIX and Windows
 // both, with the Win32 branches inline where the platforms differ. The real
 // signals section further down stays POSIX-only; Windows gets refusing stubs
 // for its symbols, so the compiler's own interpreter still links there.
@@ -13283,14 +13056,14 @@ char* beans_io_read_all(void) {
 
 #if defined(_WIN32)
 // Winsock, not the CRT: sockets are kernel handles with their own error
-// channel and close call. windows.h came in with the fs shim — lean-and-mean,
+// channel and close call. windows.h came in with the fs shim: lean-and-mean,
 // so the ancient winsock.h never got there first.
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
 // Winsock refuses every call until WSAStartup, so every entry point latches it
 // on the way in. A second thread spins for the first rather than racing past a
-// startup still in flight. Never torn down — process exit releases it.
+// startup still in flight. Never torn down: process exit releases it.
 static void net_init(void) {
     static volatile LONG begun = 0, ready = 0;
     if (ready) return;
@@ -13343,7 +13116,7 @@ static int net_errno(void) { return net_errno_map((int)WSAGetLastError()); }
 
 // One descriptor type for the whole section. A Windows SOCKET is a pointer-sized
 // kernel handle and Microsoft is explicit that it must not be narrowed to int or
-// tested with `< 0` — handle values happen to fit in 32 bits today for 32/64-bit
+// tested with `< 0`: handle values happen to fit in 32 bits today for 32/64-bit
 // interop, but nothing in the contract says a valid one cannot set the sign bit,
 // and truncating is the kind of bug that works on every machine until it does
 // not.
@@ -13375,7 +13148,7 @@ typedef int net_fd_t;
 
 // MSG_NOSIGNAL on Linux, SO_NOSIGPIPE at socket creation on macOS. Without one of
 // them a write to a closed peer kills the process, and which one exists differs by
-// platform — so both are set and the behaviour is identical. On Windows the 0 it
+// platform, so both are set and the behaviour is identical. On Windows the 0 it
 // degrades to is already right: there is no SIGPIPE at all, which is exactly the
 // state the POSIX side arranges.
 #ifdef MSG_NOSIGNAL
@@ -13411,7 +13184,7 @@ static const char* net_kind_of(int err) {
     }
 }
 
-// "<op> <host>:<port>: <strerror>" — the address is in the message because
+// "<op> <host>:<port>: <strerror>": the address is in the message because
 // "Connection refused" alone never says what was refused.
 static void* net_err_at(const char* op, const char* host, long long port, int err) {
     char b[320];
@@ -13429,7 +13202,7 @@ static void* net_closed_err(const char* op) {
     return mk_error(b, "closed");
 }
 // getaddrinfo has its own error space, and EAI_SYSTEM defers to errno.
-// Windows has no EAI_SYSTEM — its EAI_* values are WSA errors already.
+// Windows has no EAI_SYSTEM: its EAI_* values are WSA errors already.
 static void* net_gai_err(const char* host, int rc) {
 #ifdef EAI_SYSTEM
     if (rc == EAI_SYSTEM) return net_err_op("resolve", errno);
@@ -13455,7 +13228,7 @@ static void* net_gai_err(const char* host, int rc) {
 // global atomic counter, so a single-threaded run replays exactly from the seed,
 // and BEANS_SOCK_FAILPOINTS_LOG=1 names each injection's draw index on stderr so
 // a failure can be tied to the draw that caused it. EINTR is injected *inside*
-// the retry loops — injection exercises the same path a real signal would — and
+// the retry loops: injection exercises the same path a real signal would, and
 // every other errno surfaces through the ordinary kind mapping, so a failpoint
 // run can only produce errors the API already documents. The whole layer costs
 // one branch on a latched flag when the variable is unset.
@@ -13484,9 +13257,7 @@ __attribute__((constructor)) static void net_fp_setup(void) {
     if (rest && *rest == ':') {
         unsigned long long rate = strtoull(rest + 1, &rest, 10);
         if (rate >= 2) net_fp_rate = rate;
-        // "<seed>:<rate>:eintr" injects only EINTR — every retry loop must
-        // absorb it, so a run under this mode has to produce byte-identical
-        // output to a run with no failpoints at all.
+        // The <seed>:<rate>:eintr mode injects only EINTR, so retry behavior must preserve output.
         if (rest && *rest == ':' && strcmp(rest + 1, "eintr") == 0)
             net_fp_eintr_only = 1;
     }
@@ -13678,7 +13449,7 @@ static void net_errno_set(int e) {
 
 // The socket deadline (set_timeouts / SO_RCVTIMEO) still bounds a fiber's
 // wait: a nonblocking fd ignores the kernel timeout, so the retry loops
-// carry it into their wait instead. 0 means no deadline — wait forever.
+// carry it into their wait instead. 0 means no deadline: wait forever.
 static long long net_op_timeout_ms(long long fd, int write) {
 #if defined(_WIN32)
     (void)fd; (void)write;
@@ -13694,7 +13465,7 @@ static long long net_op_timeout_ms(long long fd, int write) {
 #endif
 }
 
-// A fiber about to wait on a socket makes it nonblocking first — for good:
+// A fiber about to wait on a socket makes it nonblocking first: for good:
 // the fd never leaves fiber-land (sockets are not Send), every op here
 // carries the EAGAIN retry loop, and a blocking syscall from a fiber would
 // stall its whole worker. Thread-only programs never reach this, so their
@@ -13781,8 +13552,8 @@ BRes beans_net_listen(char* host, long long port, long long backlog) {
         // SO_REUSEADDR so a restart is not blocked by TIME_WAIT. Deliberately not
         // SO_REUSEPORT: that lets two live listeners share a port, which hides a
         // genuine "already running" mistake instead of reporting it. Winsock's
-        // SO_REUSEADDR *is* that mistake — it lets a second listener steal the
-        // port — and a TIME_WAIT rebind already works there without it, so the
+        // SO_REUSEADDR *is* that mistake: it lets a second listener steal the
+        // port, and a TIME_WAIT rebind already works there without it, so the
         // exclusive flag states the same intent instead.
         int one = 1;
 #if defined(_WIN32)
@@ -13845,9 +13616,7 @@ static net_fd_t net_connect_one(struct addrinfo* ai, long long timeout_ms,
             *err_out = started;
             return NET_FD_NONE;
         }
-        // The handshake is in flight. Waiting on the descriptor is the only correct
-        // wait: connect() cannot be restarted after EINTR — a second call reports
-        // EALREADY — so the deadline is enforced by poll, not by retrying connect.
+        // Wait for an in-flight connect with poll; after EINTR, connect cannot be restarted and returns EALREADY.
         // (WSAPoll before Windows 10 2004 never reports a *failed* connect, so a
         // refusal there is seen at the deadline rather than at once.)
         int ready = net_wait(fd, POLLOUT, timeout_ms);
@@ -13961,7 +13730,7 @@ BRes beans_net_accept(long long fd, long long timeout_ms) {
         }
         // Readiness is a hint, not a promise: a peer that connected and aborted
         // before accept leaves the listener readable with nothing to take. Waiting
-        // again is correct — but only when a deadline is bounding the loop, and
+        // again is correct, but only when a deadline is bounding the loop, and
         // timeout_ms < 0 means the caller asked to block until a real connection.
         int e = net_errno();
         if (e == EAGAIN || e == EWOULDBLOCK || e == ECONNABORTED) continue;
@@ -14006,8 +13775,8 @@ long long beans_net_send_out(long long fd, BList* data, long long from, void** e
 
 // write_from's engine: one send from an offset, parking the calling fiber
 // on backpressure. The caller carries the cached facts the hot path must
-// not re-derive — the fiber-prepared flag and the configured write
-// deadline — exactly like beans_net_recv_into_wait on the read side.
+// not re-derive: the fiber-prepared flag and the configured write
+// deadline: exactly like beans_net_recv_into_wait on the read side.
 //   req[0] in: offset; out: bytes written by this call
 //   req[1] out: OS error code when the returned status is not 0
 //   req[2] in: 1 skips the nonblocking flip; out: 1 when fiber-prepared
@@ -14090,7 +13859,7 @@ long long beans_net_send_from_wait(long long fd, const void* bytes,
 //
 // sendmsg, not writev. writev takes no flags, so on Linux it cannot carry
 // MSG_NOSIGNAL, and a peer that has gone away would end the process with
-// SIGPIPE instead of answering EPIPE — the exact failure the comment above
+// SIGPIPE instead of answering EPIPE: the exact failure the comment above
 // NET_NOSIGNAL says every send here must rule out. macOS covers the socket
 // with SO_NOSIGPIPE at creation, so it never showed there; Linux has only the
 // per-call flag, and sendmsg is the vectored call that takes one.
@@ -14213,8 +13982,8 @@ long long beans_net_send_pair_wait(long long fd,
 }
 
 // The string form of send_pair: the body is a Beans string, sent where it
-// already lives. A server holds a response body as a string — that is the
-// shape a handler hands back — and framing it into a Bytes to send it is the
+// already lives. A server holds a response body as a string: that is the
+// shape a handler hands back, and framing it into a Bytes to send it is the
 // copy write_vectored exists to remove, so the string twin has to take the
 // string itself. Its byte length is read with beans_slen exactly as
 // beans_net_send_text reads its text's, so there is no separate length
@@ -14224,8 +13993,8 @@ long long beans_net_send_pair_wait(long long fd,
 // because it caches the fiber-prepared flag across the short writes of one
 // response; a builtin has nowhere to keep that, so a local req drives the
 // shared engine and the fiber is prepared per call, exactly as beans_net_send
-// and beans_net_send_text prepare it. The engine — the one sendmsg loop that
-// carries MSG_NOSIGNAL and parks the fiber — is beans_net_send_pair_wait's,
+// and beans_net_send_text prepare it. The engine: the one sendmsg loop that
+// carries MSG_NOSIGNAL and parks the fiber: is beans_net_send_pair_wait's,
 // reused, never a second copy of the loop.
 //
 // The offset counts into head+body; a short write returns the bytes this send
@@ -14309,7 +14078,7 @@ BRes beans_net_recv(long long fd, long long max) {
             got = recv(net_fd_of(fd), (char*)buf->data, (size_t)max, 0);
         } while (got < 0 && net_errno() == EINTR);
         // A fiber's socket is nonblocking: not-ready parks here. Thread
-        // callers break out with EAGAIN exactly as before fibers — that
+        // callers break out with EAGAIN exactly as before fibers: that
         // answer is the try_* API's contract on a user-nonblocked socket.
         int blocked = net_errno();
         if (got >= 0 || (blocked != EAGAIN && blocked != EWOULDBLOCK)) break;
@@ -14329,7 +14098,7 @@ BRes beans_net_recv(long long fd, long long max) {
         rt_owed_pair_release(&owed);
         return (BRes){0, net_err_op("recv", e)};
     }
-    buf->len = got; // 0 = the peer closed; capacity stays, len is the truth
+    buf->len = got; // Received byte count; zero means the peer closed.
     owed.armed = 0;
     return (BRes){(long long)buf, NULL};
 }
@@ -14343,14 +14112,9 @@ long long beans_net_recv_out(long long fd, long long max, void** e_out) { BRes r
 // bridge so its would-block answer stays immediate.
 //   req[0] in: destination capacity; out: bytes read (0 is EOF)
 //   req[1] out: OS error code when the returned status is not 0
-//   req[2] in: 1 skips the nonblocking flip (the caller saw it happen
-//          before); out: 1 when the fd is fiber-prepared after this call —
-//          O_NONBLOCK is a property of the descriptor, so once flipped the
-//          caller may cache it for the socket's whole life
-//   req[3] in: wait budget in milliseconds, -1 to wait forever — the
-//          caller tracks its configured deadline so the wait loop never
-//          re-reads SO_RCVTIMEO
-//   req[4] in: 1 waits for readability before the first recv — for a
+//   req[2] in: 1 skips the nonblocking flip; out: 1 when fiber-prepared (O_NONBLOCK persists for the descriptor lifetime)
+//   req[3] in: wait budget in milliseconds, -1 to wait forever; the caller tracks its deadline without re-reading SO_RCVTIMEO
+//   req[4] in: 1 waits for readability before the first recv: for a
 //          caller that just drained the socket, this trades the
 //          speculative recv that would only say would-block for one
 //          poller wait; ignored off-fiber, where recv blocks anyway
@@ -14434,33 +14198,14 @@ long long beans_term_size(long long fd, void* out);
 long long beans_term_set_raw(long long fd);
 long long beans_term_restore(long long fd);
 
-// The tree walker resolves `extern "C"` calls through the dynamic loader,
-// which cannot see this executable's own symbols everywhere: an ELF
-// executable exports nothing without --export-dynamic, a PE one nothing at
-// all. The runtime-side socket calls the stdlib declares are answered from
-// inside the process instead — the interpreter asks here before it builds
-// any loader shim.
-//
-// The address alone was not enough. The interpreter can call an address
-// directly only for the argument shapes its own word ABI covers; anything
-// wider went to a C shim it wrote and compiled with Clang at run time. So
-// `TcpStream.write_from` (4 parameters) and `write_vectored` (6) needed a
-// working C toolchain and a matching sysroot on every host that merely ran
-// a program, which is precisely what a cross-hosted CI runner does not have:
-// the i686 and aarch64 Windows legs failed with "cannot find dllcrt2.o" from
-// a socket write. Every row here therefore carries the call as well as the
-// address. beans_rt_host_invoke casts the interpreter's 64-bit words back to
-// the types the entry really declares — pointers included, which is what makes
-// it correct on a host where a pointer is half a word — and calls it
-// in-process, with no compiler in the loop. A row is the only way into the
-// table, so an entry can never be reachable by address while being
-// uncallable by word: adding one means writing its call.
+// Native executables may hide their own symbols, so the interpreter resolves hosted runtime calls through this in-process name/address table.
+// Each adapter casts packed 64-bit words to the declared C argument types, including pointers on 32-bit hosts, and avoids runtime C compilation.
+// Keep each row's arity and adapter aligned with its declaration; mismatched extern signatures are rejected before invocation.
 typedef long long (*BHostCall)(const unsigned long long* words);
 
 // The two entries the mechanism itself is made of. An interpreter that is
 // being interpreted asks its host for these by name like any other extern, so
-// leaving them out would put a C toolchain back on the path one level up —
-// and on Linux they cannot be found by name at all, because the executable
+// Leaving them out would require a C toolchain at the next level; Linux cannot find them by name because the executable
 // exports nothing. Listing them makes the lookup and the call reach the same
 // place at every nesting depth.
 void* beans_rt_host_symbol(const char* name);
@@ -14592,13 +14337,7 @@ static const BHostEntry rt_host_table[] = {
     // the linker must not drop a symbol this executable only ever passes by
     // address, and a natively-compiled interpreter reaches it by name.
     {"beans_alloc_bytes", (void*)&beans_alloc_bytes, 2, host_call_alloc_bytes},
-    // The typed JSON decoder's diagnostic probe. A Beans program reads it by
-    // name — the corpus and fuzz gates do — and it moved into this runtime
-    // when its storage became per-thread, so the interpreter has to be able to
-    // reach it the way it reaches every other runtime entry: in-process,
-    // on a host whose executable exports no names and where no C toolchain
-    // need exist. Under `beansc run` it answers zeros, because typed decoding
-    // is not lowered there and no decode has filed anything.
+    // Expose the per-thread typed-decoder probe by name for corpus/fuzz gates; `beansc run` returns zeros because typed decoding is not lowered there.
     {"beans_json_decode_probe", (void*)&beans_json_decode_probe, 1,
      host_call_json_decode_probe},
     {"beans_rt_host_symbol", (void*)&beans_rt_host_symbol, 1,
@@ -14629,15 +14368,7 @@ void* beans_rt_host_symbol(const char* name) {
     return entry ? entry->address : (void*)0;
 }
 
-// Calls a runtime-hosted entry with the words the interpreter packed for it.
-//   1  the name is hosted; it ran, and *result holds what it returned
-//   0  the name is not hosted; the caller resolves it the way it always did
-//  -1  the name is hosted but this call does not fit the entry — the
-//      `extern "C"` declaration in the program disagrees with the runtime's
-//      own signature. That is refused here rather than quietly re-routed to
-//      a compiled shim, which would call the same function with the wrong
-//      words on the hosts that still have a compiler and fail to build
-//      anywhere else.
+// Returns 1 after invoking a hosted entry, 0 when the name is absent, and -1 when its arity disagrees with the extern declaration.
 long long beans_rt_host_invoke(const char* name,
                                const unsigned long long* words,
                                long long count, long long* result) {
@@ -14954,7 +14685,7 @@ long long beans_net_resolve_out(char* host, long long port, void** e_out) { BRes
 // the platform's: `struct termios` is 72 bytes on macOS and 60 on Linux, and
 // `struct winsize` and the Windows console API have no portable Beans spelling
 // at all. std.term stands on these four calls and keeps everything with a
-// portable shape — the ANSI writers, the CSI key decoder — in Beans.
+// portable shape: the ANSI writers, the CSI key decoder: in Beans.
 //
 // The return protocol is a plain status, never a struct: 0 on success, a
 // negative value on failure. On POSIX that value is -errno; -1000 means "this
@@ -14962,15 +14693,8 @@ long long beans_net_resolve_out(char* host, long long port, void** e_out) { BRes
 // back through the caller's out buffer, so a status is never mistaken for a
 // count and no 64-bit length is narrowed on the way out.
 //
-// **Restore is registered with atexit, not with a signal handler.** A raw
-// terminal that outlives the program is the module's worst failure, and exit(3)
-// — which is where both a normal return and a panic end up, on either backend —
-// runs atexit handlers. That covers the ordinary exit and the panic without
-// installing a disposition, which the fault reporter's guard (test/signals.sh)
-// forbids anywhere else in this file. A crash by SIGSEGV/SIGBUS does not run
-// atexit and is not restored here: only the fenced fault reporter runs then, and
-// it is held to flushing output. std.term documents that boundary and asks a TUI
-// to watch SIGTERM/SIGHUP through std.signal, which needs no handler.
+// Register terminal restoration with atexit so normal returns and panics restore terminal state.
+// Fatal SIGSEGV/SIGBUS do not run atexit and remain the fault reporter's responsibility.
 #define RT_TERM_UNSUPPORTED (-1000)
 
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL && !defined(_WIN32)
@@ -15101,7 +14825,7 @@ long long beans_term_restore(long long fd) { (void)fd; return 0; }
 //
 // **Level-triggered.** While a descriptor has data, every wait reports it. That is the
 // default on both backends and it is the mode a caller can use imprecisely and still be
-// correct — edge-triggered demands reading until EAGAIN every single time or the
+// correct: edge-triggered demands reading until EAGAIN every single time or the
 // connection silently stalls, which is a bug that only shows up under load.
 //
 // The caller's own token comes back in each event, never an fd: a descriptor number is
@@ -15123,15 +14847,14 @@ long long beans_term_restore(long long fd) { (void)fd; return 0; }
 #define POLL_ERROR 8
 
 // A wake has to be callable from another thread, and the only Beans values that cross a
-// thread boundary are scalars — every class is a local ARC reference. So a wake target
+// thread boundary are scalars, every class is a local ARC reference. So a wake target
 // is one `int`.
 //
 // Handing out the raw descriptor would be unsafe: after the poller closes, that number
 // belongs to something else, and a late wake would write a stray byte into an unrelated
 // file. Instead a wake target is a slot index plus a generation. Closing clears the slot
 // and bumps the generation under the same lock that a wake takes, so a stale handle is
-// *reported* rather than acted on. The lock is touched on open, close and wake only —
-// never on the wait path.
+// *reported* rather than acted on. The lock is used only on open, close, and wake, never on the wait path.
 #define POLL_WAKERS_MAX 4096
 static struct {
     net_fd_t fd;
@@ -15217,7 +14940,7 @@ static void poll_cloexec_nonblock(net_fd_t fd) {
 }
 
 #if defined(_WIN32)
-// No kernel object holds the interest set — WSAPoll takes the whole set on
+// No kernel object holds the interest set: WSAPoll takes the whole set on
 // every call. So the poller *is* a registry: a slot in this table holding a
 // growable {fd, wanted events, token} set, and the "poller descriptor" the
 // caller carries is the slot's index. Add/remove edit the set under the table
@@ -15242,7 +14965,7 @@ static int poll_set_grab(void) {
         return i;
     }
     pthread_mutex_unlock(&poll_sets_lock);
-    WSASetLastError(WSAEMFILE); // net_errno maps it to EMFILE — kind "limit"
+    WSASetLastError(WSAEMFILE); // net_errno maps it to EMFILE: kind "limit"
     return -1;
 }
 
@@ -15275,10 +14998,7 @@ static void poll_set_forget(int poller, net_fd_t fd) {
     pthread_mutex_unlock(&poll_sets_lock);
 }
 
-// The wake channel. WSAPoll waits on sockets only — a pipe is invisible to it —
-// so the self-pipe is a connected TCP pair: listen on 127.0.0.1:0, connect,
-// accept, and the listener is gone before this returns. out[0] reads, out[1]
-// writes, matching pipe().
+// WSAPoll sees sockets but not pipes, so use a connected TCP pair as the wake channel; out[0] reads and out[1] writes.
 static int net_loopback_pair(net_fd_t out[2]) {
     SOCKET lis = socket(AF_INET, SOCK_STREAM, 0);
     SOCKET a = INVALID_SOCKET, b = INVALID_SOCKET;
@@ -15332,13 +15052,13 @@ static int poll_apply(int poller, net_fd_t fd, long long token, int want_read,
 #elif defined(_WIN32)
     // The registry backend has the epoll intent built in: present means update,
     // absent means append, and deleting an absent registration is the state the
-    // caller asked for — exactly how the kqueue branch treats ENOENT.
+    // caller asked for: exactly how the kqueue branch treats ENOENT.
     (void)adding;
     pthread_mutex_lock(&poll_sets_lock);
     PollSet* set = poller >= 0 && poller < POLL_SETS_MAX ? &poll_sets[poller] : NULL;
     if (!set || !set->live) {
         pthread_mutex_unlock(&poll_sets_lock);
-        WSASetLastError(WSAENOTSOCK); // net_errno maps it to EBADF — kind "closed"
+        WSASetLastError(WSAENOTSOCK); // net_errno maps it to EBADF: kind "closed"
         return -1;
     }
     long long at = -1;
@@ -15406,7 +15126,7 @@ static int poll_apply(int poller, net_fd_t fd, long long token, int want_read,
 #endif
 }
 
-// [poller fd][wake read fd][wake write fd] — the caller holds all three so this layer
+// [poller fd][wake read fd][wake write fd]: the caller holds all three so this layer
 // keeps no state of its own, and closing is explicit rather than a hidden side table.
 BRes beans_poll_open(void) {
     int poller;
@@ -15681,7 +15401,7 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
         // Snapshot the registry under the lock, wait outside it: WSAPoll takes
         // the whole interest set each call, and holding the lock across the
         // kernel wait would block add, remove and wake from other threads. A
-        // registration made mid-wait is seen at the next call — the same lag a
+        // registration made mid-wait is seen at the next call: the same lag a
         // wake already covers.
         (void)room; // kernel-slot headroom is an epoll/kqueue concern
         pthread_mutex_lock(&poll_sets_lock);
@@ -15729,7 +15449,7 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
             if (re == 0) continue;
             if (re & POLLNVAL) {
                 // The registered descriptor was closed. epoll silently forgets
-                // it, so the registry does too — reporting it instead would
+                // it, so the registry does too: reporting it instead would
                 // wedge every later wait on a permanently "invalid" entry.
                 poll_set_forget((int)poller, got[i].fd);
                 continue;
@@ -15794,7 +15514,7 @@ static BRes beans_poll_wait_into_impl(long long poller, long long wake_read,
             if (got[i].flags & EV_EOF) f |= POLL_HANGUP;
             if (got[i].flags & EV_ERROR) f |= POLL_ERROR;
             // kqueue reports read and write as separate events for one descriptor.
-            // epoll reports one with both bits, so they are merged here — otherwise the
+            // epoll reports one with both bits, so they are merged here: otherwise the
             // same program would see a different number of events per platform.
             // Merge one registration's pair by (descriptor, token): the token
             // alone would fold two descriptors that share a caller token into
@@ -15947,7 +15667,7 @@ BRes beans_poll_close(long long poller, long long wake_read, long long handle) {
 }
 long long beans_poll_close_out(long long poller, long long wake_read, long long handle, void** e_out) { BRes r = beans_poll_close(poller, wake_read, handle); *e_out = r.err; return r.val; }
 
-#endif // BEANS_RT_PROFILE >= BEANS_RT_FULL — sockets + readiness poller
+#endif // BEANS_RT_PROFILE >= BEANS_RT_FULL: sockets + readiness poller
 
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL && !defined(_WIN32)
 // Signals stay POSIX-only: Windows has no signalfd-shaped watching to build
@@ -15965,14 +15685,14 @@ long long beans_poll_close_out(long long poller, long long wake_read, long long 
 // The descriptor is registerable with the poller, so signals and sockets are waited on
 // together:
 //
-//   Linux — signalfd, which is a readable descriptor by design.
-//   macOS — a private kqueue with EVFILT_SIGNAL registrations. A kqueue descriptor is
+//   Linux: signalfd, which is a readable descriptor by design.
+//   macOS: a private kqueue with EVFILT_SIGNAL registrations. A kqueue descriptor is
 //     itself readable when it has events pending, so it nests inside the outer poller.
 
 // Only asynchronous signals a program can sensibly defer.
 //
 // SIGKILL and SIGSTOP are absent because they cannot be caught or blocked at all.
-// The fault signals — SIGSEGV, SIGBUS, SIGFPE, SIGILL — are absent for a better reason:
+// The fault signals: SIGSEGV, SIGBUS, SIGFPE, SIGILL: are absent for a better reason:
 // they are *synchronous*, naming an instruction that has already failed. Blocking one and
 // reading it later means resuming the faulting instruction, which faults again forever.
 // Offering them would be offering a hang.
@@ -16027,9 +15747,7 @@ static int sig_build_set(BList* packed, sigset_t* into, void** error) {
 //
 // This is where the two platforms genuinely differ. Reading a signalfd *consumes* the
 // signal; a kqueue EVFILT_SIGNAL event is only a notification and the signal stays
-// pending in the process. Without this, taking a signal on macOS and then unblocking —
-// which is what close does — delivers it, and the default action for most of these is to
-// terminate. A program would die at teardown from a signal it had already handled.
+// pending in the process. Draining before close prevents macOS from delivering a pending signal when it is unblocked, which could terminate the process.
 //
 // sigpending is checked first because sigwait on a signal that is *not* pending blocks
 // forever. Only the intersection is dequeued, so this can never hang.
@@ -16084,7 +15802,7 @@ BRes beans_signal_watch(BList* packed) {
     if (!sig_build_set(packed, &want, &error)) return (BRes){0, error};
     sigset_t newly_blocked = sig_unowned(&want);
     // Blocked on this thread, and threads created later inherit the mask. Threads that
-    // already exist do not, which is why watching belongs before any spawn — stated in
+    // already exist do not, which is why watching belongs before any spawn: stated in
     // the API docs rather than silently hoped for.
     if (pthread_sigmask(SIG_BLOCK, &want, NULL) != 0)
         return (BRes){0, op_err_obj("signal watch", errno)};
@@ -16130,8 +15848,8 @@ long long beans_signal_watch_out(BList* packed, void** e_out) { BRes r = beans_s
 // simply not in the list.
 //
 // Each signal appears **at most once per call**, however many times it was delivered.
-// That is what signalfd does for standard signals — pending is a bitmask, so repeats
-// collapse — and kqueue's per-signal counter is deliberately ignored to match. "SIGINT
+// That is what signalfd does for standard signals: pending is a bitmask, so repeats
+// collapse, and kqueue's per-signal counter is deliberately ignored to match. "SIGINT
 // arrived" is the useful fact; "SIGINT arrived four times" is not something one platform
 // can promise and the other cannot.
 BRes beans_signal_take(long long fd, long long max) {
@@ -16192,7 +15910,7 @@ BRes beans_signal_close(long long fd, BList* packed) {
         sigset_t released = sig_drop_owners(&want);
         // Drop anything that arrived and was never read. Unblocking with a signal still
         // pending delivers it immediately, and the default action for most of these is to
-        // terminate — so a program that stopped watching would be killed by a signal it
+        // terminate, so a program that stopped watching would be killed by a signal it
         // had chosen to handle. Discarding is the lesser surprise, and it makes both
         // platforms behave the same.
         sig_drain(&released);
@@ -16218,7 +15936,7 @@ BRes beans_signal_raise(long long number) {
 }
 long long beans_signal_raise_out(long long number, void** e_out) { BRes r = beans_signal_raise(number); *e_out = r.err; return r.val; }
 
-// Signal numbers differ by platform — SIGUSR1 is 10 on Linux and 30 on macOS — so the
+// Signal numbers differ by platform: SIGUSR1 is 10 on Linux and 30 on macOS, so the
 // names are the portable part and the numbers come from the C library.
 BRes beans_signal_number(char* name) {
     for (int i = 0; i < SIG_TABLE_LEN; i++)
@@ -16238,17 +15956,11 @@ BRes beans_signal_name(long long number) {
 }
 long long beans_signal_name_out(long long number, void** e_out) { BRes r = beans_signal_name(number); *e_out = r.err; return r.val; }
 
-#endif // BEANS_RT_PROFILE >= BEANS_RT_FULL && !defined(_WIN32) — signals
+#endif // BEANS_RT_PROFILE >= BEANS_RT_FULL && !defined(_WIN32): signals
 
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL && defined(_WIN32)
 // Windows has nothing signalfd-shaped to build the watching contract on, but
-// the *symbols* must exist there anyway: the self-hosted compiler's
-// interpreter imports std.sig so it can interpret programs that use signals,
-// and refusing the import at check time would refuse the compiler itself.
-// This is the file-locks-on-WASIp1 pattern — the capability is present, and
-// every operation reports the gap in a sentence. All six refuse, the lookups
-// included: signal numbers are per-OS facts, and inventing a numbering for an
-// OS that has none would be a lie with a table.
+// Keep these symbols available to the self-hosted interpreter; each operation reports unsupported because Windows has no signal-watching API.
 static void* sig_win_unsupported(void) {
     return mk_error("signal watching is not available on Windows",
                     "unsupported");
@@ -16285,7 +15997,7 @@ BRes beans_signal_name(long long number) {
     return (BRes){0, sig_win_unsupported()};
 }
 long long beans_signal_name_out(long long number, void** e_out) { BRes r = beans_signal_name(number); *e_out = r.err; return r.val; }
-#endif // BEANS_RT_PROFILE >= BEANS_RT_FULL && defined(_WIN32) — signal stubs
+#endif // BEANS_RT_PROFILE >= BEANS_RT_FULL && defined(_WIN32): signal stubs
 
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL
 // ---- dynamic libraries ------------------------------------------------------
@@ -16295,11 +16007,11 @@ long long beans_signal_name_out(long long number, void** e_out) { BRes r = beans
 // so messages carry the GetLastError number instead.
 //
 // **RTLD_LOCAL, deliberately.** RTLD_GLOBAL would publish the library's symbols into the
-// global namespace, where an `extern "C" fn` would then resolve to them — in the
+// global namespace, where an `extern "C" fn` would then resolve to them: in the
 // interpreter, which looks symbols up with dlsym(RTLD_DEFAULT), but not in a native
 // build, where extern names are bound by the linker. The two backends would disagree
 // about whether a program links, which is exactly the failure this project tests against.
-// (LoadLibrary is local by construction — Windows has no global namespace to pollute.)
+// (LoadLibrary is local by construction: Windows has no global namespace to pollute.)
 //
 // Calling a resolved address is `unsafe` and cannot be otherwise: the signature is the
 // caller's guess, and a wrong guess corrupts the stack rather than raising an error.
@@ -16338,7 +16050,7 @@ BRes beans_dl_symbol(long long handle, char* name) {
         return (BRes){0, mk_error("a symbol name is required", "invalid")};
 #if defined(_WIN32)
     // No PE symbol can live at address 0, so NULL is a reliable failure signal
-    // here — the dlerror dance below exists because dlsym's cannot be.
+    // here: the dlerror dance below exists because dlsym's cannot be.
     void* address = (void*)GetProcAddress((HMODULE)(intptr_t)handle, name);
     if (!address) {
         char b[512];
@@ -16351,7 +16063,7 @@ BRes beans_dl_symbol(long long handle, char* name) {
     void* address = dlsym((void*)(intptr_t)handle, name);
     const char* why = dlerror();
     // A symbol can legitimately resolve to address 0, so dlerror is the only reliable
-    // test — checking the address alone would report a false failure.
+    // test: checking the address alone would report a false failure.
     if (why) {
         char b[512];
         snprintf(b, sizeof b, "%s", why);
@@ -16386,10 +16098,10 @@ BRes beans_dl_global_symbol(char* name) {
         return (BRes){0, mk_error("a symbol name is required", "invalid")};
 #if defined(_WIN32)
     // dlsym(RTLD_DEFAULT, ...) searches every image loaded into the process, and
-    // Windows has no single call that does the same — GetProcAddress needs one
+    // Windows has no single call that does the same: GetProcAddress needs one
     // module. Walking the loader's module list is the honest equivalent: same
     // set, same order (the executable first), so a symbol the CRT provides
-    // resolves the way it does on POSIX. This is not a nicety — extern "C" in
+    // resolves the way it does on POSIX. This is not a nicety: extern "C" in
     // an *interpreted* program goes through here, so without it half the
     // differential contract could not call C at all on Windows.
     //
@@ -16505,7 +16217,7 @@ double beans_dl_call_f32_i32(long long fn, double value, long long exponent) {
         (float)value, (int32_t)exponent);
 }
 
-#endif // BEANS_RT_PROFILE >= BEANS_RT_FULL — dynamic libraries
+#endif // BEANS_RT_PROFILE >= BEANS_RT_FULL: dynamic libraries
 
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL
 // The self-hosted interpreter compiles a Clang ABI bridge for a checked extern
@@ -16513,7 +16225,7 @@ double beans_dl_call_f32_i32(long long fn, double value, long long exponent) {
 // helper is the one statically linked point where the dynamic bridge and the
 // generated callback trampoline meet. Portable on purpose: it is a plain
 // function-pointer trampoline, and the compiler's own interpreter links it on
-// every hosted platform — the platform-specific parts (compiling the bridge,
+// every hosted platform: the platform-specific parts (compiling the bridge,
 // loading it) ride the process and dynamic-library capabilities.
 typedef void (*BeansTreeFfiDispatch)(void*, void*, void**);
 typedef void (*BeansTreeFfiBridge)(void*, void*, void**, BeansTreeFfiDispatch,
@@ -16525,7 +16237,7 @@ void beans_tree_ffi_invoke_bridge(void* bridge, void* symbol, void* result,
     ((BeansTreeFfiBridge)bridge)(symbol, result, arguments, dispatch, contexts);
 }
 
-#endif // BEANS_RT_PROFILE >= BEANS_RT_FULL — tree-FFI bridge
+#endif // BEANS_RT_PROFILE >= BEANS_RT_FULL: tree-FFI bridge
 
 #if BEANS_RT_PROFILE >= BEANS_RT_MINIMAL
 // threads, CPU detection and futex-backed wait/notify need a hosted platform:
@@ -16577,7 +16289,7 @@ static void* thread_main(void* arg) {
     beans_release(t->env);
     beans_release(t); // the running thread's own ref on the handle
     cc_worker_roots_end();
-    // last heap touch is done — the cycle collector may run again
+    // last heap touch is done: the cycle collector may run again
     cc_threads -= 1;
     return NULL;
 }
@@ -16615,7 +16327,7 @@ BThread* beans_thread_spawn_typed(void* thunk, void* env, long long size,
     pthread_create(&t->th, NULL, thread_main, t);
     return t;
 }
-// A joiner on a fiber parks instead of blocking its worker — other fibers
+// A joiner on a fiber parks instead of blocking its worker: other fibers
 // keep running while the thread works. The finishing thread resumes it,
 // and the pthread_join that follows reaps an already-finished thread.
 static int thread_join_park(BThread* t) {
@@ -16724,8 +16436,7 @@ BChan* beans_chan_new_typed(long long cap, long long stride, long long ptr_mask)
 #if BEANS_RT_FIBERS
 // ---- fiber wait lines ------------------------------------------------------
 // A fiber that must wait on a channel parks instead of blocking its worker
-// — blocking would starve every other fiber, and two fibers of one worker
-// on opposite ends of a full channel would deadlock the thread outright.
+// Blocking would starve other fibers or deadlock two opposing waiters on one worker.
 // Thread callers keep the condvar path unchanged.
 
 static void fiber_line_push(BFiberWaiter** head, BFiberWaiter** tail,
@@ -16769,13 +16480,13 @@ static void fiber_line_remove(BFiberWaiter** head, BFiberWaiter** tail,
 
 // Parks the calling fiber in the line until a sender, receiver, or closer
 // marks it signalled. Enters and leaves with `m` held; the lock is
-// released around each park. Wakes can be spurious — a stale timer or a
-// second resume — and the waiter keeps its place in line across them.
+// released around each park. Wakes can be spurious: a stale timer or a
+// second resume, and the waiter keeps its place in line across them.
 //
 // A cancel observed at the park is the answer, per spec/CONCURRENCY.md: leave
 // the line, drop the lock this wait owns (nothing will return to unlock it),
 // and end the fiber with the cancelled outcome. A signal that already landed
-// wins over the cancel — the value is ours and dropping it would lose it.
+// wins over the cancel: the value is ours and dropping it would lose it.
 static int fiber_line_wait(pthread_mutex_t* m, BFiberWaiter** head,
                             BFiberWaiter** tail) {
     BFiberWaiter waiter = { beans_fiber_current(), NULL, 0 };
@@ -16793,7 +16504,7 @@ static int fiber_line_wait(pthread_mutex_t* m, BFiberWaiter** head,
     }
     return 1;
 }
-#endif // BEANS_RT_FIBERS — fiber wait lines
+#endif // BEANS_RT_FIBERS: fiber wait lines
 
 // One value entered the channel: hand it to the first waiting fiber, or
 // signal a waiting thread. One freed slot mirrors it for senders.
@@ -16917,7 +16628,7 @@ long long beans_chan_recv_typed(BChan* c, void* out) {
     return 1;
 }
 // The try twins: a verdict instead of a wait. A refused try_send leaves the
-// value with the caller — the checker limits it to copyable elements, so a
+// value with the caller: the checker limits it to copyable elements, so a
 // refused move-only value can never be lost.
 long long beans_chan_try_send(BChan* c, long long v) {
     pthread_mutex_lock(&c->m);
@@ -17000,9 +16711,9 @@ void beans_chan_close(BChan* c) {
 // ---- Gate -------------------------------------------------------------------
 // A sticky broadcast flag (spec/CONCURRENCY.md, F3): wait() parks the
 // calling fiber until open() fires, open() wakes every waiter at once and
-// the gate stays open forever after. A Gate IS an empty channel — open is
+// the gate stays open forever after. A Gate IS an empty channel: open is
 // close (sticky, wakes the whole wait line, broadcasts to thread waiters)
-// and wait is the closed-only half of a receive — so the kind-4 tracer
+// and wait is the closed-only half of a receive, so the kind-4 tracer
 // and destructor work unchanged: the queue never holds a value.
 BChan* beans_gate_new(void) { return beans_chan_new(1, 0); }
 void beans_gate_open(BChan* c) { beans_chan_close(c); }
@@ -17056,8 +16767,8 @@ void beans_atomic_set(BAtomic* a, long long v) {
 
 // CPUID, XGETBV and PAUSE are x86 *family* instructions, not 64-bit ones, and
 // 32-bit Windows is a supported target. Gating them on __x86_64__ alone left an
-// i686 binary detecting no features whatsoever — not even the sse2 that is its
-// own registered baseline — so `cpu.has` answered false for hardware the target
+// i686 binary detecting no features whatsoever: not even the sse2 that is its
+// own registered baseline, so `cpu.has` answered false for hardware the target
 // is compiled to assume.
 #if defined(__x86_64__) || defined(__i386__)
 #define BEANS_X86 1
@@ -17315,7 +17026,7 @@ static long long beans_futex_wait(void* address, unsigned int expected,
         if (errno == EINTR) {
             // A signal, not a wakeup. Retrying with the same relative budget can
             // over-wait, so report it as a wakeup and let the caller's own loop
-            // decide — it re-reads the value either way.
+            // decide: it re-reads the value either way.
             return 1;
         }
         return 1; // unknown failure: never block forever on it
@@ -17441,7 +17152,7 @@ long long beans_atomic_notify(void* address, long long width, long long all) {
     }
     // One condvar serves the whole bucket, so this also wakes waiters on other
     // addresses. They re-check and park again: over-waking is safe, under-waking
-    // hangs. It is also what C++20's notify_one permits — "at least one".
+    // hangs. It is also what C++20's notify_one permits: "at least one".
     if (woken) pthread_cond_broadcast(&bucket->c);
     pthread_mutex_unlock(&bucket->m);
     return woken;
@@ -17852,7 +17563,7 @@ static void dec_widen(BDec* out, const BDec* value, long long scale,
     }
     // A zero has no significant digits to protect. The digit budget stops a
     // coefficient from growing past 38 because the zeros it appends are
-    // significant; zero appends nothing — 0 at scale 45 is still the one digit
+    // significant; zero appends nothing: 0 at scale 45 is still the one digit
     // dec_digits128 counts, and scale 45 is well inside BDEC_MAX_SCALE. So a
     // zero reaches the whole target, which is what makes a + b and b + a agree
     // when both sides are zero.
@@ -17879,7 +17590,7 @@ void beans_decv_add(BDec* out, const BDec* a, const BDec* b,
     // A zero still carries a scale, and a sum's scale is the wider of the two:
     // 0.00 + 233 is 233.00. Handing back the other operand untouched dropped
     // it, which is how a money total that starts at 0.00 lost its cents on the
-    // first addition — and money is what this type is for.
+    // first addition, and money is what this type is for.
     long long scale = a->s > b->s ? a->s : b->s;
     if (dec_zero(a) || dec_zero(b)) {
         dec_widen(out, dec_zero(a) ? b : a, scale, line, col);
@@ -17890,13 +17601,13 @@ void beans_decv_add(BDec* out, const BDec* a, const BDec* b,
     int be = dec_digits128(bm) - 1 - (int)b->s;
     // One operand so much smaller than the other that it cannot reach the
     // sum's 38 digits. It still decides the sum's scale, so the answer is the
-    // larger operand *widened*, not handed back untouched — that is how
+    // larger operand *widened*, not handed back untouched: that is how
     // 1231234555555555555555555567456789 - 0.000000001 lost its four decimals.
     //
     // The cut is at 39, not 38, because a digit one past the 38-digit window
     // still lands on the guard: 1 + -9E-39 borrows into the last kept digit and
     // is 0.99999999999999999999999999999999999999, not 1. From 40 apart the
-    // small side is strictly below the guard, so it can only be sticky — it
+    // small side is strictly below the guard, so it can only be sticky: it
     // rounds a like-signed sum down and moves an opposite-signed one by less
     // than half a step either way. The general path below stays bounded: at 39
     // apart the wider operand grows by at most 76 digits, well inside BDecWide.
@@ -17950,8 +17661,8 @@ void beans_decv_div(BDec* out, const BDec* a, const BDec* b,
                     long long line, long long col) {
     if (dec_zero(b)) beans_panic("divide by zero", line, col);
     // A zero quotient still carries the quotient's scale, which is
-    // scale(a) - scale(b) — the preferred exponent the non-zero path below
-    // already lands on — and never a negative one, because beans has no
+    // scale(a) - scale(b): the preferred exponent the non-zero path below
+    // already lands on, and never a negative one, because beans has no
     // negative scale. Keeping the dividend's scale made 0.000 / 0.7 answer
     // 0.000 where the general decimal arithmetic says 0.00.
     if (dec_zero(a)) {
@@ -18084,7 +17795,7 @@ int beans_dec_cmp(BDec* a, BDec* b) {
     }
     return negative ? -order : order;
 }
-// dec_cmp aligns scales, so 2.50 == 2.5 — hash the canonical trailing-zero-free
+// dec_cmp aligns scales, so 2.50 == 2.5: hash the canonical trailing-zero-free
 // form so equal decimals land in the same map index slot
 long long beans_dec_hash(BDec* d) {
     BU128 magnitude = dec_mag(d);
@@ -18272,7 +17983,7 @@ char* beans_dec_str(BDec* a) {
     int neg = dec_negative(a);
     // Scratch is sized from the scale: the coefficient holds at most 38
     // digits, but
-    // the zero-fill below runs to scale+1 — "1e-100".to_decimal() legitimately
+    // the zero-fill below runs to scale+1: "1e-100".to_decimal() legitimately
     // carries scale 100, and the old fixed 64/80-byte stack buffers smashed
     // the stack. Small values keep the stack fast path.
     long long cap = (a->s > 38 ? a->s : 38) + 2;
@@ -18587,7 +18298,7 @@ char* beans_show_list_decv(BList* list) {
 #endif // BEANS_RT_DECIMAL
 
 // ---- std.fmt (mirrors builtins.cpp byte for byte) ----
-// same 1e6 width ceiling the interpolation spec enforces at compile time — a
+// same 1e6 width ceiling the interpolation spec enforces at compile time: a
 // pad is a fill, not an allocation primitive; past the cap it is a panic on
 // both backends, not a 1TB alloc the OOM killer reaps
 #define FMT_PAD_MAX 1000000
@@ -18650,7 +18361,7 @@ char* beans_decv_fmt(BDec* value, long long p) {
 #endif // BEANS_RT_DECIMAL
 
 // ---------------------------------------------------------------------------
-// brew — the compiler's layer over the fiber core (spec/CONCURRENCY.md, F2).
+// brew: the compiler's layer over the fiber core (spec/CONCURRENCY.md, F2).
 //
 // Mirrors the BThread layer, minus every cross-thread cost: a brewed fiber
 // runs on the worker that brewed it, shares its non-atomic refcounts and its
@@ -18660,7 +18371,7 @@ char* beans_decv_fmt(BDec* value, long long p) {
 // fiber writing into it.
 //
 // Interim on targets without the controlled unwind: a contained panic (and a cancelled
-// park) abandons the fiber's frames — defers do not run yet and the child's
+// park) abandons the fiber's frames: defers do not run yet and the child's
 // unclaimed closure box is not released on that path.
 #if BEANS_RT_FIBERS
 
@@ -18674,7 +18385,7 @@ typedef struct {
     long long result_size;
     long long status; // -1 running, else the join's BEANS_FIBER_* answer
     long long joined;
-    // TaskGroup rows only; never masked — the group owns its rows, never
+    // TaskGroup rows only; never masked: the group owns its rows, never
     // the other way round. done_stamp is the group clock's completion
     // order, 0 while the child still runs.
     void* group;
@@ -18773,7 +18484,7 @@ void beans_brew_cancel(BBrew* h) {
 }
 
 // Releases a joined row's unclaimed ok result. Panic and cancel carry
-// nothing to release here — the F2 note on abandoned frames covers what
+// nothing to release here: the F2 note on abandoned frames covers what
 // the child itself still held.
 static void brew_drop_result(BBrew* h) {
     if (h->status != BEANS_FIBER_OK) return;
@@ -18807,12 +18518,11 @@ void beans_brew_scope_join(BBrew* h, long long line, long long col) {
 }
 
 // ---------------------------------------------------------------------------
-// contained — a catch frame on the CURRENT fiber (spec/CONCURRENCY.md).
+// contained: a catch frame on the CURRENT fiber (spec/CONCURRENCY.md).
 //
 // `contained f(x)` runs f right here, under a landing pad the emitter puts on
 // the call, and answers Result<T>. There is no child fiber, so there is no
-// spawn, no pair of context switches and no join: the same controlled unwind
-// a brewed fiber's panic starts simply stops one frame earlier.
+// Containment uses the same unwind mechanism as brew, with the catch frame on the current fiber.
 //
 // The runtime's whole part is the count of catch frames standing on a fiber's
 // stack. beans_panic reads it to decide whether a failure unwinds; the pad
@@ -18820,7 +18530,7 @@ void beans_brew_scope_join(BBrew* h, long long line, long long col) {
 //
 // The first enter promotes this thread to a worker if it is not one already,
 // so the count always has a fiber to live on. It is idempotent and the second
-// call is a thread-local load and a branch — a program that brews has paid it
+// call is a thread-local load and a branch: a program that brews has paid it
 // already, and one that only contains pays it once per thread.
 void beans_contained_enter(void) {
     beans_worker_bootstrap();
@@ -18833,12 +18543,12 @@ void beans_contained_leave(void) {
 
 // The landing pad's one call: a fresh Beans string with the report the unwind
 // was carrying, and the fiber put back into a running state. The message is
-// exactly what a brewed fiber's join delivers for the same panic — the whole
-// "runtime panic at <line>:<col>: <text>" line — so a failure reads the same
+// exactly what a brewed fiber's join delivers for the same panic, including
+// the "runtime panic at <line>:<col>: <text>" prefix.
 // whichever boundary caught it.
 // The report is copied to the stack and the fiber taken out of the unwind
 // BEFORE the Beans string is minted. Minting it allocates, an allocation can
-// run a cycle-collector pass, and a deinit that pass runs can panic — with the
+// run a cycle-collector pass, and a deinit that pass runs can panic: with the
 // fiber still marked unwinding that ordinary panic would be reported as the
 // fatal double panic. The walk is over by the time this pad runs, so the flag
 // has no business outliving it. 512 is the fiber record's own message size.
@@ -18853,12 +18563,12 @@ char* beans_contained_caught(void) {
 }
 
 // ---------------------------------------------------------------------------
-// TaskGroup — a scope-bound fleet of brewed fibers (spec/CONCURRENCY.md,
+// TaskGroup: a scope-bound fleet of brewed fibers (spec/CONCURRENCY.md,
 // F3), for when the fiber count is a runtime value. group.brew(f(x))
 // starts a child exactly as `brew` does; next() delivers outcomes in
 // completion order with spawn order breaking ties; wait_all() joins the
 // rest in spawn order; cancel_all() discards a fleet. The group and every
-// child live on one worker — the handle is scope-bound and not Send — so
+// child live on one worker. The handle is scope-bound and not Send, so
 // every field here is worker-local and lock-free. The children list is a
 // beans list so the group's shell traces the rows it still owns.
 
@@ -18869,8 +18579,8 @@ typedef struct {
     BeansFiber* waiter;  // one parked next()/wait_all caller, or NULL
 } BTaskGroup;
 
-// The fiber core's done hook: settle() runs it for every ending — return,
-// panic, cancel — so a panicked child is deliverable too. brew_main's
+// The fiber core's done hook runs settle() on return, panic, or cancel, so
+// panicked children are deliverable too. brew_main's
 // return path could never see the panics (beans_fiber_panic does not
 // return through it).
 static void taskgroup_child_done(void* arg) {
@@ -18898,7 +18608,7 @@ static void taskgroup_adopt(BTaskGroup* g, BBrew* h) {
     beans_fiber_set_done_hook(h->fiber, taskgroup_child_done, h);
 }
 
-// group.brew(f(x)) — the same two flavors as beans_brew(_typed), minus
+// group.brew(f(x)): the same two flavors as beans_brew(_typed), minus
 // the returned handle: the group keeps the row.
 void beans_taskgroup_brew(BTaskGroup* g, void* thunk, void* env,
                           long long result_ptr, void* name,
@@ -18913,7 +18623,7 @@ void beans_taskgroup_brew_typed(BTaskGroup* g, void* thunk, void* env,
                                         stack_reserve));
 }
 
-// The undelivered row with the smallest completion stamp — the clock is
+// The undelivered row with the smallest completion stamp: the clock is
 // strictly increasing, so spawn order can only break the tie of "not
 // finished yet", never of two stamps. -1 when nothing deliverable is done.
 static long long taskgroup_pick_done(BTaskGroup* g) {
@@ -18950,8 +18660,8 @@ static BBrew* taskgroup_detach(BTaskGroup* g, long long index) {
     return row;
 }
 
-// Parks until an undelivered child finishes; answers a joined row the
-// caller owns — read value or message, then release — or NULL when the
+// Parks until a child finishes and returns a caller-owned row; release it
+// after reading its value or message. Returns NULL when the
 // group has nothing left. The park loops on its condition (wakes can be
 // spurious), and a cancel observed at that park ends this fiber, the same
 // contract every std park holds to.
@@ -18974,7 +18684,7 @@ BBrew* beans_taskgroup_next(BTaskGroup* g) {
     }
 }
 
-// A finished row right now, or NULL. Never parks — but it does hand over
+// A finished row right now, or NULL. It never parks, but it does hand over
 // once when nothing is ready yet, because the children are on this fiber's
 // own scheduler: a caller spinning on try_next until every row has landed,
 // which is the documented way to drain a fleet without blocking, would
@@ -18995,14 +18705,14 @@ BBrew* beans_taskgroup_try_next(BTaskGroup* g) {
     return row;
 }
 
-// The emitted Result construction reads a delivered row's ending here —
+// The emitted Result construction reads a delivered row's ending here;
 // the join already ran inside next(), whose answer had to be the row.
 long long beans_brew_status(BBrew* h) { return h->status; }
 
 // Parks until every remaining child has finished, then joins them all in
 // spawn order. All ok: answers NULL with every row joined and still held
 // for beans_taskgroup_collect. Any failure: answers the first failing row
-// in spawn order — caller-owned, for the err arm — and releases everyone
+// in spawn order, caller-owned for the err arm, and releases everyone
 // else, dropping their unclaimed results. One failure is the fleet's
 // answer; the rest is discarded, joined first.
 BBrew* beans_taskgroup_wait_all_join(BTaskGroup* g) {
@@ -19051,7 +18761,7 @@ BBrew* beans_taskgroup_wait_all_join(BTaskGroup* g) {
 
 // After a NULL wait_all_join: the values in spawn order as a fresh list,
 // rows released, group emptied and reusable. The narrow flavor mirrors
-// beans_brew_value — ownership of a reference element just moves into the
+// beans_brew_value: ownership of a reference element just moves into the
 // list; the typed flavor mirrors beans_brew_value_typed with the list
 // slot as `out`.
 BList* beans_taskgroup_collect(BTaskGroup* g, long long elem_ref) {
@@ -19088,8 +18798,8 @@ BList* beans_taskgroup_collect_typed(BTaskGroup* g, long long stride,
     return out;
 }
 
-// Cancels newest-first — later children often feed earlier ones — then
-// joins everyone and drops every outcome: cancel_all is handling by
+// Cancels newest-first because later children often feed earlier ones, then
+// joins everyone and drops every outcome. cancel_all handles failures by
 // discard, recorded in the spec. A child that finished before the cancel
 // reached it is dropped the same way.
 void beans_taskgroup_request_cancel(BTaskGroup* g) {
@@ -19123,19 +18833,11 @@ void beans_taskgroup_cancel_all(BTaskGroup* g) {
     g->delivered = 0;
 }
 
-// The synthesized scope-exit join behind every group, the same contract a
-// lone brew holds to: join what is left in spawn order, escalate the
-// first panic nobody looked at, drop unclaimed ok results quietly.
+// Join remaining children in spawn order, escalate the first unobserved panic, and discard unclaimed successful results.
 void beans_taskgroup_scope_join(BTaskGroup* g, long long line,
                                 long long col) {
     long long n = g->children->len;
-    // Join every unclaimed child in spawn order and escalate the first panic
-    // nobody looked at -- the same child the tree interpreter escalates on,
-    // which reaps spawn order too. The ok result is NOT dropped here: dropping
-    // it in this front-to-back loop (what beans_brew_scope_join does) ran the
-    // discarded values' deinits oldest-first, where the interpreter leaves each
-    // result on its child row and releases the row list back to front, so the
-    // deinits ran newest-first (#106). Only the join happens here.
+    // Join in spawn order and escalate the first unobserved panic; defer successful-result release so deinit order matches the interpreter.
     for (long long i = 0; i < n; i++) {
         BBrew* row = (BBrew*)(uintptr_t)g->children->data[i];
         if (!row || row->joined) continue;
@@ -19164,14 +18866,14 @@ void beans_taskgroup_scope_join(BTaskGroup* g, long long line,
     g->delivered = 0;
 }
 
-#endif // BEANS_RT_FIBERS — brew
+#endif // BEANS_RT_FIBERS: brew
 
 // ---------------------------------------------------------------------------
 // The fiber runtime core (spec/CONCURRENCY.md, F1). One include keeps the
 // runtime a single entry file for BEANS_RUNTIME resolution; the fiber core
 // stays its own translation-unit-shaped file so test/fiber_core.c can test
 // it without the rest of the runtime. Fibers need real threads and mmap, so
-// restricted profiles compile without them — the checker refuses `brew` and
+// restricted profiles compile without them: the checker refuses `brew` and
 // parking there before this gate is ever reached.
 #if BEANS_RT_FIBERS
 #include "beans_fiber.c"
@@ -19184,21 +18886,21 @@ void beans_taskgroup_scope_join(BTaskGroup* g, long long line,
 // everything else that would need them, **by name, against the program**.
 //
 // So why are these here at all? Because a program that never writes a channel
-// can still be *linked* against one. Reflection's registry is by name — a
+// can still be *linked* against one. Reflection's registry is by name: a
 // lookup asks for a type that may or may not exist, so the registry has to
 // carry every declaration in the program, `std.sync`'s included. Registering
 // `Channel.send` means emitting the thunk that would call it, and that thunk
 // names `beans_chan_send` whether or not any line of the program does.
 //
 // Before these existed, the symptom was a link failure naming seven runtime
-// symbols, for a browser module that had never mentioned concurrency — and the
+// symbols, for a browser module that had never mentioned concurrency, and the
 // only way past it was to give up reflection, which is what an annotation-
 // driven framework is built on.
 //
 // Each one panics. They are unreachable from source, because the checker got
 // there first; a reflective call by name is the one way in, and that deserves
 // an answer rather than a crash. Weak, so a program that supplies its own
-// still wins — the same discipline `beans_host_format_f64` follows.
+// still wins: the same discipline `beans_host_format_f64` follows.
 #if BEANS_RT_PROFILE < BEANS_RT_MINIMAL
 
 static void beans_rt_no_threads(const char* what) {
@@ -19329,4 +19031,4 @@ long long beans_gate_is_open(void* g) {
     return 0;
 }
 
-#endif // BEANS_RT_PROFILE < BEANS_RT_MINIMAL — concurrency refusals
+#endif // BEANS_RT_PROFILE < BEANS_RT_MINIMAL: concurrency refusals

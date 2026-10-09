@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The netpoller (spec/CONCURRENCY.md, F3): net waits park fibers in their
-# worker's kernel poller — kqueue here, epoll on Linux — instead of
+# worker's kernel poller, kqueue here, epoll on Linux, instead of
 # blocking the thread. The differential case runs both TCP ends as fibers
 # of one worker (impossible before the netpoller: accept would block the
 # only thread) and demands byte-identical output from both engines. The
@@ -9,7 +9,7 @@
 set -euo pipefail
 
 # macOS runners ship no GNU timeout; stand in for it when absent. The
-# stand-in reports 137 (SIGKILL) where GNU prints 124 — every use here
+# stand-in reports 137 (SIGKILL) where GNU prints 124, every use here
 # only cares that a hang cannot pass, and neither code ever matches an
 # expected exit.
 if ! command -v timeout >/dev/null 2>&1; then
@@ -130,9 +130,9 @@ fi
 # write_vectored and write_vectored_text driven from a fiber: the
 # park-on-backpressure turn of the pair engine. Every other vectored case in
 # the tree sends from a std.thread, where the socket stays blocking and the
-# kernel does the waiting, so beans_net_send_pair_wait's netpoller branch —
+# kernel does the waiting, so beans_net_send_pair_wait's netpoller branch,
 # the turn a server actually takes, since espresso sends a body of 16 KB or
-# more beside its head from the handler's fiber — was reached by nothing.
+# more beside its head from the handler's fiber, was reached by nothing.
 #
 # Both ends are fibers of one worker and the payload is eight mebibytes, which
 # is more than any loopback socket buffer holds unread, so the send cannot
@@ -142,9 +142,9 @@ fi
 # and nothing else changed turns all five lines below into a single "failed:
 # the peer closed early"; the same scratch runtime with the branch intact
 # prints them. The two backends reach the wire by different routes for the
-# string form — the native backend through beans_net_send_pair_text, the tree
+# string form, the native backend through beans_net_send_pair_text, the tree
 # interpreter through the joined buffer it emulates that entry with, which
-# parks in beans_net_send's own loop — so the diff between them is load-bearing.
+# parks in beans_net_send's own loop, so the diff between them is load-bearing.
 echo "checking a fiber's vectored sends park on backpressure in both backends"
 timeout 180 ./build/beansc run test/cases/fiber_vectored.b >"$tmp/vec-interp"
 ./build/beansc build test/cases/fiber_vectored.b -o "$tmp/vec-native" >"$tmp/vec-build" 2>&1

@@ -1,11 +1,5 @@
 #!/usr/bin/env bash
-# Ownership fuzzing: who is allowed to touch a value, and how many names it
-# may have while they do. Two rules, both invisible at runtime when they are
-# wrong — a Mutex that should not have crossed a thread, or a second live
-# reader of a move-only map value — so the generator randomizes the shapes
-# that decide each answer and an independent model in tools/ownership_fuzz.py
-# decides them too. Accepted programs also have to run and count correctly on
-# every lane; refused ones have to be refused for the stated reason.
+# Fuzz ownership rules against an independent model; accepted cases must run correctly on every lane and rejected cases must report the expected reason.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

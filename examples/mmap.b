@@ -1,4 +1,4 @@
-// stdlib phase 3: MMap — a shared whole-file mapping with bounds-checked
+// stdlib phase 3: MMap provides a shared whole-file mapping with bounds-checked
 // word access. put/get/read/write panic out of range, flush/close report
 // Results, and dropping a map without close() unmaps it (kind-6 resource).
 import std.io
@@ -41,8 +41,7 @@ fn main() {
     }
     r.close().expect("close ro")
 
-    // resize: grow in place, patch the new tail, shrink back — the handle
-    // keeps its fd exactly for this
+    // Resize in place, then shrink back; the handle keeps its fd for the operation.
     fs.write_bytes(p, new Bytes(8)).expect("seed resize")
     let g: MMap = MMap.open(p, true).expect("open grow")
     g.resize(32).expect("grow")
@@ -59,7 +58,7 @@ fn main() {
     z.flush().expect("flush empty")
     z.close().expect("close empty")
 
-    // POSIX: the mapping outlives the file — remove the path, keep reading,
+    // POSIX mappings outlive the file, so the path can be removed while reading.
     // and the temp dir is already clean when the final panic fires
     let reseed: Bytes = new Bytes(8)
     reseed.put_u32(0, 77)

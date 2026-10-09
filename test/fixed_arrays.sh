@@ -54,8 +54,8 @@ grep -q "this fixed array is a temporary copy — store it in a var" "$tmp/place
 grep -q "array element assignment through a List<main.Pt> element is not supported yet" "$tmp/places.bad"
 grep -q "storing owned references into an array inside a class object is not supported yet" "$tmp/places.bad"
 # A static field is the third root an element chain can end at. Its plain
-# elements are addressable — test/cases/parity/static_place.b writes them on
-# both backends — but an element that may own references would leave the
+# elements are addressable, test/cases/parity/static_place.b writes them on
+# both backends, but an element that may own references would leave the
 # collector an untracked edge, the same open question a class-held array has.
 grep -q "storing owned references into an array inside a static is not supported yet" "$tmp/places.bad"
 

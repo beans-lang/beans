@@ -1,14 +1,8 @@
 // Running another program.
 //
-// `std.process` is the readable layer over one runtime primitive. The primitive does
-// the whole job in one call — spawn, feed stdin, drain both output streams, wait, reap —
-// because that is the only way the classic deadlock is impossible: a parent that reads
-// stdout to EOF while the child blocks writing stderr hangs forever, and the fix is to
-// watch every descriptor at once.
+// The runtime runner spawns the child, writes stdin, drains both output streams, waits, and reaps it together so a full stderr pipe cannot deadlock a stdout read.
 //
-// **There is no shell.** A command is a program name and a list of arguments, and they
-// reach `execvp` untouched. A filename containing a space, a quote or a semicolon is
-// just a filename, so there is nothing to escape and nothing to get wrong.
+// Arguments pass to `execvp` directly; shell metacharacters are ordinary filename text.
 
 package process
 
@@ -21,7 +15,7 @@ extern "C" fn beans_proc_timeout_scope(ms: int) -> int
 pub class Output {
     /// Exit code, or the negative of the signal number if it was killed.
     pub status: int = 0
-    /// Everything the program wrote to stdout, as bytes — output is not always text.
+    /// Captured stdout bytes; output may not be text.
     pub out: Bytes = new Bytes(0)
     /// Everything it wrote to stderr.
     pub err: Bytes = new Bytes(0)
@@ -62,15 +56,14 @@ pub class Command {
     /// Empty means stay in this process's directory.
     dir: string = ""
     stdin_data: Bytes = new Bytes(0)
-    /// Bytes to keep from each stream. A program that prints forever must not be able
-    /// to exhaust memory here, so there is always a limit.
+    /// Maximum bytes retained from each output stream.
     limit: int = 8388608
 
     pub fn init(program: string) {
         self.program = program
     }
 
-    /// Adds one argument. Never parsed, never split, never passed through a shell.
+    /// Adds one argument without shell parsing.
     pub fn arg(value: string) -> Command {
         self.args.push(value)
         return self
@@ -82,9 +75,7 @@ pub class Command {
         return self
     }
 
-    /// Sets one environment variable. The first call switches from inheriting the
-    /// parent's environment to a fresh one holding only what is set here, because a
-    /// half-inherited environment is the kind of thing that works until it does not.
+    /// Sets an environment variable; supplied variables replace the inherited environment.
     pub fn env(name: string, value: string) -> Command {
         self.env_pairs.push("{name}={value}")
         return self
@@ -109,12 +100,7 @@ pub class Command {
         return self
     }
 
-    /// Runs it, waits for it, and collects what it produced.
-    ///
-    /// A program that could not be started — not found, not executable, a bad working
-    /// directory — is an `err`, separately from a program that started and failed.
-    /// That distinction is the whole reason the runtime carries a close-on-exec pipe:
-    /// without it "no such file" and "exited 127" look identical.
+    /// Returns an error if execution cannot start or output cannot be collected; otherwise the child's exit code or signal is stored in `Output.status`.
     pub fn run() -> Result<Output> {
         self.validate()?
         var argv: Bytes = new Bytes(0)
@@ -148,10 +134,7 @@ pub class Command {
         unsafe { return beans_proc_timeout_scope(ms) }
     }
 
-    /// Starts it and comes straight back, giving a `Child` to watch, talk to and stop.
-    ///
-    /// `stdin_bytes`/`stdin_text` and `capture_limit` do not apply — the whole point is
-    /// that the streams stay open for you to use. Everything else does.
+    /// Starts the child with open streams; configured stdin bytes and capture limit are ignored.
     pub fn start() -> Result<Child> {
         self.validate()?
         var argv: Bytes = new Bytes(0)
@@ -216,23 +199,9 @@ fn decode(parts: List<Bytes>) -> Output {
     return done
 }
 
-// There is deliberately no module-level `run(program)` here. Running a program produces
-// an object, and construction that can fail is a named static on the class — but a
-// static `run` beside the instance `run` would read as two different things with one
-// name, and `new Command(program).run()` is already the short form.
+// Use `Child` when the caller needs to interact with or supervise a running process.
 
-// ---- a child that outlives the call -----------------------------------------
-//
-// `Command.run()` is right when the program's output is all you want. It cannot help when
-// the child keeps running: a server to talk to, a process to watch, something to stop
-// after a deadline. `Command.start()` gives a `Child` instead.
-
-/// One of a child's three streams.
-///
-/// Not a `unique class`, because a `Child` owns all three and handing out three move-only
-/// values would mean the child could not be waited on until every stream was accounted
-/// for. Closing one twice is an error rather than a crash, and the child closes whatever
-/// is left.
+/// A stream owned by `Child`; closing is one-shot, and `Child` closes any open streams on drop.
 pub class Stream {
     fd: int
     pub name: string = ""
@@ -273,8 +242,7 @@ pub class Stream {
         return ok(done)
     }
 
-    /// Reads up to `max` bytes. **An empty result means the other end closed** — for a
-    /// child's stdout, that it has stopped writing.
+    /// Reads up to `max` bytes; an empty result means the stream reached EOF.
     pub fn read(max: int) -> Result<Bytes> {
         if !self.live { return err("{self.name} is closed", "closed") }
         return proc.read(self.fd, max)
@@ -299,7 +267,7 @@ pub class Stream {
         return self.live
     }
 
-    /// The raw descriptor, borrowed — for a poller.
+    /// Returns the borrowed descriptor for poll registration.
     pub fn poll_handle() -> int {
         return self.fd
     }
@@ -307,10 +275,7 @@ pub class Stream {
 
 /// A running child process.
 ///
-/// **A dropped `Child` is killed and reaped.** Not left running, and not left as a zombie:
-/// a zombie per spawn leaks the one resource a process cannot get more of, and an orphan
-/// outliving the program that started it is worse. Call `wait()` if you want it to finish
-/// on its own terms.
+/// Dropping an unreaped child terminates and reaps it; call `wait()` to let it exit normally.
 pub unique class Child {
     pid: int
     pub stdin: Stream
@@ -347,14 +312,12 @@ pub unique class Child {
         if self.stderr.is_open() { let c: Result<bool> = self.stderr.close() }
     }
 
-    /// The process id, for logging. Signalling goes through the methods here, which know
-    /// whether the child has already been reaped.
+    /// Returns the process ID.
     pub fn process_id() -> int {
         return self.pid
     }
 
-    /// True when it has finished. Reaps it if so, so this is safe to call in a loop
-    /// without leaving a zombie.
+    /// Reports whether the child exited and reaps it when it has.
     pub fn is_finished() -> Result<bool> {
         if self.reaped { return ok(true) }
         let state: Bytes = proc.status(self.pid, 0)?
@@ -365,8 +328,7 @@ pub unique class Child {
         return ok(false)
     }
 
-    /// Waits for it to finish and gives its status: the exit code, or the **negative**
-    /// signal number if a signal ended it.
+    /// Waits for exit and returns the exit code or negative signal number.
     pub fn wait() -> Result<int> {
         if self.reaped { return err("this child was already waited for", "closed") }
         let state: Bytes = proc.status(self.pid, -1)?
@@ -374,8 +336,7 @@ pub unique class Child {
         return ok(state.get_i64(8))
     }
 
-    /// Waits at most `ms` milliseconds. `none` means it is still running — which is not an
-    /// error, so a caller can escalate rather than having to catch one.
+    /// Waits up to `ms` milliseconds and returns `none` if the child is still running.
     pub fn wait_timeout(ms: int) -> Result<Option<int>> {
         if self.reaped { return err("this child was already waited for", "closed") }
         if ms < 0 { return err("a timeout cannot be negative", "invalid") }
@@ -385,8 +346,7 @@ pub unique class Child {
         return ok(some(state.get_i64(8)))
     }
 
-    /// Asks it to stop (`SIGTERM`). A well-behaved program cleans up and exits; one that
-    /// ignores it keeps running, which is what `kill` is for.
+    /// Sends `SIGTERM`; the child may clean up or continue running.
     pub fn terminate() -> Result<bool> {
         if self.reaped { return err("this child has already finished", "closed") }
         return proc.signal(self.pid, 15)
@@ -404,8 +364,7 @@ pub unique class Child {
         return proc.signal(self.pid, number)
     }
 
-    /// Asks it to stop, waits `grace_ms`, then kills it if it is still there. Returns its
-    /// status. This is the shape almost every caller actually wants.
+    /// Sends `SIGTERM`, waits up to `grace_ms`, then sends `SIGKILL` and returns the status.
     pub fn stop(grace_ms: int) -> Result<int> {
         if self.reaped { return err("this child has already finished", "closed") }
         let asked: bool = proc.signal(self.pid, 15)?

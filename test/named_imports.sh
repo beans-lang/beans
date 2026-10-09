@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Named imports: `import {name, other as alias} from path` binds exactly
-# the selection — functions, types, enums, annotations, sub-packages of a
-# namespace folder — with the same compile-time resolution as the
+# the selection, functions, types, enums, annotations, sub-packages of a
+# namespace folder, with the same compile-time resolution as the
 # module-qualified form. Positive cases run on the interpreter, a debug
 # build and a release build and must agree byte-for-byte; the negative
 # files lock the loader, resolver and checker diagnostics; the source

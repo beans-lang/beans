@@ -1,9 +1,4 @@
-// A queue open at both ends. `List.insert(0, v)` and `List.remove(0)` shift
-// every other element, so a list used as a queue is quadratic; this is not.
-//
-// The storage is std::deque's idea — fixed-size blocks, so an element body is
-// written once and never moved again — with the block map split into two
-// stacks so both ends grow by `push` alone:
+// Fixed-size blocks let both ends grow by `push` without shifting other elements.
 //
 //   front: List<List<T>>   front[len-1] is the HEAD block (outermost), front[0]
 //                          the innermost. A front block is stored REVERSED:
@@ -11,71 +6,14 @@
 //                          element, so push_front is one `push` at the end.
 //   back:  List<List<T>>   back[len-1] is the TAIL block (outermost), back[0]
 //                          the innermost. A back block is stored in order.
-//   spare: List<List<T>>   0 or 1 recycled empty block, so a push/pop that
-//                          straddles a block boundary neither allocates nor
-//                          frees — it moves one block handle to and from spare.
+//   spare: List<List<T>>   0 or 1 recycled empty block used across block boundaries.
 //
-// Invariants, true by construction (the fuzz model in test/ catches a breach):
-//   * every block except a side's outermost is exactly BLOCK long;
-//   * a side holds no empty block — a side with no elements is an empty list,
-//     and its lone emptied block is handed to `spare`, never left in place;
-//   * front_count + back_count == len().
-//
-// The first two hold at every method boundary. Inside a pop, a block sits
-// empty for the two statements between the element leaving it and the block
-// leaving the side; no reader depends on it, because of the first rule below.
-//
-// ---- why the shape lives in one object ------------------------------------
-//
-// A user's `deinit` can run in the middle of any method here. The cycle
-// collector runs deinits, an allocation is where the collector runs, and under
-// the tree interpreter essentially every operation allocates — so between any
-// two writes this class makes, code that reads this deque may run. A shape
-// spread over four cells (`front`, `back`, `front_count`, `back_count`) is
-// therefore torn for as long as it takes to write the second of them, and
-// `len()`, `get()`, `first()`, `last()` and `to_list()` answer from that tear:
-// a length over storage that no longer matches it, the contents backwards, or
-// an index straight past a block that was just drained. That was #86.
-//
-// Two rules close it, and between them every state this class can be caught in
-// is a deque that is telling the truth.
-//
-// **The counters never claim more than the storage holds.** A push writes the
-// element and then raises the count; a pop lowers the count and then takes the
-// element out. So the storage may hold one more element than the deque claims,
-// never one fewer, and readers decode the layout from the *counters*: the head
-// block's claimed size is `front_count - head * BLOCK`, not the block's own
-// length. An uncounted element sits past the end of what every reader looks
-// at. `to_list()` walks to the counters for the same reason, `first` and
-// `last` answer through `get` so the layout is decoded in one place, and no
-// empty block is ever attached — a new block is filled before it is linked in,
-// where `open_block_*` used to link an empty one and then allocate its storage,
-// which made `first()` read slot -1. This costs nothing: the claimed size is a
-// subtract where the block's length was a load.
-//
-// **A crossover publishes a whole new shape with a single store.** Moving half
-// of one end to the other changes all four cells, and no ordering of four
-// writes leaves the content right at every step — the moved elements would
-// have to be claimed by both sides at once, or by neither. So
-// `crossover_to_front` and `crossover_to_back` never write the live shape at
-// all: each reads it, builds a complete replacement beside it, and swaps it in
-// with `self.shape = built`. Before that store this deque is entirely the old
-// shape and after it entirely the new one; there is no third state for a
-// deinit to find. Everything the rebuild allocates is allocated while the
-// deque is still exactly what it says it is.
-//
-// The replacement copies its blocks — `slice` or `clone`, one bulk copy per
-// block — rather than carrying them across by their handle. It has to: a block
-// changing sides must have its contents reversed, and reversing it where it
-// lies is a write to storage the live shape is still answering from, while a
-// `List` block cannot sit in two block maps at once, so the blocks that stay
-// cannot be shared with the replacement either. That copies the whole of one
-// side per crossover, which the halving keeps to O(1) per pop amortized:
-// draining n elements from the far end copies n + n/2 + n/4 + ... = 2n, two
-// element copies per pop. Moving ALL of the far end instead would let pops
-// alternating between the two ends pay O(n) every turn. On `bench/deque.b` the
-// whole row costs about a fifth more than the torn version it replaces, and
-// the indexed-read phase is unchanged.
+// Invariants: non-outermost blocks are BLOCK long; side stacks contain no empty blocks; front_count + back_count == len().
+// Counters never exceed initialized storage: pushes initialize before incrementing, and pops decrement before removing.
+// Readers derive block lengths from side counters; new blocks are filled before linking, and empty blocks move to `spare`.
+// Collection may run `deinit` between writes, so rebalance builds a complete shape and publishes it with one assignment.
+// Rebalance copies blocks before reversing them; live storage may be read during collection, and a List block cannot belong to both shapes.
+// Moving half of the opposing side per rebalance bounds copying to O(1) amortized per pop.
 
 package collections
 
@@ -111,14 +49,12 @@ class DequeShape<T implements Clone> {
 /// the front stack reversed so both ends grow by `push`. An element body is
 /// written once on a push and read once on a pop; it is never shifted by an
 /// insert or a remove. `get`, `first`, `last`, `len` and `is_empty` are O(1);
-/// `push_*` and `pop_*` are amortized O(1) — a pop that empties its end
+/// `push_*` and `pop_*` are amortized O(1): a pop that empties its end
 /// rebalances, which is O(k) in the k elements the deque holds, but such
 /// rebalances halve and so amortize to O(1) per pop; `clear` and `to_list`
 /// are O(n).
 ///
-/// Every state this deque can be caught in is a deque that is telling the
-/// truth, so a `deinit` the cycle collector runs part-way through a push, a
-/// pop or a rebalance reads exactly what the deque holds at that moment.
+/// The shape stays readable during `deinit`, including when collection interrupts a push, pop, or rebalance.
 pub class Deque<T implements Clone> {
     shape: DequeShape<T> = new()
     // At most one recycled empty block, reserved to BLOCK, to keep a
@@ -228,7 +164,7 @@ pub class Deque<T implements Clone> {
         }
         if index < self.shape.front_count {
             let head: int = self.shape.front.len() - 1
-            // The head block's CLAIMED size, from the counter — not the
+            // The head block's CLAIMED size, from the counter: not the
             // block's own length. A push writes its element before it raises
             // the count and a pop lowers the count before it takes its element
             // out, so the block may physically hold one more than the deque
@@ -315,7 +251,7 @@ pub class Deque<T implements Clone> {
 
     // A 512-slot block to fill: the recycled spare when there is one, a fresh
     // one otherwise. `spare` is scratch, not shape, so taking from it changes
-    // no answer — which is the point, because this is where the allocation
+    // no answer, which is the point, because this is where the allocation
     // goes.
     fn take_block() -> List<T> {
         if self.spare.len() > 0 {
@@ -330,15 +266,10 @@ pub class Deque<T implements Clone> {
 
     // `front` is empty and `back` is not: move the head half of `back` to the
     // front side. One block is split down its middle; two or more move a block
-    // at a time, as the original did — the halving is what keeps a rebalance
+    // at a time, as the original did: the halving is what keeps a rebalance
     // to O(1) per pop amortized.
     //
-    // Every block is COPIED into the replacement, with `slice`, which is one
-    // bulk copy per block rather than a Beans-level loop. It has to be a copy:
-    // a block changing sides must have its contents reversed, and reversing it
-    // where it lies is a write to storage the live shape is still answering
-    // from; a `List` block cannot sit in two block maps at once either, so the
-    // blocks that stay cannot be shared with the replacement.
+    // Copy each block with `slice` before reversing or reusing it; the live shape may be read during collection, and List blocks cannot belong to both shapes.
     fn crossover_to_front() {
         var built: DequeShape<T> = new()
         let blocks: int = self.shape.back.len()
@@ -364,8 +295,8 @@ pub class Deque<T implements Clone> {
             self.shape = built
             return
         }
-        // The innermost ceil(k/2) blocks — all full, since only a side's
-        // outermost may be short — become the front side.
+        // The innermost ceil(k/2) blocks: all full, since only a side's
+        // outermost may be short: become the front side.
         let moved_blocks: int = (blocks + 1) / 2
         built.front.reserve(moved_blocks)
         var moved_elems: int = 0

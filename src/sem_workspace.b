@@ -114,8 +114,8 @@ class SemanticWorkspace {
     // works from any file whether or not the root imports it.
     //
     // `main.b` and `lib.b` are only the conventional names. A module root is
-    // free to be `crema.b`, and picking the open file instead — which is what
-    // returning `file_path` here used to do for every such project — makes
+    // free to be `crema.b`, and picking the open file instead, which is what
+    // returning `file_path` here used to do for every such project: makes
     // the loader refuse it with "entry file must sit next to beans.pot" and
     // leaves the editor with no snapshot at all.
     fn entry_for(root: string, file_path: string) -> string {

@@ -1,5 +1,5 @@
 // A SortedMap orders its keys with `<`, which only the primitives support.
-// A class key has no `<` to lower to, so it is refused at the type — the
+// A class key has no `<` to lower to, so it is refused at the type, the
 // interpreter would otherwise panic and the native emitter would fail talking
 // about itself.
 import std.collections

@@ -1,7 +1,7 @@
 // The contained-panic unwind reclaims everything the fiber owned (issue #44).
 // Each shielded call brews a fiber that allocates a heap buffer, arms a defer,
 // and panics while still holding the buffer; the panic is caught at the join.
-// If the unwind drops the buffer — as a return would — nothing accumulates
+// If the unwind drops the buffer, as a return would, nothing accumulates
 // across two hundred rounds of three contained panics, and `leaks` reports
 // zero. A missed drop leaks a 64 KiB block per panic, which the sweep catches.
 // The three shapes: a local holding the buffer, a temporary holding it (built

@@ -2,7 +2,7 @@
 // path. The schema and record builder are the espresso bench3 /records route
 // (community-libs/espresso/examples/bench3), the document the encoder issue
 // #143 measures: a thousand records, ~247 KB, whose bytes are dominated by a
-// ~105-byte note field and a ~22-byte email — long enough that the escape
+// ~105-byte note field and a ~22-byte email, long enough that the escape
 // scan's 16-byte SIMD path carries most of the string bytes.
 //
 // It calls json.encode_into into one reused buffer, so what it times is the

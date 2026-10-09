@@ -1,7 +1,7 @@
 package main
 
 // std.asm/std.intrinsic and the raw dl call rows stay unsafe no matter
-// how the name reached the call — module-qualified or selected with
+// how the name reached the call: module-qualified or selected with
 // `import {…} from`.
 // `extends` for a class target, `implements` for an interface one: the way
 // out of a refused generic downcast is spelled differently depending on
@@ -26,14 +26,14 @@ fn unsafe_module_call(import_path: string, name: string) -> bool {
 
 // The resolver's view of one file: the package that owns it, the parsed
 // file itself, and the two import tables a name written in it is looked up
-// through — module bindings (`import path as alias`) and selected bindings
+// through: module bindings (`import path as alias`) and selected bindings
 // (`import {A, B as C} from path`).
 //
 // A string's `{}` piece is lexed and parsed at check time, long after the
 // resolver walked the file, so nothing has ever bound the type names inside
 // it. Binding them means asking the resolver the same question it answers
 // for every other type name, and the resolver answers in terms of a package
-// and a file — so both are carried back here rather than reconstructed from
+// and a file, so both are carried back here rather than reconstructed from
 // the checker's flattened, whole-program import maps.
 class InterpolationScope {
     file: string
@@ -69,7 +69,7 @@ class ExpressionChecker {
     consts_visiting: Map<string, bool>
     imports: Map<string, string>
     // Names bound by `import {…} from path`, keyed "file|binding" and
-    // valued "path\nname" — the target package and the original symbol.
+    // valued "path\nname": the target package and the original symbol.
     named_imports: Map<string, string>
     errors: List<Diagnostic>
     scopes: List<LocalScope>
@@ -153,7 +153,7 @@ class ExpressionChecker {
     // held by identity, innermost last. `?` decides for itself whether the
     // callee's error can reach this function's (check_try_error_bridge), so
     // expect_type must not refuse a convertible error before the conversion
-    // is looked for — it compares only the ok type, and only against
+    // is looked for; it compares only the ok type, and only against
     // exactly these objects. A stack, not a slot: in `f()??` the inner
     // expectation nests the outer one as its ok half, so peeling one layer
     // lands on the outer object, which must still be open to match.
@@ -535,7 +535,7 @@ class ExpressionChecker {
 
     // `_` in a binding position is a discard, not a name. It never enters
     // the scope, so any number of them may share one scope and none can be
-    // read back — the notation exists so those names do not have to be
+    // read back: the notation exists so those names do not have to be
     // chosen, and a duplicate-name error there is a name the author already
     // said they were not going to use.
     //
@@ -571,7 +571,7 @@ class ExpressionChecker {
     }
 
     // A discard has no binding to find, so every name lookup that reaches
-    // one would otherwise report "unknown name '_'" — a suggestion list for
+    // one would otherwise report "unknown name '_'": a suggestion list for
     // a name the author never meant to make. Say what `_` is instead.
     fn fail_discard_use(node: AstNode, ending: string) -> bool {
         if !is_discard_name(node.value) { return false }
@@ -1180,7 +1180,7 @@ class ExpressionChecker {
     }
 
     // A generic body may compare two values of a type parameter whose bounds
-    // promise Order — spec/SYNTAX.md says that is what the bound is for, and
+    // promise Order: spec/SYNTAX.md says that is what the bound is for, and
     // sort, max and min already rely on it. Deliberately narrower than
     // trait_satisfied: only a parameter, never a concrete type that merely
     // implements the interface, because these operators lower to the builtin
@@ -1200,10 +1200,7 @@ class ExpressionChecker {
     // which for `float` and `f32` is not what their operators mean: `Order`
     // is IEEE 754 totalOrder and `Eq` is bit equality, while `a < b` and
     // `a == b` on a bare float stay IEEE (spec/SYNTAX.md, "Number rules").
-    // A container written in Beans — one that keeps `K implements Order`
-    // sorted, or hashes `K implements Eq` — compares its keys through here,
-    // and a partial order under it silently overwrites an unrelated key
-    // rather than merely mis-ordering.
+    // Generic containers rely on this path to compare keys under their declared bounds.
     fn parameter_comparison(type: HirType) -> bool {
         for constraint: HirGeneric in
             self.current_constraints {
@@ -1432,7 +1429,7 @@ class ExpressionChecker {
                     return true
                 }
                 if declaration.kind == "enum" {
-                    // `Order` on an enum is the declaration-order tag —
+                    // `Order` on an enum is the declaration-order tag:
                     // the same numbering `enum(u8)` exposes as its `u8`
                     // and the same shape as `bool`'s false-before-true,
                     // available with no representation change and without
@@ -1440,7 +1437,7 @@ class ExpressionChecker {
                     // reaches only a payload-free enum: ordering a payload
                     // variant would mean tag-then-payload, which needs
                     // every payload type to be `Order` and a deep compare
-                    // in both backends' sort path — not offered, so a
+                    // in both backends' sort path: not offered, so a
                     // payload enum does not satisfy `Order` even when its
                     // payloads happen to (it still satisfies `Eq`/`Hash`).
                     if trait == "Order" {
@@ -1490,7 +1487,7 @@ class ExpressionChecker {
     // A Mutex is Send and Sync when the lock is genuinely the only way in.
     // For a move-only value it is: `new Mutex(move v)` consumes the value and
     // leaves the source dead, and `with_lock` hands the body a borrow the
-    // checker refuses to store anywhere. So the mutex owns it outright — but
+    // checker refuses to store anywhere. So the mutex owns it outright, but
     // only if nothing the value holds can be reached another way, which is
     // what this walks. An ordinary `class` field fails on purpose: it is an
     // aliasable handle, so a reference to it can outlive the move into the
@@ -1764,8 +1761,8 @@ class ExpressionChecker {
     }
 
     // The import scope of the file being checked. Rebuilt whenever the file
-    // changes — checking walks one file's functions together, so the single
-    // entry answers every string piece in that file — and `none` only when
+    // changes: checking walks one file's functions together, so the single
+    // entry answers every string piece in that file, and `none` only when
     // the checker is standing on a file the loader never parsed, which no
     // real program produces.
     fn current_interpolation_scope() -> Option<InterpolationScope> {
@@ -1800,7 +1797,7 @@ class ExpressionChecker {
     // module bindings, its `import {…} from` selections, its own package,
     // the enclosing type parameters and `Self`, then the declaration's
     // kind and its visibility. That is one rule, held in one place, and it
-    // is called here rather than restated — a second copy of it is exactly
+    // is called here rather than restated: a second copy of it is exactly
     // what made `type_of(T)` inside a string answer with a type that does
     // not exist. A name nothing declares is refused, not composed: the
     // resolver reports it against the program and returns poison, which
@@ -1833,12 +1830,8 @@ class ExpressionChecker {
                 }
             }
             none => {
-                // No file of the loaded program is the one being checked.
-                // Every body reached here belongs to a parsed file — a
-                // function, a field default, a C global's annotations — so
-                // this cannot happen for a program the loader accepted. It
-                // refuses rather than composing a name anyway, which is the
-                // whole point of the rule above.
+                // Loaded interpolation bodies always belong to parsed files.
+                // Refuse if no file scope is available.
                 self.fail(
                     node,
                     "can't look up the type '{node.value}' written inside this string: '{self.current.file}' is not a source file of this program")
@@ -1866,16 +1859,7 @@ class ExpressionChecker {
         }
     }
 
-    // The declaration a type names, by its canonical symbol and nothing
-    // else. It used to re-qualify a name that missed — a bare name against
-    // this file's package, a dotted one against an import binding — because
-    // a re-parsed string piece really did arrive here spelled the way source
-    // wrote it. It no longer does: every type node, inside a string or out,
-    // is bound by the resolver before any of this reads it. So a miss is a
-    // miss, which is what it has to be: composing a key out of the asking
-    // package is how `type_of` inside a string came to name a type that does
-    // not exist, and `poison` — the checker's word for a type it already
-    // refused — is a legal class name a package could really declare.
+    // Type nodes are resolver-bound; a miss stays unresolved instead of being re-qualified against the current package.
     fn declaration_for(type: HirType) -> Option<HirDeclaration> {
         return self.declarations.get(type.name)
     }
@@ -2658,7 +2642,7 @@ class ExpressionChecker {
     // A struct is a value, so it can only be copied if everything it holds
     // can: one move-only field makes the whole struct move-only. Nothing at
     // the declaration says so, and the refusal lands at the call sites
-    // instead — adding one field changes the copy semantics of a type that
+    // instead: adding one field changes the copy semantics of a type that
     // already has callers. So the refusal names the field, and names the
     // one that actually fails all the way down rather than the type at the
     // top. Empty for a type that is move-only in its own right, where the
@@ -2758,8 +2742,8 @@ class ExpressionChecker {
     fn bound_parent(receiver: HirType,
                     parent_owner: string) -> HirType {
         var pending: List<HirType> = [receiver]
-        // A type parameter has no declaration of its own — what it
-        // promises is whatever its bounds name — so the walk starts at
+        // A type parameter has no declaration of its own: what it
+        // promises is whatever its bounds name, so the walk starts at
         // those too, and `T implements Producer<int>` reaches Producer
         // through the argument the bound pinned.
         for constraint: HirGeneric in
@@ -2875,7 +2859,7 @@ class ExpressionChecker {
 
     // The same shape with an interface in it. A downcast target may be an
     // interface as well as a class (#195), and an instantiated interface is
-    // out of reach for exactly the reason an instantiated class is — the
+    // out of reach for exactly the reason an instantiated class is: the
     // test reads the object's own class, and an object carries no type
     // arguments. Kept apart from is_generic_instance_class because that one
     // also decides what may be downcast *from*, and a source is a different
@@ -2894,7 +2878,7 @@ class ExpressionChecker {
     }
 
     // What `as?` may test *from*. The source is only the static type of the
-    // expression — the test itself reads the object's runtime class — so an
+    // expression (the test itself reads the object's runtime class) so an
     // instantiation is as good a source as a plain class. Refusing it put the
     // one downcast a generic hierarchy can express, to a non-generic class
     // that extends the instantiation, out of reach along with the one that
@@ -3020,13 +3004,7 @@ class ExpressionChecker {
         return none
     }
 
-    // The static an ancestor declares under this name, if one is visible
-    // from here. Statics are not inherited, so this never answers a method
-    // the class may call — it answers the one a class further down would be
-    // wearing the same name as. Visibility matches inherited_methods: a
-    // `priv` static belongs to its exact declaring type and a
-    // package-private one to its package, so neither collides with a name
-    // written outside it.
+    // Find a visible ancestor static that conflicts with a declaration here; statics are not inherited, and private or out-of-package names remain invisible.
     fn inherited_static(
         owner: string, name: string) -> Option<HirFunction> {
         var pending: List<HirType> = []
@@ -3152,7 +3130,7 @@ class ExpressionChecker {
     }
 
     // True for `self` and for chains of Self-returning calls rooted at
-    // self — each link provably evaluates to its receiver, so the chain's
+    // self: each link provably evaluates to its receiver, so the chain's
     // value is the receiver itself.
     fn is_self_return(value: HirNode) -> bool {
         var current: HirNode = value
@@ -3235,7 +3213,7 @@ class ExpressionChecker {
     // name and say nothing.
     //
     // Both directions are refused, because both put two bodies under one
-    // name in one hierarchy — the mirror case leaves `Base.tag()` and
+    // name in one hierarchy: the mirror case leaves `Base.tag()` and
     // `sub.tag()` naming different code just as surely.
     //
     // A `priv` method is exempt on either side: it belongs to its exact
@@ -3310,9 +3288,9 @@ class ExpressionChecker {
         // the call site, so it is a template with one function per
         // instantiation and holds no dispatch row. Nothing can replace it
         // and it can replace nothing: before #89 this pair checked clean
-        // and then split the backends — the native build bound whichever
+        // and then split the backends: the native build bound whichever
         // template the receiver's static type named, while the interpreter
-        // dispatched on the runtime class and answered the subclass's — a
+        // dispatched on the runtime class and answered the subclass's: a
         // silent wrong answer on one side, from a program the checker had
         // just asked to mark `override`.
         for inherited: InheritedMethod in parents {
@@ -3639,7 +3617,7 @@ class ExpressionChecker {
     // A class that declares no init of its own gets the implicit zero-argument
     // initializer, which assigns nothing beyond the field defaults. So every
     // own instance field of such a class must carry a default; a required field
-    // with no init to assign it would leave the object half-built — the
+    // with no init to assign it would leave the object half-built; the
     // interpreter panics reading its reserved slot and a native build reads
     // whatever the allocation left there (issue #94). A class that does declare
     // an init is proved instead by check_init_construction.
@@ -3661,7 +3639,7 @@ class ExpressionChecker {
             // zero-argument initializer, which assigns nothing. Every field it
             // is responsible for must therefore carry a default: its own
             // fields, and every field inherited from an ancestor that likewise
-            // has no init — the nearest ancestor that declares an init, and its
+            // has no init: the nearest ancestor that declares an init, and its
             // own super chain, cover the classes at and above it.
             for field: HirField in declaration.fields {
                 if field.is_static { continue }
@@ -3726,7 +3704,7 @@ class ExpressionChecker {
     // fully built before anything reads it. It did not: a field an init never
     // assigned passed `check`, then the interpreter panicked reading its
     // reserved slot while a native build read whatever the allocation left
-    // there — one checked program answering two different things. This pass is
+    // there. This pass prevents the interpreter and native backend from
     // that proof, run over the checked HIR body so self is a resolved `local`,
     // a field access is a resolved `field` node, and an interpolation's pieces
     // are already present as child expressions.
@@ -3738,7 +3716,7 @@ class ExpressionChecker {
     // merge. Three things need all fields assigned: reading nothing before its
     // own assignment, letting self escape (a method call on self, passing self,
     // returning self, interpolating self), and returning at all. super.init is
-    // the one pivot — it must be a single top-level statement, it credits the
+    // the one pivot; it must be a single top-level statement and credits the
     // whole base chain, and this class's own fields must be assigned before it.
     fn check_init_construction(function: HirFunction) {
         match self.declarations.get(function.owner) {
@@ -3756,7 +3734,7 @@ class ExpressionChecker {
                     // No ancestor has an init, so this init's prefix covers the
                     // inherited fields too (SYNTAX.md, "init and inheritance").
                     // A defaulted inherited field starts assigned; a required
-                    // one does not — this init must assign it, because nothing
+                    // one does not; this init must assign it because nothing
                     // above it will.
                     for name: string in
                         self.ctor_inherited_fields.keys() {
@@ -3926,7 +3904,7 @@ class ExpressionChecker {
                 self.ctor_analyze_expr(inner, inout assigned)
                 // `panic(...)` never comes back, so a branch that ends in one
                 // contributes nothing to a merge and its fields need not be
-                // assigned — the same body-terminating rule statement_always_
+                // assigned: the same body-terminating rule statement_always_
                 // returns and MIR already apply, so all three agree.
                 if inner.kind == "builtin_call" &&
                    inner.resolved == "panic" {
@@ -4034,8 +4012,8 @@ class ExpressionChecker {
                 expr, inout assigned)
             return
         }
-        // `super.m(...)` carries only its arguments as children — its receiver
-        // is self, never a `local` node — so the self-escape test below never
+        // `super.m(...)` carries only its arguments as children: its receiver
+        // is self, never a `local` node, so the self-escape test below never
         // sees it. It runs the base method non-virtually on this object, and
         // that body may call a method the subclass overrides, which reads a
         // field the subclass has not assigned yet, so it escapes self exactly
@@ -4056,8 +4034,8 @@ class ExpressionChecker {
         }
     }
 
-    // An inherited field is available once it is in `assigned` — seeded from
-    // its default, or assigned by this init when no ancestor has one — or once
+    // An inherited field is available once it is in `assigned`: seeded from
+    // its default, or assigned by this init when no ancestor has one, or once
     // super.init has run, which constructs the whole base chain. Keeping the
     // second half off the per-path map is what stops one misplaced super.init
     // from cascading a "field unassigned" behind the real error.
@@ -4273,8 +4251,7 @@ class ExpressionChecker {
     // A loop may run zero times, so nothing its body assigns is definitely
     // assigned afterwards, and its own reads cannot lean on an assignment a
     // later iteration makes: the body is analysed against a copy that is
-    // thrown away. Everything that is not the body — the iterable — is read
-    // against the live set.
+    // Evaluate the iterable against the live assignment set, then discard body assignments.
     fn ctor_analyze_for(
         stmt: HirNode,
         inout assigned: Map<string, bool>) -> bool {
@@ -4288,9 +4265,7 @@ class ExpressionChecker {
                 self.ctor_analyze_expr(child, inout assigned)
             }
         }
-        // An unconditional `for { }` — no iterable, no binding — that holds no
-        // `break` never falls through, so nothing after it runs. The same rule
-        // statement_always_returns applies, so all three halves agree.
+        // An unconditional loop without `break` does not fall through.
         if stmt.children.len() == 1 &&
            stmt.children[0].kind == "block" &&
            !self.ctor_has_break(stmt.children[0]) {
@@ -4324,7 +4299,7 @@ class ExpressionChecker {
 
     // dest gains every name assigned in BOTH arms. dest already holds the
     // pre-branch set, which both arms kept, so only the shared new names are
-    // added — leaving dest equal to the intersection of the two arm sets.
+    // added: leaving dest equal to the intersection of the two arm sets.
     fn ctor_intersect_into(
         inout dest: Map<string, bool>,
         left: Map<string, bool>,
@@ -4530,8 +4505,7 @@ class ExpressionChecker {
             "{self.current.file}|{name}").or("")
     }
 
-    // A name bound by `import {…} from path` in the current file:
-    // "path\nname" — the target package and original symbol — or "".
+    // Encode a selected import as "path\nname"; return "" when it is absent.
     fn named_import_target(name: string) -> string {
         return self.named_imports.get(
             "{self.current.file}|{name}").or("")
@@ -4604,8 +4578,7 @@ class ExpressionChecker {
             "field", shown)
     }
 
-    // `shown` is the name the source wrote — `process.Child`, not the
-    // canonical symbol — so the message points at what the user typed.
+    // Preserve the source spelling in diagnostics, even when the canonical symbol differs.
     fn check_initializer_visibility(
         node: AstNode, declaration: HirDeclaration,
         initializer: HirFunction, shown: string) {
@@ -4878,7 +4851,7 @@ class ExpressionChecker {
             let key: HirType = receiver.args[0]
             let value: HirType = receiver.args[1]
             // `get` answers Option<V> whatever V is. A move-only value
-            // is handed back as the map's own — the index forms stay
+            // is handed back as the map's own: the index forms stay
             // refused precisely because they would have to copy it.
             if name == "get" {
                 return some(new BuiltinSignature(
@@ -6244,7 +6217,7 @@ class ExpressionChecker {
                    expected: HirType) {
         // Either side already refused means the mismatch below is a second
         // message about a part whose real problem is on the line above, and
-        // it would render the marker inside whatever composed it —
+        // it would render the marker inside whatever composed it:
         // "expected Option<main.Real>, got Option<poison>" (#175).
         if hir_already_refused(actual) ||
            hir_already_refused(expected) {
@@ -6318,7 +6291,7 @@ class ExpressionChecker {
     // `unit` is the absence of a value, and no backend has storage for one
     // (hir_unit_misplacement). Signature and field types are refused where
     // they are lowered; this is the same rule for everything the checker
-    // learns instead of reading — a statement's annotation, a builtin
+    // learns instead of reading: a statement's annotation, a builtin
     // method's answer, a generic bound to `unit` by inference. Answers true
     // when it refused, so a caller can poison rather than carry a type no
     // backend can hold.
@@ -6408,7 +6381,7 @@ class ExpressionChecker {
             }
             none => {
                 // A digit after Simd is almost always a typo for a real
-                // vector shape — but only when the name belongs to no
+                // vector shape, but only when the name belongs to no
                 // registered user declaration; a class by a non-vector
                 // name is an ordinary type.
                 if self.declaration_for(type).is_none() &&
@@ -6467,13 +6440,13 @@ class ExpressionChecker {
                     "{type.name} key needs Hash, got {render_hir_type(type.args[0])}")
             }
         }
-        // A user generic type states bounds on its parameters — `class
-        // SortedMap<K implements Order & Clone, ...>` — and those bounds are
+        // A user generic type states bounds on its parameters: `class
+        // SortedMap<K implements Order & Clone, ...>`, and those bounds are
         // promises the body then relies on: it compares two K with `<`, or
         // hands a V back by copy. A generic function already refuses an
         // argument that breaks such a promise at the call; a generic type did
         // not, so `SortedMap<SomeClass, int>` passed checking and then failed
-        // in the backend — the interpreter panicking on `<` of two objects,
+        // in the backend: the interpreter panicking on `<` of two objects,
         // the native emitter reporting it cannot lower `<` for the class. Both
         // are the checker letting through what no backend can run. Measure the
         // argument against the declared bound here, at the type, so the error
@@ -6520,8 +6493,8 @@ class ExpressionChecker {
     }
 
     // One rule, one sentence. The copyable-key rule is checked in two
-    // places — a written-out map type, and a literal whose type nothing
-    // else pins down — and they answered differently: only the first named
+    // places: a written-out map type, and a literal whose type nothing
+    // else pins down, and they answered differently: only the first named
     // why or named the way out, so the same mistake got a useful message or
     // a bare one depending on where the type came from.
     fn move_only_key_message(
@@ -6665,14 +6638,14 @@ class ExpressionChecker {
                 let piece: HirNode = self.check_expression(
                     expression, no_hir_type())
                 // A piece that is one bare name nothing answers is far
-                // more often a brace someone meant literally — a route
-                // template, a regex, a printf format — than a typo. The
+                // more often a brace someone meant literally: a route
+                // template, a regex, a printf format: than a typo. The
                 // resolver's "unknown name" is true and useless on its
                 // own: it never mentions the brace that made it a name.
                 //
                 // It replaces that line rather than following it. One
                 // mistake is one diagnostic, and it belongs on the word,
-                // not on the quote that opens the literal — `"/users/{id}/
+                // not on the quote that opens the literal: `"/users/{id}/
                 // posts/{slug}"` said four things where it had two to say.
                 // Only the single unknown-name error is taken back; when
                 // the piece failed for more reasons than that, every one
@@ -6731,7 +6704,7 @@ class ExpressionChecker {
     // Whether a type is still spelled with any type parameter in scope, at
     // any depth: `T`, `List<T>`, `Wrap<Option<T>>`. Such a type is not yet
     // any one type, so a rule about what a backend can emit for it has
-    // nothing concrete to decide on — the instantiations are checked where
+    // nothing concrete to decide on: the instantiations are checked where
     // they are made.
     fn type_mentions_any_generic(type: HirType) -> bool {
         for constraint: HirGeneric in
@@ -6766,8 +6739,8 @@ class ExpressionChecker {
                 type.args[0], inout seen)
         }
         // A map prints as {k: v}; it is printable when both its key type and
-        // its value type are. Its iteration order is insertion order — the
-        // order keys() walks — on both backends.
+        // its value type are. Its iteration order is insertion order: the
+        // order keys() walks: on both backends.
         if (name == "Map" || name == "OrderedMap") &&
            type.args.len() == 2 {
             if !self.printable_in_string_rec(
@@ -6778,7 +6751,7 @@ class ExpressionChecker {
                 type.args[1], inout seen)
         }
         // A result prints as ok(x) / err(e). It is printable when its ok
-        // type is and its err type is — and its err type is Error unless
+        // type is and its err type is, and its err type is Error unless
         // spelled otherwise, which prints as the error's message.
         if name == "Result" {
             if type.args.len() == 0 { return false }
@@ -6822,7 +6795,7 @@ class ExpressionChecker {
                 // A struct or a plain class prints as Name { field: value }.
                 // A struct is a value with no identity and no subtype, so it
                 // is always its own concrete shape. A class prints only when
-                // its declared type is the only type it can be — not an
+                // its declared type is the only type it can be: not an
                 // interface, not abstract, not a base some other class
                 // extends, and (until inherited fields render) not itself a
                 // subclass. Otherwise the value's real type is not knowable
@@ -6840,7 +6813,7 @@ class ExpressionChecker {
                     }
                     for field: HirField in declaration.fields {
                         // Static fields belong to the type, and a weak field
-                        // renders as <weak> without being followed — neither
+                        // renders as <weak> without being followed: neither
                         // needs a printable type.
                         if field.is_static || field.is_weak {
                             continue
@@ -6866,7 +6839,7 @@ class ExpressionChecker {
     // can carry: a leaf, standalone class. An abstract class is never
     // instantiated as itself, a base one hands its slot to a subclass, and a
     // subclass carries inherited fields the derived rendering does not walk
-    // yet — each renders fields the other backend cannot see, so each is
+    // yet: each renders fields the other backend cannot see, so each is
     // refused rather than rendered two ways.
     fn class_render_ready(declaration: HirDeclaration) -> bool {
         if declaration.is_abstract { return false }
@@ -7259,10 +7232,7 @@ class ExpressionChecker {
     fn require_move_source(node: AstNode,
                            type: HirType,
                            where: string) {
-        // A Brew is beyond move-only: it is scope-bound. The one binding
-        // that may hold one is the brew's own let; every other sink —
-        // rebinding, returning, arguments, containers — is refused, moved
-        // or not. This is what makes the synthesized scope join total.
+        // A Brew is scope-bound; only its own let may hold it, and rebinding, returning, passing, or storing it elsewhere is refused.
         if hir_type_contains_brew(type) && node.kind != "brew" {
             self.fail(
                 node,
@@ -7537,8 +7507,8 @@ class ExpressionChecker {
     }
 
     // `%` on two decimals passed the checker and then failed twice over: the
-    // tree interpreter panicked at run time — so a program whose control
-    // flow never reached the line shipped fine — and the native build
+    // tree interpreter panicked at run time, so a program whose control
+    // flow never reached the line shipped fine, and the native build
     // refused at compile time, talking about the LLVM emitter rather than
     // about the program. Neither backend has ever had a decimal remainder:
     // the runtime exposes add, sub, mul, div, cmp, round, abs and neg and no
@@ -7551,7 +7521,7 @@ class ExpressionChecker {
     // `hir_is_numeric` sweeping decimal into the `%` rule is what accepted it.
     // Removing the refusal means a decimal remainder in the runtime, the
     // runtime-ABI number that goes with a new entry, and a released
-    // bootstrap carrying it — in that order.
+    // bootstrap carrying it: in that order.
     fn refuse_decimal_remainder(
         node: AstNode, operation: string,
         type: HirType) -> bool {
@@ -7629,7 +7599,7 @@ class ExpressionChecker {
                 self.fail(node, "comparison operands have different types")
             }
             // A map has no equality. The interpreter answered `false` for
-            // every pair — two empty maps, and a map against itself — while
+            // every pair (two empty maps, and a map against itself) while
             // a native build refused to emit the comparison at all. Silently
             // answering the wrong thing is worse than not answering, so this
             // is refused on both paths now, in the caller's own terms.
@@ -7678,7 +7648,7 @@ class ExpressionChecker {
             // A string has no `+` (spec/SYNTAX.md, "Strings"). The checker
             // took it anyway and the tree interpreter joined the two, so a
             // program that passed `check` and printed the right answer under
-            // `beansc run` met the rule only at release build time — and met
+            // `beansc run` met the rule only at release build time, and met
             // it as a message about the LLVM emitter rather than about the
             // program. Refusing here is the language's own answer, the shape
             // `+=` on a string has always had. Either side being a string
@@ -7790,7 +7760,7 @@ class ExpressionChecker {
                 }
             // The receiver named a type and nothing on it matched. Falling
             // through from here evaluated the type name as a value, so the
-            // error blamed the receiver — "unknown name 'Gap'" for a class
+            // error blamed the receiver: "unknown name 'Gap'" for a class
             // that resolved a line earlier, or "package 'style' has no
             // function 'Gap'" for a class that is not a function. Neither
             // mentions the part that is actually wrong, which is the name
@@ -8220,7 +8190,7 @@ class ExpressionChecker {
     // A C variadic argument crosses the ABI with the type written at the
     // call site: the backend hands Clang that exact C type and Clang
     // applies C's default argument promotions to it. Only the shapes with
-    // a single, unambiguous C spelling may go through `...` — see
+    // a single, unambiguous C spelling may go through `...`: see
     // c_variadic_shape in hir_type.b.
     fn check_variadic_arguments(node: AstNode, first: int,
                                 function: HirFunction,
@@ -8374,7 +8344,7 @@ class ExpressionChecker {
     }
 
     // The left-out trailing arguments, materialized from their declared
-    // constants at this call site — sugar in the checker, so no backend
+    // constants at this call site: sugar in the checker, so no backend
     // or ABI knows defaults exist.
     fn append_default_arguments(
         function: HirFunction, count: int,
@@ -8650,7 +8620,7 @@ class ExpressionChecker {
                 some(actual) => {
                     for bound: HirType in constraint.bounds {
                         // A bound may name the call's other type
-                        // parameters — `T implements Producer<U>` — so it
+                        // parameters (`T implements Producer<U>`) so it
                         // is measured after inference, not before.
                         let wanted: HirType =
                             self.substitute_generic_type(
@@ -8750,7 +8720,7 @@ class ExpressionChecker {
         // types no backend has a value for. Refuse the substituted result
         // here, at the call, so the message names the type this call would
         // have answered with rather than the emitter that could not build
-        // it (#154). A generic bound to `unit` is fine on its own — the
+        // it (#154). A generic bound to `unit` is fine on its own: the
         // rule is about the slot it lands in, not the binding.
         if !unit_refused {
             self.refuse_misplaced_unit(node, result.type, true)
@@ -9421,7 +9391,7 @@ class ExpressionChecker {
                     expected
                 }
             // `some` and `ok` carry a value, and a call that returns
-            // nothing has none — the payload names where the mistake is,
+            // nothing has none: the payload names where the mistake is,
             // even when no annotation wrote the type (#154).
             if self.refuse_misplaced_unit(
                    node.children[1], type, false) {
@@ -9540,7 +9510,7 @@ class ExpressionChecker {
                 result.children.push(argument)
             } else {
                 // For the built-in Error, err(message) constructs one and
-                // err(existing_error) re-raises one — the shape ?
+                // err(existing_error) re-raises one: the shape ?
                 // propagation needs when the failure came out of another
                 // Result.
                 let argument: HirNode =
@@ -9605,7 +9575,7 @@ class ExpressionChecker {
             }
         }
         if hir_already_refused(queried) {
-            // The type was already refused where it was written — an
+            // The type was already refused where it was written: an
             // unknown name, or a length no constant could supply. A layout
             // it never had is not a second thing to say about it.
         } else if generic_layout &&
@@ -10101,7 +10071,7 @@ class ExpressionChecker {
                             // static is callable through the same syntax an
                             // instance fn field already accepts. Without this
                             // the call site said the static did not exist,
-                            // which was never true — reading it into a local
+                            // which was never true: reading it into a local
                             // and calling that local always worked.
                             match self.static_field_for(
                                 declaration, callee.value) {
@@ -10222,8 +10192,8 @@ class ExpressionChecker {
                         }
                     }
                 }
-                // scalar type names carry a few statics of their own —
-                // f32.infinity() — without joining builtin_class_name,
+                // scalar type names carry a few statics of their own:
+                // f32.infinity(): without joining builtin_class_name,
                 // whose members are reserved as declaration names
                 if receiver_syntax.value == "float" ||
                    receiver_syntax.value == "f32" {
@@ -10754,7 +10724,7 @@ class ExpressionChecker {
                     node, result.type, expected)
                 return result
             }
-            // group.brew starts a call, not a value — it needs the raw
+            // `group.brew` starts a call, not a value; it needs the raw
             // argument syntax, so it is intercepted before the builtin
             // table (which only sees checked argument values).
             if receiver.type.name == "TaskGroup" &&
@@ -10779,7 +10749,7 @@ class ExpressionChecker {
                     // program having written no such type: `Brew<unit>.join`
                     // answers `Result<unit>`, and a `TaskGroup<unit>`
                     // delivers one through `next`, `try_next` and
-                    // `wait_all`. There is no Result<unit> — the refusal
+                    // `wait_all`. There is no Result<unit>: the refusal
                     // belongs here, about the program, not in the emitter
                     // that could not build one (#154).
                     // Not poisoned: the arms of the `match` that reads a
@@ -10838,8 +10808,8 @@ class ExpressionChecker {
                     // A move-only map value comes back as the map's
                     // own, so the binding it lands in is a borrow of the
                     // map. Two of those alive together would be two
-                    // mutating names for one value — a write through
-                    // either shows up in the other — which is the one
+                    // mutating names for one value: a write through
+                    // either shows up in the other, which is the one
                     // thing move-only exists to rule out. One at a time.
                     if (receiver.type.name == "Map" ||
                         receiver.type.name == "OrderedMap") &&
@@ -11005,11 +10975,11 @@ class ExpressionChecker {
                         node, function, "method",
                         "{render_hir_type(receiver.type)}.{callee.value}")
                     // A static has no `self`, so a receiver cannot reach
-                    // it. Every other lookup already said so —
+                    // it. Every other lookup already said so:
                     // `Sub.tag()` for a base's static is refused because
                     // statics are not inherited, `super.tag()` finds no
                     // parent implementation, and the inherited-method walk
-                    // skips them — but method_for did not, and the call it
+                    // skips them, but method_for did not, and the call it
                     // built passed the receiver to a function that
                     // declares no parameter for it (#88).
                     if function.is_static {
@@ -11517,7 +11487,7 @@ class ExpressionChecker {
             // The same interim wall a lone brew has (see check_brew_value):
             // the synthesized scope join rides function-exit defers, and a
             // group made in a nested block dies with its block before those
-            // run. group.brew itself is then legal at any depth — the join
+            // run. group.brew itself is then legal at any depth: the join
             // references this binding, pinned to the body's own scope.
             if !self.at_body_floor() {
                 self.fail(
@@ -11960,7 +11930,7 @@ class ExpressionChecker {
     // `place` is true only for the left side of an assignment. It changes
     // exactly one answer: a move-only map value cannot be *read* by index,
     // because the read would have to copy the map's own value, but writing
-    // one is a move in — the same instruction `set` lowers to, with the same
+    // one is a move in: the same instruction `set` lowers to, with the same
     // ownership transfer. The old rule refused the write by quoting the
     // read's reason, which described an operation the program was not doing.
     // Everything inside the brackets is still a read and is checked as one.
@@ -11999,7 +11969,7 @@ class ExpressionChecker {
             // type it `int`, so `bytes[i]` reached the interpreter as a panic
             // saying indexing bytes "is not in the Beans interpreter yet" and
             // reached the native build as an emitter error about the LLVM
-            // emitter — two messages about the compiler, for a program that
+            // emitter: two messages about the compiler, for a program that
             // was refused by neither. Bytes has had `get` and `set` all along.
             if place {
                 self.fail(
@@ -12123,7 +12093,7 @@ class ExpressionChecker {
     // three ways (spec/SYNTAX.md, "Option and Result"):
     //
     //   1. it is the same type, and nothing happens;
-    //   2. it is a subtype of it, and the reference widens — the same
+    //   2. it is a subtype of it, and the reference widens: the same
     //      object read as the wider type, which is what a plain assignment
     //      already does, so no code runs and nothing is lost;
     //   3. it declares `fn to_error() -> <this function's error>`, and `?`
@@ -12132,7 +12102,7 @@ class ExpressionChecker {
     // Anything else is refused here, at the `?`, naming both types. The
     // answer is the expression that produces this function's error out of a
     // binding holding the callee's, or none when the error already fits.
-    // The conversion runs only on the error path, only once — `to_error()`
+    // The conversion runs only on the error path, only once: `to_error()`
     // is never chained through a second type.
     fn check_try_error_bridge(
         node: AstNode, source: HirType, target: HirType,
@@ -12314,8 +12284,8 @@ class ExpressionChecker {
                 // parent/child message below, which would deny a relation that
                 // does hold: `Sub<int>` really is a child of `Base<int>`. The
                 // test is decided at run time from the object's class, and the
-                // tree interpreter carries no type arguments on an object —
-                // every instantiation of a class is one runtime name there — so
+                // tree interpreter carries no type arguments on an object:
+                // every instantiation of a class is one runtime name there, so
                 // it answers yes for a `G<string>` held as a `G<int>` where the
                 // native backend, which numbers each instantiation, answers no.
                 // Refusing is the only answer both backends can give.
@@ -13162,7 +13132,7 @@ class ExpressionChecker {
     }
 
     // `m.get(k)` on a map whose values are move-only answers the map's own
-    // value, not a copy — the index forms are refused precisely because they
+    // value, not a copy: the index forms are refused precisely because they
     // would have to copy it. That makes the binding a borrow of the map, so
     // the map is named here and carried onto the arm's bindings.
     fn map_borrow_owner(subject: HirNode) -> int {
@@ -13627,14 +13597,7 @@ class ExpressionChecker {
                 }
                 self.validate_target_type(
                     type_node, declared)
-                // A binding holds a value, so `unit` — the absence of one —
-                // cannot be its type, and neither can anything that would
-                // have to store one (#154). The annotation is left standing
-                // rather than poisoned: the initializer and every later
-                // read of the binding were already checked against this
-                // type before the refusal existed, and poisoning it answers
-                // one refusal with a second round of messages about a type
-                // nobody wrote.
+                // A binding must have a value; `unit` and types containing it are refused (#154). Keep the annotation so later checks do not emit follow-up errors.
                 self.refuse_misplaced_unit(
                     type_node, declared, false)
             }
@@ -13756,8 +13719,8 @@ class ExpressionChecker {
     // struct lives in, so the write is only meaningful when that storage
     // outlives the statement. This walks back from the record being written
     // to the storage that holds it, exactly the way check_array_place walks
-    // back from an array — a mutable local's slot, or the heap object a
-    // class field sits in — hopping through as many struct fields and fixed
+    // back from an array: a mutable local's slot, or the heap object a
+    // class field sits in: hopping through as many struct fields and fixed
     // array elements as the source wrote. Only the last hop used to be
     // allowed, which made `rect.origin.x = 1` a copy-out, mutate, copy-back
     // by hand for the very shape structs exist for.
@@ -13844,7 +13807,7 @@ class ExpressionChecker {
     // The base chain of a fixed-array element assignment, validated the
     // way the backends store it: struct fields and array elements walk
     // back to a mutable local, and a class field makes the heap object
-    // the root. Anything else has no storage behind the SSA copy — the
+    // the root. Anything else has no storage behind the SSA copy: the
     // write would land in a temporary and vanish silently.
     fn check_array_place(target: AstNode,
                          base: HirNode,
@@ -13975,7 +13938,7 @@ class ExpressionChecker {
             let value: HirNode = self.check_expression(
                 node.children[1], place.type)
             // `place.children` is what gets indexed just below, and the
-            // guard checked `target.children` — a different list. Assigning
+            // guard checked `target.children`: a different list. Assigning
             // to a field that does not exist leaves the checked place with
             // no children, so this crashed the compiler on an unguarded
             // index instead of printing the error it had already recorded.
@@ -14317,7 +14280,7 @@ class ExpressionChecker {
         return result
     }
 
-    // beans has no implicit tail return — a `-> T` body must say
+    // beans has no implicit tail return: a `-> T` body must say
     // `return` on every path (spec/SYNTAX.md, "Functions"), so a
     // body that can run off the end has no value to hand back. The
     // walk is deliberately conservative: unsure means "does not
@@ -14362,7 +14325,7 @@ class ExpressionChecker {
         }
         // `panic(...)` does not come back, so a body that ends in one has
         // returned as far as anyone can observe. MIR closes the block for the
-        // same reason — both halves must agree, or the interpreter accepts a
+        // same reason: both halves must agree, or the interpreter accepts a
         // program the native backend refuses.
         if node.kind == "expression" &&
            node.children[0].kind == "call" &&
@@ -14375,7 +14338,7 @@ class ExpressionChecker {
            node.children[0].kind == "match" &&
            node.children[0].children.len() > 1 {
             // a statement-position match counts when every arm
-            // returns — check_match already proved the arms cover
+            // returns: check_match already proved the arms cover
             // the subject
             let match_node: AstNode = node.children[0]
             for index: int in 1..match_node.children.len() {
@@ -14435,7 +14398,7 @@ class ExpressionChecker {
         return false
     }
 
-    // brew <call> — start the call on a child fiber of this scope
+    // brew <call>: start the call on a child fiber of this scope
     // (spec/CONCURRENCY.md). The checked shape is one HIR "brew" node whose
     // children are the hoisted argument bindings followed by a fabricated
     // zero-parameter closure that runs the call; the backends lower the
@@ -14454,7 +14417,7 @@ class ExpressionChecker {
         // stands"): the synthesized scope join rides function-exit defers,
         // and a handle brewed in a nested block dies with its block before
         // those run. Until per-scope joins land with the unwind work, brew
-        // only at the body's own scope — a check error beats the crash.
+        // only at the body's own scope: a check error beats the crash.
         if !self.at_body_floor() {
             self.fail(
                 node,
@@ -14487,7 +14450,7 @@ class ExpressionChecker {
         return brew_node
     }
 
-    // One capability refusal per function for anything fiber-backed —
+    // One capability refusal per function for anything fiber-backed:
     // brew, and the group flavor's `new TaskGroup`.
     fn require_fibers(node: AstNode, what: string) {
         if self.signature.runtime_profile == "freestanding" &&
@@ -14505,7 +14468,7 @@ class ExpressionChecker {
         }
     }
 
-    // Whether checking sits at the function body's own scope — the only
+    // Whether checking sits at the function body's own scope: the only
     // place the interim function-exit scope-join story covers.
     fn at_body_floor() -> bool {
         let body_floor: int =
@@ -14545,7 +14508,7 @@ class ExpressionChecker {
             // word is its descriptor (spec/SYNTAX.md), and a struct, union or
             // enum that names either is refused at its declaration. So the
             // hoisted binding holds the same object the caller does and the
-            // dispatch reaches the same instance — exactly as a class
+            // dispatch reaches the same instance: exactly as a class
             // receiver does.
             var reference_receiver: bool = false
             match self.declaration_for(call.children[0].type) {
@@ -14584,10 +14547,10 @@ class ExpressionChecker {
         return true
     }
 
-    // contained <call> — run the call on THIS fiber under a catch frame, and
+    // contained <call>: run the call on THIS fiber under a catch frame, and
     // answer Result<T> (spec/CONCURRENCY.md). The checked shape is the same
-    // one brew produces — hoisted argument bindings followed by a fabricated
-    // zero-parameter closure — because the two differ in where the failure
+    // one brew produces: hoisted argument bindings followed by a fabricated
+    // zero-parameter closure, because the two differ in where the failure
     // is caught, not in how the call is packaged. What differs from brew:
     // there is no handle and no scope join, so it is an ordinary expression
     // legal at any block depth, and it needs the platform unwinder rather
@@ -14620,7 +14583,7 @@ class ExpressionChecker {
         // Result<unit> is not a type Beans has: `ok` takes a value, so there
         // is no ok arm to write for one and no backend builds one. A brew
         // gets away with a unit child because its statement form never makes
-        // a Result — the scope join escalates instead — but `contained`
+        // a Result (the scope join escalates instead) but `contained`
         // ANSWERS the Result, so a unit call has nothing to answer with.
         if canonical_hir_name(call.type.name) ==
                "unit" {
@@ -14649,8 +14612,8 @@ class ExpressionChecker {
     // boundary is the platform's forced unwind stopping at a landing pad, so
     // it needs both a runtime with the fiber core (the unwind state lives on
     // the fiber) and a target whose unwinder the backend emits pads for. On
-    // a target without one the native backend could not catch at all — the
-    // panic would end the process while the tree interpreter caught it — so
+    // a target without one the native backend could not catch at all: the
+    // panic would end the process while the tree interpreter caught it: so
     // the refusal is here, about the program, rather than a divergence
     // discovered at run time.
     fn require_contained(node: AstNode) {
@@ -14671,8 +14634,8 @@ class ExpressionChecker {
         }
     }
 
-    // The shared brew transform. Hoist every evaluated child of the call —
-    // receiver and arguments — into an invisible let of the enclosing
+    // The shared brew transform. Hoist every evaluated child of the call:
+    // receiver and arguments: into an invisible let of the enclosing
     // scope, in evaluation order, and point the call at those bindings
     // instead. The fabricated closure then captures them, which is exactly
     // the thread-spawn shape both backends already lower. The hoisted lets
@@ -14723,9 +14686,7 @@ class ExpressionChecker {
         owner.children.push(closure)
     }
 
-    // group.brew(f(x)) — the fleet flavor of brew (spec/CONCURRENCY.md):
-    // the same call walls and hoist-closure transform, minus the handle —
-    // the group keeps the row. Legal at any block depth, unlike a lone
+    // `group.brew(f(x))` uses brew's call transformation without a handle; the group keeps the row. It is legal at any block depth, unlike a lone
     // brew: the synthesized scope join references the group binding, and
     // the nested-block wall on `new TaskGroup` pins that binding to the
     // body's own scope. The checked shape is one "group_brew" node whose
@@ -14971,7 +14932,7 @@ class ExpressionChecker {
         if node.kind == "defer" {
             // Spec (SYNTAX.md, defer): a defer is a function-exit hook and
             // must sit at the top level of the function body. A nested one
-            // runs after its block's locals are gone — the native run-site
+            // runs after its block's locals are gone: the native run-site
             // reads a released cell.
             if !self.at_body_floor() {
                 self.fail(
@@ -15335,7 +15296,7 @@ class ExpressionChecker {
     // that only the body names has nothing to bind it: a static has no
     // receiver, no argument carries it, and the result does not mention it, so
     // every instantiation of the method would still hold a bare `T`. The
-    // interpreter ran such a body anyway — a runtime type nothing needed — and
+    // interpreter ran such a body anyway (a runtime type nothing needed) and
     // the native backend reported `cannot form class layout 'main.Holder<T>'`
     // at build time, an emitter's words for a program the checker had already
     // accepted. Refuse it here, where the programmer wrote it, and say what to
@@ -15395,7 +15356,7 @@ class ExpressionChecker {
     // the language's own typing decides what each operator means. What the
     // fold produces is the spelling a literal of that type is written in;
     // a use site materializes that, which makes a constant behave exactly
-    // as if its value had been typed there — in both backends, with nothing
+    // as if its value had been typed there: in both backends, with nothing
     // left for them to disagree about.
     //
     // The pass runs once per program, at the end of signature checking
@@ -15913,7 +15874,7 @@ class ExpressionChecker {
                 self.make_node(
                     node, "error", constant.name,
                     poison_hir_type())
-            // The name did resolve — to a constant that could not be
+            // The name did resolve: to a constant that could not be
             // folded. Anything reading this must not go on to say the
             // name means nothing.
             refused.resolved = constant.qualified
@@ -15943,8 +15904,8 @@ class ExpressionChecker {
     // A field default that builds another struct expands against that
     // struct's own defaults, so those have to be checked first. Files of
     // one package create no edges between each other (spec/SYNTAX.md), so
-    // the order self.program.declarations happens to hold — which follows
-    // the filename — must not decide what `Hsla {}` means. The literal
+    // the order self.program.declarations happens to hold, which follows
+    // the filename: must not decide what `Hsla {}` means. The literal
     // expansion asks for this by name the moment it resolves one, and the
     // checking state around it is saved and put back, because the ask
     // arrives from the middle of another declaration's own pass.

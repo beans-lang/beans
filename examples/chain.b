@@ -1,5 +1,5 @@
 // stdlib phase 0 validation: `?` in the middle of a chain, map index reads,
-// statics chaining into methods, and string method chains — run vs build
+// statics chaining into methods, and string method chains; run vs build
 // must be byte-identical, panics included.
 import std.io
 

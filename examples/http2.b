@@ -1,17 +1,5 @@
-// HTTP/2 in one process: a client opening three streams at once on a
-// single connection, and a server answering them.
-//
-// Two things to notice:
-//
-//   Multiplexing is the whole point. Three requests go out before any
-//   answer comes back, and they share one socket. That is why the API names
-//   a stream when it responds — with HTTP/1.1 there was only ever one
-//   exchange in flight, so nothing needed naming.
-//
-//   Pseudo-headers are ordinary headers. `:method`, `:path` and `:status`
-//   sit in the same collection as everything else, in arrival order, with
-//   accessors for the common reads. Hiding them would mean a second header
-//   model for one version of one protocol.
+// Multiplex three HTTP/2 streams over one loopback connection.
+// Pseudo-headers share the ordered header collection and have dedicated accessors.
 package main
 
 import std.http

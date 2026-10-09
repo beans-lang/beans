@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The nasty-condition matrix for std.net: partial IO under load, SO_ERROR
 # refusal, reset mid-write, half-close, zero-length and truncated datagrams,
-# resolver candidate order, backlog overflow, and multicast membership —
+# resolver candidate order, backlog overflow, and multicast membership,
 # each printed as a derived fact and pinned in test/cases/net_torture.out.
 # The same golden must hold in the interpreter, in the native build, and in
-# the native build under an EINTR failpoint storm — which is what turns
+# the native build under an EINTR failpoint storm, which is what turns
 # "every blocking call retries EINTR" from a comment into a contract.
 # (Close-on-exec inheritance is pinned by test/net.sh.)
 set -euo pipefail

@@ -4,8 +4,8 @@
 // A bare `xs == ys` has always been structural on both backends, because it
 // goes through emit_list_equal and calls beans_list_equal. One level down it
 // did not: emit_inline_equal fell through to the reference arm and compared
-// the two list pointers, and request_value_eq — the comparator a map key or a
-// list element thunk asks for — mapped List to kind "identity". So two values
+// the two list pointers, and request_value_eq, the comparator a map key or a
+// list element thunk asks for, mapped List to kind "identity". So two values
 // equal in every field answered `false` in a built binary and `true` under
 // `beansc run`, at any depth, with no diagnostic on either side. The interpreter
 // has always walked a list element by element wherever it meets one
@@ -22,12 +22,12 @@
 // Two more shapes ride along because they are the same branch. A Map has no
 // equality (spec/SYNTAX.md; the checker refuses a bare `m == n`), and a struct
 // holding one used to be called equal to a copy of itself because both held the
-// one map pointer — the interpreter answered false. And a Result, boxed or
+// one map pointer, the interpreter answered false. And a Result, boxed or
 // inline, was compared by address through a field for the same reason.
 //
 // The element kinds that need a comparator thunk are here too: a List<Bytes>
-// and a List of payload enums each wrote `ptr @@.next.eq0` into the module —
-// one `@` too many — so those two comparisons did not fail, they produced a
+// and a List of payload enums each wrote `ptr @@.next.eq0` into the module,
+// one `@` too many, so those two comparisons did not fail, they produced a
 // module clang rejected.
 package main
 
@@ -103,7 +103,7 @@ fn main() {
     io.println("enums {tags_a == tags_b} {tags_a == tags_c}")
 
     // A map is equal to nothing, itself included, so a struct holding one is
-    // never equal to another — not even to itself, which is the row that
+    // never equal to another, not even to itself, which is the row that
     // caught the identity compare: both sides were the one map pointer.
     let counted: Counted = Counted { counts: {} }
     io.println("maps {counted == counted} {Counted { counts: {} } == Counted { counts: {} }}")

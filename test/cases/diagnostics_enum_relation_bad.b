@@ -19,7 +19,7 @@ class Holder {
     fn init() {}
 }
 
-// payload-free, one interface — the reported shape
+// payload-free, one interface, the reported shape
 enum Colour implements Shows {
     red
     green

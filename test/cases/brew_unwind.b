@@ -3,7 +3,7 @@
 // failure and the fiber entry runs its defers newest-first and drops what it
 // owns, exactly as a return would. The interpreter and the native backend
 // host fibers on the same scheduler and run the same cleanup, so this is
-// byte-identical between them — order included. Reverting either backend's
+// byte-identical between them, order included. Reverting either backend's
 // half leaves cleanup unrun and this golden no longer matches.
 import std.io
 
@@ -58,7 +58,7 @@ fn with_moveonly() -> int {
 
 // A captured local lives in a heap cell shared with the closure; the cell,
 // and the value it holds, must be released on the unwind (its Res deinit runs
-// once). The closure is never called — only its capture matters here.
+// once). The closure is never called, only its capture matters here.
 fn with_capture() -> int {
     let r: Res = new Res("captured-res")
     let f: fn() -> unit = fn() { io.println("  see {r.tag}") }
@@ -94,7 +94,7 @@ fn shield_capture() -> string {
 // The espresso shielded-handle shape: a handler is called through `?`, and the
 // handler panics. The operand's panic is already in flight when `?` is
 // reached, so `?` must short-circuit rather than see the poisoned unit as a
-// non-result and raise a second failure inside the unwind — which the
+// non-result and raise a second failure inside the unwind, which the
 // interpreter would report as a double panic and abort. The handler still
 // drops what it owns on the way out.
 fn faulty() -> Result<int> {
@@ -170,7 +170,7 @@ fn shield_deinit_panic() -> string {
 // A value that holds an owned reference and is still in flight when a later
 // instruction panics belongs to no local: the plan releases it after its
 // last use. The unwind releases it as the interpreter's expression frames
-// do — newest first, before the frame's defers, before its locals.
+// do, newest first, before the frame's defers, before its locals.
 
 fn boom() -> int { let empty: List<int> = []; return empty[3] }
 fn mk(tag: string) -> Res { return new Res(tag) }

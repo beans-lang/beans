@@ -1,6 +1,6 @@
 // The order an object releases its fields is program-visible: the object's
 // own class first, fields in reverse declaration order, then each base class
-// up the chain. A field's declared type does not change that — a generic
+// up the chain. A field's declared type does not change that, a generic
 // parameter, an Option, a Result, a List, a Map, a struct and an interface
 // all hold the last reference to something with a deinit just as a bare class
 // name does (issue #82).

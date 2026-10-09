@@ -19,7 +19,7 @@ fn llvm_record_instance_name(type: HirType) -> string {
 // *floating-point* constant, `0b…` is not a form it has, and `_` is not a
 // digit separator. A match pattern used to carry the source's own spelling
 // straight into an `icmp`, so `match n { 0xFF => … }` checked, ran under the
-// tree interpreter, and then failed at build time inside LLVM's parser —
+// tree interpreter, and then failed at build time inside LLVM's parser:
 // a program the checker accepted that a backend could not emit. Patterns
 // come through here instead and leave as one decimal integer: the same bits
 // under every spelling, and the only spelling LLVM reads.
@@ -63,7 +63,7 @@ fn llvm_escape_bytes(value: string) -> string {
 // Splitting the module across several clang processes needs three facts about
 // a body the emitter has already written: whether it defines a function,
 // under what symbol, and what a declaration of it looks like. Reading them
-// back off the text is deliberate — the alternative is a second printer that
+// back off the text is deliberate: the alternative is a second printer that
 // has to agree with the first one forever, and the two spellings drift.
 
 // End of the line starting at `start`, not counting its newline.
@@ -166,7 +166,7 @@ fn llvm_declaration_for(body: string,
         body.slice(offset + 7 + width, cut)
     // A definition that can unwind names its personality routine, and a
     // definition with debug info names its subprogram; neither belongs on a
-    // declaration — LLVM refuses both — so the header is cut before them.
+    // declaration (LLVM refuses both) so the header is cut before them.
     // Attributes (uwtable, frame-pointer) stay: a declaration may carry them.
     for marker: string in [" personality ", " !dbg "] {
         match header.find(marker) {
@@ -191,8 +191,8 @@ fn llvm_declaration_for(body: string,
 // llvm_declaration_for cuts a declaration at exactly those two markers. The
 // attribute therefore goes in ahead of whichever of them appears first, and
 // with neither present just before the `{` that opens the body. Everything
-// else on the line — linkage, return type, parameters, `uwtable`, a
-// "target-features" string — is left where it was.
+// else on the line: linkage, return type, parameters, `uwtable`, a
+// "target-features" string: is left where it was.
 fn llvm_sanitized_definition(line: string,
                              attribute: string) -> string {
     var cut: int = line.len()
@@ -217,7 +217,7 @@ fn llvm_sanitized_definition(line: string,
     return "{line.slice(0, cut)}{attribute}{line.slice(cut, line.len())}"
 }
 
-// Which chunk owns a group — a source file, or a lone symbol when the body
+// Which chunk owns a group: a source file, or a lone symbol when the body
 // came from no file. Hashing the name rather than counting positions is what
 // makes the object cache worth having: a group keeps the chunk it had no
 // matter what was added or deleted around it, so an edit rebuilds one chunk.
@@ -264,8 +264,8 @@ fn llvm_assignment_at(text: string,
 // them, so a string literal still has one address across the whole program.
 // But a `private` symbol is invisible to the object file next to it, and
 // every other chunk has to reach these, so the owning chunk publishes them
-// under external linkage. Function definitions can ride in here too — a
-// singleton's accessor arrives welded to the storage it caches into — and
+// under external linkage. Function definitions can ride in here too: a
+// singleton's accessor arrives welded to the storage it caches into: and
 // they are published the same way.
 fn llvm_shared_globals(text: string) -> string {
     var output: List<string> = []

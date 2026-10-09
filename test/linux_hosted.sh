@@ -5,14 +5,14 @@
 #
 # linux_arch.sh proves cross-*built* binaries run on the emulated machine. This
 # proves the stronger thing the release story needs: `beansc` itself, running as
-# that architecture's binary, is a working compiler there — it builds and
+# that architecture's binary, is a working compiler there, it builds and
 # interprets programs to byte-identical output, and it rebuilds itself to a
 # byte-for-byte fixed point. That is the bar for calling a target a host.
 #
 # Everything runs under qemu-user: the cross-built beansc is an <arch> ELF, so
 # every `beansc` invocation below is `qemu-<arch> beansc ...`. The C toolchain it
 # shells out to still runs native (qemu passes the exec through), so a hosted
-# build needs `--linker lld` — the platform `ld` is single-target — exactly as
+# build needs `--linker lld`, the platform `ld` is single-target, exactly as
 # the cross gate does. On real <arch> hardware that flag is unnecessary; here it
 # stands in for the machine's own linker.
 set -uo pipefail
@@ -152,19 +152,19 @@ tmp="${TMPDIR:-/tmp}/beans-hosted-$arch.$$"
 mkdir -p "$tmp"
 trap 'rm -rf "$tmp"' EXIT
 
-# An interpreted program that reaches a native bridge — std.net's sockx entry
-# points, for instance — makes the interpreter build that bridge on demand and
+# An interpreted program that reaches a native bridge, std.net's sockx entry
+# points, for instance, makes the interpreter build that bridge on demand and
 # dlopen it into its own process, so the bridge has to be an $arch object.
 # `beansc build` says so explicitly: it passes --target and -fuse-ld. The
 # interpreter passes neither, only the target's -march/-mabi, and trusts the C
 # driver on PATH to be the target's own. On a real $arch machine it is; under
-# qemu it is the host's clang, which rejects those flags outright — every
+# qemu it is the host's clang, which rejects those flags outright, every
 # interpreted bridge call then dies with "unsupported option '-mabi='" while
 # the compiled half of the same example runs fine.
 #
 # BEANS_CC names the C driver the interpreter should use, so give it one that
 # pins the target and links with this arch's linker, the way the driver
-# already does — $linker rather than lld outright, because big-endian ppc64
+# already does, $linker rather than lld outright, because big-endian ppc64
 # needs its ELFv1 ld. Flags go before "$@" so anything beansc adds still wins.
 if [ -z "${BEANS_CC:-}" ]; then
     {
@@ -189,8 +189,8 @@ run() { run_qemu "$tmp/beansc.$arch" "$@"; }
 
 echo "== $arch: cross-build beansc for the target =="
 # --release here and at stage 2 below: every beansc invocation in this script
-# runs under emulation, and an unoptimized compiler — what a plain `beansc
-# build` now produces — would compile the whole of src/ at emulated speed.
+# runs under emulation, and an unoptimized compiler, what a plain `beansc
+# build` now produces, would compile the whole of src/ at emulated speed.
 if ! "$beansc" build --release --target "$triple" ${extra_build_args+"${extra_build_args[@]}"} \
         --linker "$linker" src/main.b \
         -o "$tmp/beansc.$arch" >"$tmp/xbuild.log" 2>&1; then
@@ -204,7 +204,7 @@ fail=0
 
 echo "== $arch: self-rebuild fixed point (beansc.$arch compiles the compiler) =="
 # The hosted compiler emits the compiler's IR; it then builds itself into stage2,
-# and stage2 emits the same IR. Equal IR is the fixed point — the hosted compiler
+# and stage2 emits the same IR. Equal IR is the fixed point, the hosted compiler
 # reproduces itself exactly. (Binaries differ by build metadata; IR does not.)
 if run llvm src/main.b >"$tmp/stage1.ll" 2>"$tmp/s1.err" \
    && run build --release ${extra_build_args+"${extra_build_args[@]}"} --linker "$linker" \
@@ -226,7 +226,7 @@ fi
 
 echo "== $arch: hosted differential loop (build + interpret each example) =="
 # beansc.$arch both compiles and interprets each example; the two must agree
-# byte-for-byte, exit codes included — the same loop make test runs natively,
+# byte-for-byte, exit codes included, the same loop make test runs natively,
 # here entirely on the emulated machine.
 ran=0; refused=0
 target_crypto_available=1

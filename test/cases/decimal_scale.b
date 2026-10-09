@@ -1,5 +1,5 @@
 // Scale is part of a decimal's answer, not decoration: money is written with
-// its cents whether or not they are zero. Two things used to lose it — adding
+// its cents whether or not they are zero. Two things used to lose it, adding
 // to a zero, and a compound assignment to a field, which the native backend
 // refused outright while the checker and the interpreter took it.
 import std.io

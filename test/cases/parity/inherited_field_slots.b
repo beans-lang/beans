@@ -1,5 +1,5 @@
 // #95: a subclass field must not reuse a base field's name. The two backends
-// used to lay a redeclared name out differently — the interpreter gave the
+// used to lay a redeclared name out differently, the interpreter gave the
 // base and the subclass one slot and destroyed the base's value during
 // construction, a native build gave each its own. The checker now refuses the
 // redeclaration; this is the legitimate shape it must still accept and both

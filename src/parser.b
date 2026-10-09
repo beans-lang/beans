@@ -271,8 +271,8 @@ class Parser {
         // message points nowhere: `fn take()` read "expected function name"
         // with the cursor on a word the writer can see is a name. Say which
         // word is reserved and the reader is done in one line. `take` is the
-        // sharpest case — it is reserved only so an old program gets a real
-        // diagnostic (spec/SYNTAX.md, "Keywords and modifiers") — but every
+        // sharpest case: it is reserved only so an old program gets a real
+        // diagnostic (spec/SYNTAX.md, "Keywords and modifiers"), but every
         // keyword lands here the same way.
         if kind == "ident" &&
            keyword_kind(token.text) == token.kind {
@@ -298,8 +298,8 @@ class Parser {
         return new AstNode(kind, value, token.line, token.col)
     }
 
-    // The node anchors where the grammar needs it — a declaration at its
-    // keyword, a member access at its dot — while the identifier a reader
+    // The node anchors where the grammar needs it: a declaration at its
+    // keyword, a member access at its dot, while the identifier a reader
     // points at lives here.
     fn named(result: AstNode, name: Token) -> AstNode {
         result.name_line = name.line
@@ -357,7 +357,7 @@ class Parser {
         }
     }
 
-    // `package name` — contextual, so `package` stays an ordinary identifier
+    // `package name`: contextual, so `package` stays an ordinary identifier
     // everywhere else. A clause found later is still recognised so the
     // diagnostic can say what is wrong instead of "expected a declaration".
     fn at_package_clause() -> bool {
@@ -793,7 +793,7 @@ class Parser {
         return result
     }
 
-    // import {name, other as alias} from path — the braces select symbols
+    // import {name, other as alias} from path: the braces select symbols
     // of the target (or sub-packages of a namespace folder) and bind only
     // those names; no module name is bound. `from` stays a plain
     // identifier everywhere else, so it is matched by text here.
@@ -1252,8 +1252,8 @@ class Parser {
             // A length is an integer literal or the name of a module
             // constant, written bare or through an import binding. The
             // parser has no symbol table, so a name is carried as written
-            // in its own child node — positioned at the identifier, which
-            // is what an editor query points at — and the checker decides
+            // in its own child node: positioned at the identifier, which
+            // is what an editor query points at, and the checker decides
             // which constant it is once every constant has been folded.
             // `array.value` stays empty until then and holds the decimal
             // length the fold substituted, so every later reader of a
@@ -1683,7 +1683,7 @@ class Parser {
         }
         // `brew` is contextual, the same discipline as `unique` and `packed`:
         // it starts a child fiber only when a callee follows. Before any
-        // other token — `(`, `.`, `=`, an operator — it stays an ordinary
+        // other token (`(`, `.`, `=`, an operator) it stays an ordinary
         // name, so locals called brew keep working.
         if self.check("ident") && self.current().text == "brew" {
             let after: Token = self.tokens[self.pos + 1]
@@ -1696,8 +1696,8 @@ class Parser {
         }
         // `contained` is contextual on exactly the same terms as `brew`: it
         // opens a catch frame only when a callee follows it. Before any other
-        // token it is an ordinary name, so a local called `contained` — the
-        // fiber soak cases count with one — keeps working.
+        // token it is an ordinary name, so a local called `contained`: the
+        // fiber soak cases count with one: keeps working.
         if self.check("ident") &&
            self.current().text == "contained" {
             let after: Token = self.tokens[self.pos + 1]
@@ -1781,7 +1781,7 @@ class Parser {
         if token.kind == "(" {
             if !self.enter_nesting(token) { return self.node("error", "", token) }
             // inside parentheses a '{' can only start an initializer or
-            // map, never an if/for body, so initializers come back on —
+            // map, never an if/for body, so initializers come back on:
             // the same rule as stage 0's StructGuard
             let saved: bool = self.allow_initializer
             self.allow_initializer = true
@@ -1928,7 +1928,7 @@ class Parser {
     // arguments. Beans has no marker symbol to spare for the job, so the
     // rule is C#'s, restricted to the one place type arguments can occur:
     // scan a balanced <...> holding only tokens a type can contain, and
-    // require the very next token to be '(' — a call. Anything else keeps
+    // require the very next token to be '(': a call. Anything else keeps
     // '<' as less-than, so `check(a < b, c > (d))` reads as one generic
     // call and a comparison still needs its own parentheses.
     fn generic_call_ahead() -> bool {
@@ -2316,8 +2316,7 @@ class Parser {
         }
         self.expect(")", "expected ')'")
         closure.add(parameters)
-        // `fn(...) move(a, b)` — the listed locals are captured by move:
-        // the closure owns them and the enclosing binding is spent.
+        // `move(a, b)` transfers the listed locals into the closure.
         if self.check("move") {
             let mover: Token = self.advance()
             let moved: AstNode =

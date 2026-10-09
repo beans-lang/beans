@@ -1,10 +1,10 @@
 /*
-extern "C" union — several fields sharing one piece of storage.
+extern "C" union: several fields sharing one piece of storage.
 
 What it is:
   Every field starts at offset zero, so they overlap. The union is as big as
   its largest field and as aligned as its strictest one. You initialize it with
-  exactly one named field, but you may read any field afterwards — writing
+  exactly one named field, but you may read any field afterwards. Writing
   `bits` and reading `number` reinterprets the same bytes as a different type.
   Beans does not track which field is active, which is why initialization,
   reads, and writes all need `unsafe`. Reading the wrong field is not caught;

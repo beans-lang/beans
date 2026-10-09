@@ -7,8 +7,8 @@
 // rather than to a copy that is thrown away.
 //
 // `_` is the other half: it names nothing. Use it when a value has to be
-// produced but you have no use for it. It is not a variable — you cannot read
-// it back, and you cannot assign to it.
+// produced but you have no use for it. It is not a variable; you cannot read
+// it back or assign to it.
 import std.io
 
 struct Point {

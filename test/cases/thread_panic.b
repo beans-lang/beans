@@ -1,15 +1,15 @@
-// A panic that reaches the entry of a spawned thread ends the process, on
-// both backends (issue #75, spec/CONCURRENCY.md). Thread<T>.join() answers T,
-// not Result<T>, so a thread's failure has no value-shaped place to land, and
-// a detached or never-joined thread has no join at all — the interpreter used
-// to stash the panic and re-raise it at join, which armed no unwind, skipped
-// the joining fiber's defers, and dropped the failure entirely when no one
-// joined. `brew` is the contained form; a thread is the raw primitive.
-//
-// One mode per argument, because a program can only die once. The last two
-// modes are the other half of the claim: a thread that returns normally still
-// delivers its value, and a panic the thread itself contains with brew/join
-// stays contained — the process must survive both.
+// Uncontained panics in spawned threads terminate the process on both backends.
+// Each mode runs in a separate process; normal returns and brewed panics survive.
+
+
+
+
+
+
+
+
+
+
 import std.io
 import std.os
 import std.thread

@@ -1,5 +1,5 @@
 // The annotation whose defaults must resolve here, in the declaring
-// package's scope — not wherever the annotation is used.
+// package's scope, not wherever the annotation is used.
 package marks
 import std.io
 

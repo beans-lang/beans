@@ -1,7 +1,7 @@
 // `x as? T` retains what the Option wraps, because the Option owns it and the
 // source could die while an arm runs. When the source is a local that holds an
 // owned reference and provably never changes, escapes or is captured, that
-// retain and its matching release cancel — the local keeps the object alive
+// retain and its matching release cancel, the local keeps the object alive
 // across the whole match by itself.
 //
 // Every function below is named in test/downcast_borrow.sh, which greps the

@@ -2,8 +2,8 @@
 //
 // A worker pools a bounded number of finished fibers for stack reuse and
 // releases the rest, so a burst of many fibers gives its stacks back when the
-// burst is over. This spawns a chain of `count` fibers — each one parks the
-// next and then waits, so all `count` are alive at once — holds them while the
+// burst is over. This spawns a chain of `count` fibers, each one parks the
+// next and then waits, so all `count` are alive at once, holds them while the
 // shell samples the resident high-water, wakes them with one gate open, joins
 // the whole chain, and holds again for the shell to see the set fall back.
 //
@@ -14,7 +14,7 @@
 import std.io
 
 // `built` is opened by the last link, which only runs once every fiber above
-// it has already executed its own `brew` — so when it opens, all `count`
+// it has already executed its own `brew`, so when it opens, all `count`
 // fibers exist and have run, and every one of them has touched its stack. The
 // driver samples the resident set on that signal instead of on a sleep, which
 // is what lets it assert a floor derived from the fiber count: a sleep that

@@ -28,7 +28,7 @@ SOURCES = sorted(ROOT.glob("src/llvm*.b"))
 
 STATUS_VALUES = {
     # the interpreter runs this; only `beansc build` refuses. Same shape as a
-    # fixed bug — a program that runs but will not build.
+    # fixed bug: a program that runs but will not build.
     "interpreter-ok",
     # refused on both paths, so the language does not offer it either way
     "both-refuse",

@@ -105,7 +105,7 @@ fn runtime_error() -> ReflectError {
         _ => ErrorKind.failed,
     }
     // `failed` is the state where no code was set, and the runtime's own
-    // message for it is empty on both backends — "nothing failed" is what
+    // message for it is empty on both backends: "nothing failed" is what
     // that state means to a runtime, and a runtime with no code cannot know
     // any better. Here it means something else: this function is only
     // called because a refusal happened, so an empty message would hand a
@@ -123,7 +123,7 @@ fn runtime_error() -> ReflectError {
 /// The same failure, told about the member it was asked for.
 ///
 /// Every reflective refusal used to read as one sentence about nothing in
-/// particular — "reflected operation is unsupported" — which is no help at
+/// particular ("reflected operation is unsupported") which is no help at
 /// all in a program that reflects over many members, and least of all for the
 /// refusals a generic declaration produces, where the whole answer is *which*
 /// member is out of reach.

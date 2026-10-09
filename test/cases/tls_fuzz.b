@@ -1,15 +1,15 @@
-// The partial-IO fuzzer for the TLS filter — the test the plan calls the
+// The partial-IO fuzzer for the TLS filter, the test the plan calls the
 // one that matters, because half-open state machines under partial IO are
 // where every TLS binding bug in history has lived.
 //
 // The program drives the bridge itself, over a raw TcpStream, so it controls
 // exactly how the ciphertext is fragmented: a seeded generator hands TLS one
-// byte at a time, or a random small run, and interleaves empty feeds — the
+// byte at a time, or a random small run, and interleaves empty feeds, the
 // EAGAIN equivalent at this layer, where "no bytes arrived yet" must make
 // the handshake park instead of corrupting state. The invariants:
 //
 //   The handshake completes whatever the fragmentation. Same peer, same
-//   certificate, same result — only the byte boundaries differ.
+//   certificate, same result, only the byte boundaries differ.
 //
 //   An empty feed never advances anything. WANT_IO in, WANT_IO out, no
 //   state change, no output.
@@ -128,7 +128,7 @@ fn flush(session: Session, socket: net.TcpStream) -> Result<bool> {
     return ok(true)
 }
 
-// Feeds TLS a fragment of the pending ciphertext — sometimes nothing at all,
+// Feeds TLS a fragment of the pending ciphertext, sometimes nothing at all,
 // which is this layer's EAGAIN and must change nothing.
 fn feed_fragment(session: Session, rng: Rng) -> Result<bool> {
     let choice: int = rng.below(10)

@@ -1,7 +1,7 @@
 // A record holding an `Option` of another record, stored in a List.
 //
 // `type_alignment` had no Option case, so it fell through to a rule that
-// answers a scalar's alignment — its size. `Option<f32>` came back 8-aligned
+// answers a scalar's alignment, its size. `Option<f32>` came back 8-aligned
 // instead of 4, a record holding one was computed 40 bytes where LLVM lays it
 // out in 32, and the list stride was eight bytes wider than the element.
 // Every element after the first then read partly from its neighbour: the

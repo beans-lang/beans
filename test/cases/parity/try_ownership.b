@@ -6,7 +6,7 @@
 // `consumes` means the operand keeps its own and an owned result needs one of
 // its own. The unwrap's Option arms retained the payload either way, so every
 // reference that crossed an owned `?` was left with a +1 nothing released
-// (beans-lang/beans#110) — the interpreter freed it and the native backend
+// (beans-lang/beans#110), the interpreter freed it and the native backend
 // did not. The propagate's same-representation path had the mirror fault: the
 // operand flowed straight out even when it was a borrow, handing the caller a
 // box this function never retained.

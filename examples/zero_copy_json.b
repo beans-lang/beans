@@ -1,6 +1,4 @@
-// Existing JSON APIs use the fast path; no new language syntax is needed.
-// Move a Bytes value into decode_bytes_in_place when the input is no longer
-// needed. yyjson then parses that allocation directly instead of copying it.
+// `decode_bytes_in_place` lets yyjson parse a moved `Bytes` allocation without copying it.
 
 import std.encoding.json
 import std.io

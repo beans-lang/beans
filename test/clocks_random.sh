@@ -142,7 +142,7 @@ fi
 grep -q "has no function 'now_ms'" "$tmp/old1"
 
 echo "checking random output is actually random"
-# Not a statistical test — a shape test. A generator stuck at a constant, or one
+# Not a statistical test, a shape test. A generator stuck at a constant, or one
 # seeded identically each run, is the failure worth catching, and both show up as
 # repeats across separate processes.
 cat >"$tmp/draw.b" <<'DRAW'
@@ -172,7 +172,7 @@ if [[ "$idistinct" -ne 4 ]]; then
 fi
 
 echo "checking a bounded draw covers its range without bias"
-# 4000 draws below 4. Every bucket must appear, and none may dominate — a `% limit`
+# 4000 draws below 4. Every bucket must appear, and none may dominate, a `% limit`
 # implementation would still pass a coverage test, so the balance is checked too.
 cat >"$tmp/spread.b" <<'SPREAD'
 import std.io

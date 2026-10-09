@@ -1401,7 +1401,7 @@ grep -q 'result.eq.tags' \
 # type and segfaulted. The emission now branches on the tags and touches only
 # the arm that is live, so `result.eq.payload` and the unconditional
 # `result.eq<n> = and i1` no longer exist. Assert the branching shape itself,
-# and assert the old shape stays gone — restoring the both-arms compare brings
+# and assert the old shape stays gone, restoring the both-arms compare brings
 # the `and` back and fails here.
 grep -qE 'br i1 %result[.]eq[.]tags[0-9]*, label %result[.]eq[.]same[0-9]*, label %result[.]eq[.]different[0-9]*' \
     "$tmp/inline-sum.first.ll"
@@ -1639,7 +1639,7 @@ diff -u "$tmp/wide-collections.expected" \
     test/cases/self_host_llvm_phis.b \
     >"$tmp/phis.second.ll"
 cmp "$tmp/phis.first.ll" "$tmp/phis.second.ll"
-# every phi is a stack slot stored on the taken edge — a real LLVM
+# every phi is a stack slot stored on the taken edge, a real LLVM
 # phi would name values from blocks that are not emitted yet
 grep -q '%phi.slot[0-9]* = alloca ' \
     "$tmp/phis.first.ll"
@@ -1708,7 +1708,7 @@ BEANS_NO_POOL=1 "$tmp/generics-native" \
 diff -u "$tmp/generics.expected" "$tmp/generics.actual"
 # a spawned closure's result crosses the runtime's i64 slot: the
 # thunk bitcasts floats, sign-extends signed narrows, and hands
-# references over as addresses — the raw fn pointer once returned
+# references over as addresses, the raw fn pointer once returned
 # doubles in the wrong register class and joined as garbage
 ./build/beansc-next llvm \
     test/cases/self_host_llvm_thread_float.b \
@@ -1811,7 +1811,7 @@ BEANS_NO_POOL=1 "$tmp/signed-sort-native" \
 diff -u "$tmp/signed-sort.expected" \
     "$tmp/signed-sort.actual"
 # a Result box is {i64 tag, i64 slot}: the payload pointer is slot
-# 8/stride — meta 17 with 8-byte pointers, 33 with 4-byte ones. A
+# 8/stride, meta 17 with 8-byte pointers, 33 with 4-byte ones. A
 # hardcoded 17 leaked every 32-bit Result payload, invisibly to
 # 64-bit hosts, so both emissions are pinned here.
 ./build/beansc-next llvm \
@@ -1879,7 +1879,7 @@ diff -u "$tmp/option-drop.expected" \
     "$tmp/option-drop.actual"
 # a consumed constructor operand hands its reference to the sink
 # initializer's field: the caller releases nothing after the call
-# and the initializer retains nothing — the object's death is what
+# and the initializer retains nothing, the object's death is what
 # frees the argument. Deinit order under the interpreter diff plus
 # the sanitized build proves both directions
 ./build/beansc-next llvm \
@@ -2004,7 +2004,7 @@ diff -u "$tmp/arena-box.expected" \
     "$tmp/arena-box.actual"
 # Atomic<T>: orders fold into real LLVM atomic instructions,
 # Atomic<bool> is an i8 cell converting at the edges, wait and
-# notify go through the runtime, fence is the bare instruction —
+# notify go through the runtime, fence is the bare instruction,
 # the case runs under ASan and TSan both
 ./build/beansc-next llvm \
     test/cases/self_host_llvm_atomics.b \
@@ -2046,7 +2046,7 @@ BEANS_NO_POOL=1 "$tmp/atomics-case-tsan" \
     >"$tmp/atomics-case.tsan.actual"
 diff -u "$tmp/atomics-case.expected" \
     "$tmp/atomics-case.tsan.actual"
-# fixed arrays: inline [N x T] values — literal insertvalues,
+# fixed arrays: inline [N x T] values, literal insertvalues,
 # alloca-backed element writes, spilled-copy iteration, unrolled
 # ==, constant len, arrays inside records, and an out-of-range
 # index panicking identically (message, position, exit 3)
@@ -2093,7 +2093,7 @@ test "$array_panic_reference_exit" -eq 3
 test "$array_panic_native_exit" -eq 3
 diff -u "$tmp/array-panic.expected" \
     "$tmp/array-panic.actual"
-# comparator thunks rebuild elements from slots — the i8 one must
+# comparator thunks rebuild elements from slots, the i8 one must
 # truncate before calling the closure (the untruncated form was
 # invalid IR in production too), and index_of scans raw slots
 grep -q '^define internal i64 @.next.sortcmp' \
@@ -2293,7 +2293,7 @@ grep -q "^built " "$tmp/shop.build.out"
 "$tmp/shop-next-native" >"$tmp/shop.next.actual"
 diff -u "$tmp/shop.next.expected" "$tmp/shop.next.actual"
 # the 38-digit decimal contract, four ways: reference interpreter,
-# reference native, self-host native, self-host interpreter — byte
+# reference native, self-host native, self-host interpreter, byte
 # parity on values, parses, NaN comparisons, and panic positions
 ./build/beansc-next llvm \
     test/cases/decimal_audit.b \
@@ -2351,7 +2351,7 @@ diff -u "$tmp/decimal-nan.expected" \
     >"$tmp/dispatch.second.ll"
 cmp "$tmp/dispatch.first.ll" "$tmp/dispatch.second.ll"
 # an interface call loads its selector slot from the receiver's own
-# descriptor — byte offset 8 plus the slot at pointer stride. Either
+# descriptor, byte offset 8 plus the slot at pointer stride. Either
 # spelling: when few enough classes can be behind the receiver the call
 # switches on the class id first and this read is the fallback arm, which is
 # the same read under the devirt name.

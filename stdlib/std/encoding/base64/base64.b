@@ -2,12 +2,12 @@
 //
 // Four RFC 4648 encodings, each an `Encoding` value with methods; the
 // module-level `encode`/`decode`/`decode_forgiving` are the standard padded
-// encoding with strict decoding — the common case in one call.
+// encoding with strict decoding: the common case in one call.
 //
 // Decode modes:
 //   - strict (`decode`): RFC 4648. Padding must match the encoding exactly,
 //     the trailing padding bits of a final partial group must be zero, and
-//     any byte outside the alphabet — ASCII whitespace included — is an
+//     any byte outside the alphabet (ASCII whitespace included) is an
 //     error with its byte position.
 //   - forgiving (`decode_forgiving`): the WHATWG forgiving-base64 shape.
 //     ASCII whitespace is skipped, a partial final group is accepted with
@@ -30,7 +30,7 @@ extern "C" fn beans_enc_b64_decode(source: RawPtr<u8>, target: RawPtr<u8>, req: 
 //
 // Payloads cross the bridge as (pointer, length) into raw memory allocated
 // as 64-bit words, so the copies below run word-at-a-time through the native
-// Bytes accessors — never a Beans call per payload byte inside the codec.
+// Bytes accessors: never a Beans call per payload byte inside the codec.
 
 // The two bulk-copy helpers every marshalling helper builds on. Bytes.as_ptr
 // exposes the same bulk path to standard and community packages, without
@@ -212,7 +212,7 @@ pub enum Encoding {
     }
 }
 
-/// Standard padded encoding — `Encoding.standard.encode` in one call.
+/// Standard padded encoding: `Encoding.standard.encode` in one call.
 pub fn encode(data: Bytes) -> string {
     return Encoding.standard.encode(data)
 }

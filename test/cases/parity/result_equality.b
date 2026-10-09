@@ -6,7 +6,7 @@
 // the error-arm comparison on a slot that a `ok` value leaves zero-
 // initialised; for an explicit reference error type that was `beans_str_eq`
 // on a null string, which dereferences null and segfaults. `beansc run`
-// answered correctly, so the two backends disagreed — one crashed. It was in
+// answered correctly, so the two backends disagreed, one crashed. It was in
 // shipped 0.1.37.
 //
 // The single-argument form `Result<T>` (default Error) took a different,
@@ -30,7 +30,7 @@ fn main() {
     let bang: string = "bang"
     io.println("strings {boom == boom_again}")
 
-    // explicit reference error type — the shape that segfaulted. Comparing two
+    // explicit reference error type, the shape that segfaulted. Comparing two
     // ok values must not touch the err slot at all.
     let ok_a: Result<int, string> = ok(1)
     let ok_b: Result<int, string> = ok(1)
@@ -47,7 +47,7 @@ fn main() {
     let ss_e: Result<string, string> = err(boom)
     io.println("ss {ss_a == ss_b} {ss_a == ss_e} {ss_e == ss_a}")
 
-    // reference ok, value error — the dead arm is now the ok arm
+    // reference ok, value error, the dead arm is now the ok arm
     let si_a: Result<string, int> = ok(boom)
     let si_b: Result<string, int> = ok(boom_again)
     let si_e: Result<string, int> = err(7)
@@ -61,7 +61,7 @@ fn main() {
     let ii_e: Result<int, int> = err(1)
     io.println("ii {ii_a == ii_b} {ii_a == ii_e}")
 
-    // single argument, default Error — the branch that always worked
+    // single argument, default Error, the branch that always worked
     let one_a: Result<string> = ok(boom)
     let one_b: Result<string> = ok(boom_again)
     let one_c: Result<string> = ok(bang)
@@ -74,7 +74,7 @@ fn main() {
     let slot_f: Slot = Slot { r: err(boom_again) }
     io.println("field {slot_a.r == slot_b.r} {slot_a.r == slot_e.r} {slot_e.r == slot_f.r}")
 
-    // through a list — many elements, ok and err mixed
+    // through a list, many elements, ok and err mixed
     let xs: List<Result<int, string>> = [ok(1), err(boom), ok(2), err(bang)]
     let ys: List<Result<int, string>> = [ok(1), err(boom_again), ok(2), err(bang)]
     io.println("list {xs[0] == ys[0]} {xs[1] == ys[1]} {xs[3] == ys[3]} {xs[0] == xs[2]}")

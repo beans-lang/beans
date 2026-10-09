@@ -1,13 +1,4 @@
-// Hashing from the platform, and the one place a WebSocket handshake needs
-// it. Two things to notice:
-//
-//   The digests come from the OS crypto library — CommonCrypto, CNG, or
-//   libcrypto — never from an implementation shipped here. A hash is
-//   exactly the kind of thing you take rather than carry.
-//
-//   `Sec-WebSocket-Accept` is SHA-1 over the client key and one fixed UUID,
-//   base64-encoded. Getting it wrong fails a real handshake, which is why
-//   the published example value is worth checking against.
+// Hashes use the platform crypto library; the WebSocket accept value follows RFC 6455.
 package main
 
 import std.crypto

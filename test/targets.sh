@@ -36,7 +36,7 @@ case "$(uname -s)" in
 esac
 file -b "$tmp/hello_x86_64-unknown-linux-gnu.o" | grep -q 'x86-64'
 file -b "$tmp/hello_aarch64-unknown-linux-gnu.o" | grep -qi 'aarch64'
-# COFF, not ELF — the one-word difference this loop exists to catch.
+# COFF, not ELF, the one-word difference this loop exists to catch.
 file -b "$tmp/hello_x86_64-pc-windows-gnu.o" | grep -qi 'coff\|pe32'
 
 echo "checking selected-target facts are the target's, not the host's"
@@ -214,7 +214,7 @@ expect_fail() {
 
 expect_fail "unknown triple" "unknown target 'sparc-sun-solaris'" \
     ./build/beansc build --target sparc-sun-solaris examples/hello.b -o "$tmp/bad"
-# An empty value is a mistake, not "use the host" — leaving the option out is
+# An empty value is a mistake, not "use the host", leaving the option out is
 # how you ask for the host.
 expect_fail "empty triple" "--target needs a value" \
     ./build/beansc build --target "" examples/hello.b -o "$tmp/bad"

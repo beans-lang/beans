@@ -1,7 +1,7 @@
 // A generic base whose receiver crosses a package boundary. `shelf_tag` and
 // `shelf_mark` call methods on a `Shelf<int>` written here, but the object can
 // be a subclass declared in another package. `tag` is public and not
-// overridden, so it runs direct — and its `self.hidden()` must reach shapes'
+// overridden, so it runs direct, and its `self.hidden()` must reach shapes'
 // own package-private `hidden`, not a same-named one a consumer package
 // declares. `mark` is public and overridden across the boundary, so it reads
 // the descriptor. The native emitter used to call the base body outright for

@@ -33,7 +33,7 @@ grep -q "unknown rounding mode 'sideways'" "$tmp/round.bad"
 
 # Scale is part of the answer. A zero operand used to hand back the other side
 # untouched, so 0.00 + 233 lost its cents, and a compound assignment to a
-# decimal field was refused by the native backend alone — the checker and the
+# decimal field was refused by the native backend alone, the checker and the
 # interpreter both took it, so a program that ran would not build.
 ./build/beansc run test/cases/decimal_scale.b >"$tmp/scale.interp"
 ./build/beansc build test/cases/decimal_scale.b \
@@ -123,7 +123,7 @@ grep -q -- "-1 does not fit u64 (0..18446744073709551615)" "$tmp/bad"
 
 # A number literal written straight under `as` is read in the target type. It
 # used to become an f64 first, so `19.99 as decimal` carried the float's error
-# in the one type that exists to have none — and a hex literal in a float or a
+# in the one type that exists to have none, and a hex literal in a float or a
 # decimal was taken by the checker and then read two different ways by the two
 # backends.
 ./build/beansc run test/cases/numeric_cast_literal.b >"$tmp/castlit.interp"

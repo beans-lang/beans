@@ -1,7 +1,7 @@
 // B4: the native backend refused a class -> interface upcast at a `return`
 // while the interpreter took it, so a whole package that returned an
-// interface would run but not build. Every other position — argument, list
-// element, `some(...)`, a `let` of interface type — already lowered it; the
+// interface would run but not build. Every other position, argument, list
+// element, `some(...)`, a `let` of interface type, already lowered it; the
 // MIR verifier walked only `extends` and bailed on generic arguments.
 //
 // The `+tag` / `-tag` markers put construct and drop counts into the compared

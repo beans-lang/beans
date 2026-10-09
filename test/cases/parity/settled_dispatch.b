@@ -1,5 +1,5 @@
 // A call the emitter can name outright must do the same work as the call
-// through the table it replaces — the same receiver, the same arguments,
+// through the table it replaces, the same receiver, the same arguments,
 // evaluated the same number of times and released the same number of times.
 // The two paths build their argument lists in different code: the guarded
 // one writes the receiver as a bare pointer and the direct one runs every

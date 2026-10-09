@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # enum(u8): a payload-free enum with a declared fixed representation is a
-# bare one-byte tag — size_of answers 1, structs holding one keep a fixed
+# bare one-byte tag, size_of answers 1, structs holding one keep a fixed
 # inline layout, no tag objects are minted, and both compilers agree on
 # every observable behaviour. The marker is refused on payload variants,
 # generic enums, unknown representations, and more than 256 variants.

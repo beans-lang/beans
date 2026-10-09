@@ -1,16 +1,16 @@
-// TLS — the platform's own stack, wrapping a socket as a filter.
+// TLS: the platform's own stack, wrapping a socket as a filter.
 //
 // A `TlsStream` wraps a connected `TcpStream`: bytes in, bytes out, with the
 // handshake and every record driven by readiness like any other nonblocking
-// IO. The design is filter-first and the backends conform to it — macOS
-// SecureTransport, Linux OpenSSL 3 (loaded at runtime), Windows SChannel —
+// IO. The design is filter-first and the backends conform to it: macOS
+// SecureTransport, Linux OpenSSL 3 (loaded at runtime), Windows SChannel:
 // so a program reads and writes plaintext and never learns which one it is
 // talking to. Certificate chain building and hostname verification always
 // belong to the platform verifier; this package never reimplements them.
 //
 // The stream owns its socket. `read` and `write` speak plaintext and return
 // partial counts exactly like `TcpStream`; an empty `read` means the peer
-// sent close_notify, and a stream cut without one is kind `eof` — the
+// sent close_notify, and a stream cut without one is kind `eof`: the
 // truncation attack, surfaced rather than hidden.
 //
 // **One backend difference is worth knowing.** A macOS `TlsStream` made
@@ -215,7 +215,7 @@ pub unique class TlsStream implements net.ByteStream {
     }
 
     /// Connects trusting `extra_roots` (a PEM bundle) IN ADDITION to the
-    /// system store — for a private CA or a pinned root. An empty bundle is
+    /// system store: for a private CA or a pinned root. An empty bundle is
     /// exactly `connect`. The platform still builds the chain and checks the
     /// hostname; this only widens which anchors are acceptable.
     pub static fn connect_with_roots(host: string, port: int, alpn: string,
@@ -562,7 +562,7 @@ pub unique class TlsStream implements net.ByteStream {
     }
 
     /// Reads up to `max` decrypted bytes. **An empty result means the peer
-    /// sent close_notify** — the clean end of the stream. A stream cut
+    /// sent close_notify**: the clean end of the stream. A stream cut
     /// without close_notify is kind `eof`, never a silent empty read: that
     /// is the truncation attack surfaced.
     pub override fn read(max: int) -> Result<Bytes> {

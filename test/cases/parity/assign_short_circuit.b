@@ -10,7 +10,7 @@
 // backend (beans-lang/beans#110), which is a fault in the unwrap rather than
 // in the target and would make every marker below imbalanced for a reason
 // this case is not about. With Result the markers pin the other half of the
-// claim — that a short-circuited statement leaves nothing behind.
+// claim, that a short-circuited statement leaves nothing behind.
 package main
 
 import std.io

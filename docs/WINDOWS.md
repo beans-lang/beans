@@ -1,7 +1,7 @@
 # Windows targets
 
 Seven Windows host targets across GNU/MinGW, GNullVM/UCRT, and MSVC.
-[spec/SYNTAX.md](../spec/SYNTAX.md) is the contract — what each target refuses and why
+[spec/SYNTAX.md](../spec/SYNTAX.md) is the contract - what each target refuses and why
 lives there. This file is the operational half: which toolchain, which machine
 can run what, and the exact commands.
 
@@ -30,7 +30,7 @@ does not mark its row passed before a real Windows run succeeds.
 **Minimum Windows version: Windows 10.** Windows on ARM has no earlier release
 worth targeting, and the runtime's Win32 calls are the Windows 10 set.
 
-Every machine fact above was measured from the toolchain rather than assumed —
+Every machine fact above was measured from the toolchain rather than assumed -
 the data layout's trailing `S` field for the stack alignment and
 `__atomic_always_lock_free` for the atomic widths. None was copied from a Linux
 or macOS entry. Decimal is implemented by portable limbs on every row.
@@ -51,8 +51,8 @@ export PATH="$(bash test/windows_toolchain.sh):$PATH"
 ```
 
 It picks the archive for the machine it runs on. The CRT is `msvcrt` where
-upstream publishes one — that is what the existing x86-64 target already links
-against — and `ucrt` on an ARM64 or macOS host, where no msvcrt build exists.
+upstream publishes one - that is what the existing x86-64 target already links
+against - and `ucrt` on an ARM64 or macOS host, where no msvcrt build exists.
 Override with `BEANS_LLVM_MINGW_VERSION` or `BEANS_LLVM_MINGW_CRT`;
 `BEANS_TOOLCHAIN_OFFLINE=1` makes a missing toolchain an error rather than a
 download.
@@ -130,15 +130,15 @@ BEANSC=build/windows_native/beansc.exe bash test/windows_hosted.sh
 ```
 
 CI additionally requires the hosted compiler to rebuild itself byte-identically
-for its own architecture — the per-architecture fixed point.
+for its own architecture - the per-architecture fixed point.
 
 ## CI
 
 `.github/workflows/targets.yml`:
 
-- `windows-stage` — GNU/GNullVM staging for x86-64, i686 and ARM64. It stages
+- `windows-stage` - GNU/GNullVM staging for x86-64, i686 and ARM64. It stages
   the differential bundle and cross-builds `beansc.exe` for each ABI.
-- `windows-native` — runs each bundle on a real Windows machine.
+- `windows-native` - runs each bundle on a real Windows machine.
   `windows-latest` carries x86-64 and i686; **`windows-11-arm` carries
   aarch64**, natively. Each job first asserts the native Windows architecture
   matches what it expects through PowerShell's
@@ -146,9 +146,9 @@ for its own architecture — the per-architecture fixed point.
   than Git Bash's emulated process environment, so an ARM64 job that landed on
   an x64 runner fails instead of silently measuring emulation.
   It also requires stage 2 and stage 3 to be byte-identical.
-- `windows-msvc` — repeats the program, hosted compiler and fixed-point gates
+- `windows-msvc` - repeats the program, hosted compiler and fixed-point gates
   for x86-64, i686 and ARM64 with MSVC libraries.
-- `windows-gate` — the Wine loop, unchanged.
+- `windows-gate` - the Wine loop, unchanged.
 
 ## Known gaps
 

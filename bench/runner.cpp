@@ -99,7 +99,7 @@ struct TargetResult {
 // the same emitted IR. The timed binaries never contain these counters, so
 // measuring ownership cannot change a timed result. The counted build is not
 // LTO'd, so it can keep retain/release pairs that the shipping binary folds
-// away — read these as ownership work the compiler emitted, not as the exact
+// away; read these as ownership work the compiler emitted, not the exact
 // count the shipping binary executes.
 struct ArcStats {
     bool present = false;

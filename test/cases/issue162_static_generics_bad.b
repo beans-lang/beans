@@ -3,8 +3,8 @@
 //
 // An owner type parameter a static's signature names is promoted to the
 // static's own and bound at the call. One that only the *body* names has
-// nothing to bind it — no argument carries it, the result does not mention it,
-// and a static has no receiver — so every instantiation would still hold a
+// nothing to bind it, no argument carries it, the result does not mention it,
+// and a static has no receiver, so every instantiation would still hold a
 // bare `T`. That shape used to check clean, run in the interpreter (printing
 // the literal string "T" for `type_of(T)`) and die in a native build with
 // "LLVM emitter cannot form class layout 'main.Holder<T>'". It is refused at
@@ -44,7 +44,7 @@ pub class Holder<T> {
         return make().len()
     }
 
-    // T only in the body, reached through reflection — this one used to
+    // T only in the body, reached through reflection, this one used to
     // print the literal "T" on both backends
     pub static fn describe() -> string {
         return type_of(T).qualified_name()
@@ -59,7 +59,7 @@ pub class Holder<T> {
     }
 
     // T only in the body, as an explicit type argument handed to another
-    // static — the one route that reaches the type through a call's argument
+    // static, the one route that reaches the type through a call's argument
     // list and not through any binding's declared type
     pub static fn arity<U>() -> int { return 1 }
 

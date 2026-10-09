@@ -1,4 +1,4 @@
-# Python interoperability — design
+# Python interoperability - design
 
 Status: **proposal, nothing implemented**. Written against language contract
 1.0 and the pot model in [`spec/SYNTAX.md`](../spec/SYNTAX.md).
@@ -731,39 +731,39 @@ Each stage passes focused tests and both compiler implementations before the
 next stage. The dynamic bridge comes before broad binding generation so no
 package is blocked solely by incomplete stubs.
 
-- [ ] Stage 0 — language and file contracts
+- [ ] Stage 0 - language and file contracts
   - [ ] Reserve `py` and specify supported dynamic-import behavior.
   - [ ] Specify `beans.pot` Python rows and `beans.lock` version 2.
   - [ ] Specify `py.PythonError`, `py.Arg`, handle ownership, callback capture checks,
         sync/async naming, and target rejection rules.
-- [ ] Stage 1 — resolver, runtime, and environment store
+- [ ] Stage 1 - resolver, runtime, and environment store
   - [ ] Resolve every declared target with markers, extras, indexes, and hashes.
   - [ ] Fetch a loadable CPython artifact and compatible wheels.
   - [ ] Install complete immutable environments and implement locked/offline
         verification.
-- [ ] Stage 2 — complete dynamic bridge
+- [ ] Stage 2 - complete dynamic bridge
   - [ ] Startup/shutdown, per-thread CPython states, GIL-safe handles, immediate
         DECREF maintenance, exceptions, attributes, items, calls, iteration,
         context managers, and checked conversions.
   - [ ] Add asyncio loop, blocking worker pool, cancellation behavior, and
         `py.SharedValue`.
-- [ ] Stage 3 — binding generator
+- [ ] Stage 3 - binding generator
   - [ ] Parse modules, classes, protocols, overloads, generics, unions,
         literals, defaults, `*args`, `**kwargs`, properties, generators,
         callables, and awaitables.
   - [ ] Add deterministic name mapping, runtime result checks, overlays, stub
         packages, typeshed, and binding cache.
-- [ ] Stage 4 — callbacks and Python async
+- [ ] Stage 4 - callbacks and Python async
   - [ ] Generate typed callback objects and dynamic callbacks.
   - [ ] Verify retained, reentrant, cross-thread, failing, and async cases.
-- [ ] Stage 5 — package coverage and data paths
+- [ ] Stage 5 - package coverage and data paths
   - [ ] NumPy, Pillow, requests, pandas, and asyncio pilots.
   - [ ] Exact buffer fast paths, strided conversion, and conversion benchmarks.
-- [ ] Stage 6 — sdists and release bundles
+- [ ] Stage 6 - sdists and release bundles
   - [ ] Isolated, pinned sdist builds with locked output wheels.
   - [ ] Relocatable target bundles, platform loader handling, licenses, and
         clean-machine tests.
-- [ ] Stage 7 — support matrix and hardening
+- [ ] Stage 7 - support matrix and hardening
   - [ ] Publish runtime, wheel-tag, OS, libc, CPU, and external dependency
         support.
   - [ ] Run the full correctness, performance, offline, security, and shutdown

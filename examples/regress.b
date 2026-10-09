@@ -1,10 +1,10 @@
-// regress.b — pins the bugs fixed in the stdlib-audit pass. Every line here
+// Regression cases for bugs fixed during the standard-library audit. Every line here
 // diverged between `beansc run` and the native binary, or crashed, before the
 // fix. Kept in examples/ so the run-vs-native diff catches any regression.
 import std.io
 import std.fmt
 
-// C4: structural equality for enums, Bytes, decimals, floats — native used to
+// C4: structural equality for enums, Bytes, decimals, and floats. Native used to
 // compare these by pointer identity (contains/index_of/map-key/==)
 enum ValueBox { of(v: int), empty }
 
@@ -56,7 +56,7 @@ fn nul_checks() {
     io.println("{s.len()} {s == "a"} {s.contains("b")} {s.last(1)}")
 }
 
-// C6: a defer runs on frame exit, after the body, newest first — and used to
+// C6: defer runs on frame exit after the body, newest first. It used to
 // run on already-freed locals
 fn defer_checks() {
     let tag: string = "kept"

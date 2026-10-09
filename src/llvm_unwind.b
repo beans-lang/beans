@@ -7,8 +7,8 @@ package main
 // entry runs its defers newest-first and drops what it owns, exactly as a
 // return would. This file is what makes that true in the native backend.
 //
-// The mechanism is the platform's zero-cost exception unwinder — the same one
-// C++ and Rust use — and "zero-cost" is the reason it was chosen over a
+// The mechanism is the platform's zero-cost exception unwinder: the same one
+// C++ and Rust use, and "zero-cost" is the reason it was chosen over a
 // registered cleanup chain. Nothing at all is executed on the path where no
 // panic happens: a `call` becomes an `invoke`, which is the same instruction
 // with a second successor the hardware never visits, and the cleanup lives in
@@ -20,7 +20,7 @@ package main
 //  1. Every call that could reach a panic becomes an `invoke` whose exception
 //     edge is the function's one cleanup pad. `unwind_chunk` rewrites the
 //     emitted text rather than each of the several hundred places that print
-//     a `call`, so no site can be forgotten — the property that matters most
+//     a `call`, so no site can be forgotten: the property that matters most
 //     here, because a forgotten site is a frame that silently keeps leaking.
 //  2. `unwind_pad_block` is that pad: a `landingpad ... cleanup`, the same
 //     `run_defers` the return path emits, a drop for every owned local, and
@@ -33,7 +33,7 @@ package main
 // scope exit knows statically that its local is live; a drop reached from an
 // arbitrary instruction does not, so MirLowerer.arm_unwind_flags pins the
 // runtime `.live` flag on for every owned local of a program that can unwind,
-// and the pad reads it. Under-reading leaks; over-reading double-frees — the
+// and the pad reads it. Under-reading leaks; over-reading double-frees: the
 // flag is what makes neither happen.
 //
 // None of this is emitted unless the program actually brews (MirProgram
@@ -51,7 +51,7 @@ partial class LlvmTextEmitter {
     // The personality the pads name. __gcc_personality_v0 is the C
     // cleanup-only personality that ships with the compiler runtime on every
     // target supports_unwind() allows; it never claims a handler, which is
-    // exactly right — the runtime drives the walk with _Unwind_ForcedUnwind
+    // exactly right: the runtime drives the walk with _Unwind_ForcedUnwind
     // and the fiber entry is what stops it.
     fn unwind_personality() -> string {
         if !self.unwind_enabled() { return "" }
@@ -119,13 +119,13 @@ partial class LlvmTextEmitter {
     // cleanup a return runs, in the order the tree interpreter walks out of
     // the frame (spec/CONCURRENCY.md):
     //
-    //  1. what the failing statement was holding — the in-flight temporaries
-    //     and the locals of the nested scopes the failure sat inside — newest
+    //  1. what the failing statement was holding: the in-flight temporaries
+    //     and the locals of the nested scopes the failure sat inside: newest
     //     first, the way the walker's expression frames and block scopes pop;
     //  2. the defers, newest first, each at most once;
     //  3. the function's own locals, newest first;
     //  4. the value a `return` was carrying when a defer or a deinit on the
-    //     way out panicked — the walker hands it back last;
+    //     way out panicked: the walker hands it back last;
     //  5. the cells of the captured trivial locals.
     //
     // Every unit is guarded by its own flag: a temporary whose reference
@@ -136,11 +136,7 @@ partial class LlvmTextEmitter {
         function: MirFunction) -> string {
         let id: int = self.fresh()
         let token: string = "%eh.lp{id}"
-        // One line, never a continuation. The debug pass appends `, !dbg !N`
-        // to every line it does not recognise as a label, so a wrapped
-        // `landingpad` took one in the middle of itself: `--debug` on any
-        // program that could unwind died in the LLVM parser at "cleanup, !dbg"
-        // — every brewing program, since the pads landed.
+        // Keep the landingpad on one line because debug metadata is appended to each instruction line.
         var output: string =
             "{self.unwind_pad}:\n  {token} = landingpad \{ ptr, i32 \} cleanup\n"
         if self.unwind_cancel_edges.len() != 0 {
@@ -188,9 +184,7 @@ partial class LlvmTextEmitter {
         return "{output}  resume \{ ptr, i32 \} {token}\n"
     }
 
-    // Request every child's cancellation before any defer can park joining
-    // one of them. The local live flags are already the ownership source of
-    // truth; joined handles and drained groups make these requests no-ops.
+    // Request cancellation for live children before deferred joins can park; joined handles and drained groups are harmless.
     fn unwind_cancel_children(function: MirFunction) -> string {
         var body: string = ""
         var index: int = function.locals.len()
@@ -231,9 +225,7 @@ partial class LlvmTextEmitter {
         return "  %cancel.status{id} = call i32 @beans_fiber_cancelling()\n  %cancel.active{id} = icmp ne i32 %cancel.status{id}, 0\n  br i1 %cancel.active{id}, label %cancel.children{id}, label %cancel.done{id}\ncancel.children{id}:\n{body}  br label %cancel.done{id}\ncancel.done{id}:\n"
     }
 
-    // A local's drop as the pad emits it: 2 is "the flag's value is not
-    // known here", which is the truth at an arbitrary failure point and the
-    // only shape that reads the flag.
+    // State 2 means ownership is unknown at this failure point, so the drop must read the live flag.
     fn unwind_pad_drop_local(function: MirFunction,
                              local: MirLocal) -> string {
         let drop: MirInstruction =
@@ -356,7 +348,7 @@ partial class LlvmTextEmitter {
     // unwind that merely passes a finished object still standing in its
     // temporary releases it with its deinit intact. And the count must be
     // one: an initializer may hand `self` out once every field is assigned,
-    // and that object survives this release — disarming it there would
+    // and that object survives this release: disarming it there would
     // silence a deinit the surviving owner is entitled to. A count of one
     // means this frame holds the only reference and the object dies here.
     //
@@ -425,8 +417,8 @@ partial class LlvmTextEmitter {
 
     // ---- in-flight owned temporaries ----------------------------------
     //
-    // A MIR value that holds an owned reference — the result of `new`, a
-    // call, a literal, a retain, the collection an iterator took — and is
+    // A MIR value that holds an owned reference: the result of `new`, a
+    // call, a literal, a retain, the collection an iterator took, and is
     // still live when a later instruction panics belongs to no local: the
     // plan releases it after its last use, and a pad that only knows locals
     // leaks it. The interpreter releases such a value as its expression
@@ -434,13 +426,13 @@ partial class LlvmTextEmitter {
     //
     // The rule: every such value is stored beside the locals at its
     // definition, with a flag; the flag clears when the reference changes
-    // hands — at the release the plan scheduled, or when a consumer takes
-    // it — and the pad releases whatever is still flagged.
+    // hands: at the release the plan scheduled, or when a consumer takes
+    // it, and the pad releases whatever is still flagged.
     //
     // When the hand-off happens is what keeps a value from being released
     // twice. A callee that is emitted Beans code owns a moved argument from
     // its entry (its own frame drops it if it panics), and a store into a
-    // local or a field is the transfer itself — those clear the flag before
+    // local or a field is the transfer itself: those clear the flag before
     // the instruction. A runtime call that can panic does so before it takes
     // the value (argument validation), so its consumer clears after: a panic
     // in between leaves the value flagged and the pad releases it, as the
@@ -461,14 +453,14 @@ partial class LlvmTextEmitter {
         }
     }
 
-    // Does this consumer own its consumed operands from its entry — so the
-    // temporary's flag clears before the instruction — or does it validate
+    // Does this consumer own its consumed operands from its entry, so the
+    // temporary's flag clears before the instruction, or does it validate
     // before it takes them, so the flag clears after?
     //
     // The line is drawn by what can go wrong between the two points. A
     // consumer that takes the value and can then panic, or run Beans code
     // that panics, must clear before: a flag still set past the take would
-    // have the pad release a value the consumer already owns — a double
+    // have the pad release a value the consumer already owns: a double
     // release. A consumer that can refuse the value with a panic before it
     // takes it must clear after: a flag already clear at that panic would
     // leak the value the interpreter releases. Clearing before is the safe
@@ -503,7 +495,7 @@ partial class LlvmTextEmitter {
             // clears the flag itself, before the old element's release.
             // map[k] = v is NOT on this list: the store must stand when
             // the old value's deinit panics (the interpreter's rule), so
-            // the runtime stores first and releases the old value last —
+            // the runtime stores first and releases the old value last:
             // a panic after the take. The operands ride the leak-safe
             // clear-before default instead; only a growth failure before
             // the store can strand them, abandoned like the panicking
@@ -536,7 +528,7 @@ partial class LlvmTextEmitter {
             // first (map[k] = v above). `insert` because a declined insert
             // releases both itself, and that release runs a deinit: with the
             // flag still set past it, the pad released the value the entry
-            // had already destroyed — invisible only while a panicking
+            // had already destroyed: invisible only while a panicking
             // deinit left its object abandoned, and a use-after-free the
             // moment that object's shell started coming back (issue #81).
             // The entry is complete about it in exchange: whatever it does
@@ -553,7 +545,7 @@ partial class LlvmTextEmitter {
             // beans_box_set follows map[k] = v above: the store stands when
             // the old value's deinit panics (issue #79, the interpreter's
             // rule), so the runtime stores first and releases the old value
-            // last — a panic after the take, which is clear-before. It used
+            // last: a panic after the take, which is clear-before. It used
             // to release first, and a flag still set past that store had the
             // pad release a value the box already owned.
             return false
@@ -606,7 +598,7 @@ partial class LlvmTextEmitter {
     // emitted, because whether the frame gets a pad depends on it. A value
     // is a candidate when an instruction that can panic sits between its
     // definition and its death, when its consumer can panic before taking
-    // it, or — conservatively — when it leaves its block at all. Naming a
+    // it, or (conservatively) when it leaves its block at all. Naming a
     // value that turns out never to need its slot costs a store or two.
     fn unwind_scan_temps(function: MirFunction) {
         for block: MirBlock in function.blocks {
@@ -695,8 +687,8 @@ partial class LlvmTextEmitter {
     }
 
     // The slot of a candidate, made on first mention. A clear can be
-    // emitted before the definition — the plan releases a value on the edge
-    // of a block that precedes its own — and the flag starts clear, so that
+    // emitted before the definition: the plan releases a value on the edge
+    // of a block that precedes its own, and the flag starts clear, so that
     // order is a harmless store.
     fn unwind_temp_slot_of(function: MirFunction,
                            id: int) -> string {
@@ -772,7 +764,7 @@ partial class LlvmTextEmitter {
                 none => {
                     // A wanted candidate with no rendered value would get
                     // no slot and no flag, and the pad would silently leak
-                    // it — the same silent skip unwind_close exists to
+                    // it: the same silent skip unwind_close exists to
                     // forbid on the clear side. Refuse the build instead.
                     self.fail_function(
                         function,
@@ -798,8 +790,8 @@ partial class LlvmTextEmitter {
     }
 
     // emit_new's half of the rule: the fresh object goes into its slot
-    // before its init runs, so a panic inside init releases it — deinit and
-    // fields — the way the interpreter does. A stack object owns no count.
+    // before its init runs, so a panic inside init releases it: deinit and
+    // fields: the way the interpreter does. A stack object owns no count.
     fn unwind_temp_define_new(function: MirFunction,
                               instruction: MirInstruction,
                               result: string,

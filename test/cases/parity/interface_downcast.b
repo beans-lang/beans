@@ -1,7 +1,7 @@
 // `as?` with an interface target passed the checker and then the two backends
 // disagreed in the two worst ways at once: the native emitter refused to
-// build it — "LLVM emitter does not support as? to 'main.Named' yet", a
-// message about the emitter for a program check had accepted — and the tree
+// build it, "LLVM emitter does not support as? to 'main.Named' yet", a
+// message about the emitter for a program check had accepted, and the tree
 // interpreter answered `none` for a downcast that holds, silently, because
 // its instance test walked `extends` and never `implements` (#195).
 //
@@ -9,7 +9,7 @@
 // because everything answers false is not possible: each interface is
 // reached and missed by at least two classes, through `implements` directly,
 // through a base class, through a grandparent, and through an interface's
-// own `extends` chain. `Unused` is implemented by nobody — its whole table
+// own `extends` chain. `Unused` is implemented by nobody, its whole table
 // is zero, which is the row a wrong table would most easily get right by
 // accident.
 //

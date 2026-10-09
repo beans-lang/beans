@@ -17,7 +17,7 @@ partial class LlvmTextEmitter {
             self.pointer_mask_at(type, 0)
         let llvm: string = self.type_text(type)
         // A zero mask means this value holds no references. A negative one
-        // means the layout is beyond what a static mask can spell — the
+        // means the layout is beyond what a static mask can spell: the
         // references are still there, so emit_cc_publish covers the store
         // instead of dropping the barrier.
         if ptr_mask <= 0 || llvm == "" { return "" }
@@ -69,7 +69,7 @@ partial class LlvmTextEmitter {
 
     // Does this local carry a runtime `.live` flag beside its slot? MIR
     // clears live_flag_used once its fixpoint knows the flag's value at
-    // every drop and every assignment, and then nobody loads it — so the
+    // every drop and every assignment, and then nobody loads it, so the
     // alloca and all of its stores stay out of the module. Every site
     // that writes the flag asks here first.
     fn live_flag_slot(local: MirLocal) -> bool {
@@ -79,7 +79,7 @@ partial class LlvmTextEmitter {
 
     // Which refs the cycle collector should consider: containers and user
     // objects can point back at themselves, leaf immutables cannot. Option
-    // and Result stay capable like production's enum_ arm — an over-wide
+    // and Result stay capable like production's enum_ arm: an over-wide
     // candidate set only costs a scan, a narrow one leaks cycles.
     fn cycle_capable_reference(type: HirType) -> bool {
         let name: string =
@@ -186,8 +186,8 @@ partial class LlvmTextEmitter {
     // the 16-byte BRes/BOpt aggregate: whether that rides in a register pair or an
     // sret pointer is a per-target C-ABI fact the compiler must not encode (that
     // guess produced broken Win64-sret IR on ARM64 Windows). Instead <symbol>_out
-    // returns the raw i64 value and writes the second word — the error pointer for
-    // a Result, the has/found flag for an Option — through an output pointer that
+    // returns the raw i64 value and writes the second word: the error pointer for
+    // a Result, the has/found flag for an Option: through an output pointer that
     // is always the last argument. We rebuild {pair} locally so every caller
     // downstream is unchanged; the aggregate never crosses into C. The slot is
     // hoisted with the other allocas so a call in a loop does not grow the stack.
@@ -835,7 +835,7 @@ partial class LlvmTextEmitter {
             // this read, so its reference moves to the retain's consumer.
             // Clearing the live flag makes the guarded scope drop skip the
             // release this retain would otherwise have to balance. The
-            // store is only valid when the flag alloca exists — the same
+            // store is only valid when the flag alloca exists: the same
             // conditions the prologue uses. Otherwise fall through to a
             // plain retain: for types without owned references both the
             // retain and the scope release are no-ops anyway.
@@ -876,7 +876,7 @@ partial class LlvmTextEmitter {
         }
         if self.cell_local(local) {
             // the frame owns the cell, not the value: closures sharing
-            // the cell keep it — and the value — alive past this drop
+            // the cell keep it (and the value) alive past this drop
             let temporary: int = self.fresh()
             return "  %drop.cell{temporary} = load ptr, ptr %l{local.id}\n  call void @beans_release(ptr %drop.cell{temporary})\n  store ptr null, ptr %l{local.id}\n"
         }
@@ -892,12 +892,7 @@ partial class LlvmTextEmitter {
             self.emit_arc_value(
                 local.type, dropped, false)
         if local.needs_live_flag {
-            // What MIR's fixpoint knows about the flag on the way in.
-            // 0: the slot's reference already left — a move or an
-            // ownership transfer took it — so no release is owed and
-            // the drop is nothing at all. 1: it is held on every path,
-            // so release straight out. 2 is the only case worth a load,
-            // a branch and two extra blocks.
+            // `live_state` is 0 after ownership leaves, 1 when every path owns the value, and 2 when code generation needs a runtime ownership check.
             if instruction.live_state == 0 {
                 return ""
             }
@@ -907,7 +902,7 @@ partial class LlvmTextEmitter {
                 }
                 // The flag clears before the release, not after: a deinit
                 // run by the release can panic (contained), and the cleanup
-                // pad then reads this flag — a set flag would release the
+                // pad then reads this flag: a set flag would release the
                 // object a second time while it is still being destroyed.
                 return "  {dropped} = load {type}, ptr %l{local.id}\n  store i1 false, ptr %l{local.id}.live\n{release}"
             }
@@ -1097,7 +1092,7 @@ partial class LlvmTextEmitter {
     }
 
     // MIR only drops owned locals, but a captured trivial local still
-    // owns its heap cell — release every frame-owned cell on the way
+    // owns its heap cell: release every frame-owned cell on the way
     // out. Cells hold null before init and after drop, and a returned
     // borrow was already retained, so this can never double-free.
     fn release_function_cells(

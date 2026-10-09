@@ -2,7 +2,7 @@
 // per-fiber guarantee, so it has to hold at storm scale, not just for one
 // moody child. Waves of TaskGroup fleets where a third of the children
 // panic, lone handles joined one by one, a gate storm that wakes sixty
-// fibers at once, and senders panicking on a closed channel — every
+// fibers at once, and senders panicking on a closed channel, every
 // failure arrives as a value, the program stands to print "storm stood",
 // and both engines print identical bytes, delivery order included.
 import std.io
@@ -100,7 +100,7 @@ fn main() {
         }
     }
 
-    // closed-channel storm: capacity four, twenty senders — four sends
+    // closed-channel storm: capacity four, twenty senders, four sends
     // land in the buffer and finish, sixteen park in the send line. The
     // first next() parks this fiber, which is what lets the senders run;
     // after the four landings the close wakes the parked sixteen into

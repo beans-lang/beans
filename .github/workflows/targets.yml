@@ -5,7 +5,7 @@ name: Cross targets
 # use the Docker image for lld, bare-metal libgcc and qemu-system.
 #
 # It is not on every push on purpose. The image is large and slow to build, and the
-# code these tests cover changes rarely — but leaving them to run only on one
+# code these tests cover changes rarely, but leaving them to run only on one
 # developer's laptop would mean the WebAssembly and embedded claims had no CI behind
 # them at all. `test/wasm.sh` and `test/embedded.sh` skip themselves when the image
 # is missing, which is exactly why their absence would otherwise be silent.
@@ -279,7 +279,7 @@ jobs:
             -t beans-linux-test:linux-arm64 .
 
       # The tag above is the one both scripts look for. It says arm64 because that is
-      # the developer default; here the image is amd64 and the scripts do not care —
+      # the developer default; here the image is amd64 and the scripts do not care.
       # they only ever ask the container to compile and to run an emulator.
       # Both scripts skip themselves when the toolchain is missing, and a skip is a
       # pass as far as the shell is concerned. The log is checked for that, because a
@@ -309,7 +309,7 @@ jobs:
 
   # Windows is its own job: the MinGW + Wine image is separate from the Linux
   # cross image, and on this amd64 runner Wine executes the PE binaries at full
-  # speed — the same gate a developer runs emulated through
+  # speed: the same gate a developer runs emulated through
   # `test/windows_docker.sh`. Wine is the fast loop, not the final word; the
   # two jobs after this one run the same binaries on genuine Windows.
   windows-gate:
@@ -331,11 +331,11 @@ jobs:
   # The native pair: an ubuntu job cross-compiles every eligible example and
   # records the interpreter's verdicts; a real Windows runner then executes
   # the binaries and diffs. Until beansc itself runs on Windows this split is
-  # the strongest possible claim — the machine that runs the code is genuine
+  # the strongest possible claim: the machine that runs the code is genuine
   # Windows, and the interpreter stays the referee.
   # One staging job per Windows host target. The toolchain is LLVM-MinGW rather
   # than the distro's mingw-w64, because Debian and Ubuntu ship
-  # no aarch64 MinGW at all — Windows on ARM cannot be linked without it. Using
+  # no aarch64 MinGW at all. Windows on ARM cannot be linked without it. Using
   # it for every architecture and for both MSVCRT GNU and UCRT gnullvm.
   windows-stage:
     name: stage windows binaries (${{ matrix.id }})
@@ -501,7 +501,7 @@ jobs:
           bash test/windows_native_run.sh build/windows_native ${{ matrix.arch }}
 
       # The hosted gate needs a clang that targets the -gnu environment, and a
-      # matching CRT. Chocolatey's llvm+mingw pair only ever covered x86-64 —
+      # matching CRT. Chocolatey's llvm+mingw pair only covered x86-64.
       # there is no aarch64 MinGW there, and the sysroot probe below was written
       # around an x86_64-w64-mingw32 directory that does not exist on the other
       # two architectures. LLVM-MinGW carries clang, lld and all three CRTs in
@@ -534,11 +534,11 @@ jobs:
       # The final claim: beansc.exe itself, on genuine Windows, running the
       # same interpret-compile-diff loop make test runs everywhere else. A
       # skip here means the runner lost its toolchain, not that the claim
-      # holds — fail loudly.
+      # holds; fail loudly.
       #
       # This now runs on all three architectures. On windows-11-arm it is an
       # ARM64 compiler compiling and interpreting on an ARM64 machine, with no
-      # emulation anywhere in the chain — the runner check above already
+      # emulation anywhere in the chain. The runner check above already
       # refused to continue if the host were x64.
       - name: beansc.exe runs its own differential loop
         if: matrix.hosted
@@ -559,7 +559,7 @@ jobs:
       # the manifest diff above, which is the cross-built half. This step is
       # the native half: beansc.exe compiles each case *on this machine*,
       # building yyjson, pugixml and simdutf with the Windows toolchain, and
-      # runs the result against the same golden. A skip is a failure — the
+      # runs the result against the same golden. A skip is a failure; the
       # whole point is that Windows is not taken on trust.
       - name: std.encoding builds and runs natively
         if: matrix.hosted
@@ -725,7 +725,7 @@ jobs:
       # Everything above drives the msvc *target* from a compiler built with
       # LLVM-MinGW, so it says nothing about a compiler built with MSVC itself.
       # This step used to stop at BEANS_SOURCE_SMOKE_ONLY=1, which exits just
-      # before "building self-host stages 1 to 3" — so the one thing unique to
+      # before "building self-host stages 1 to 3", so the one thing unique to
       # the MSVC host rebuilding the compiler was never run until a release
       # tag did it in release.yml. That is how a compiler emitting corrupt IR
       # under MSVC reached v0.1.0 with this workflow green. Run the same

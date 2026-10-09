@@ -18,11 +18,11 @@ no C++ stage 0 any more: a released compiler builds the next one.
 What a second implementation used to provide is now covered by three gates that
 need no second compiler:
 
-- `make test-fixpoint` — the compiler must build a compiler byte-identical to
+- `make test-fixpoint` - the compiler must build a compiler byte-identical to
   itself. Stage 2 and stage 3 must match.
-- `make test-self-host` — the tree interpreter and the native backend must
+- `make test-self-host` - the tree interpreter and the native backend must
   agree on the same programs, output and panics alike.
-- `make fuzz-differential-smoke` — generated typed programs, checked against an
+- `make fuzz-differential-smoke` - generated typed programs, checked against an
   independent evaluator written in Python rather than against another compiler.
 
 ## First build
@@ -39,7 +39,7 @@ Self-hosting sets a rule that catches people out: **`src/` can only use language
 features the compiler building it already has.**
 
 `src/` currently uses `partial class`. A `beansc` older than that cannot build
-this tree. `make` checks before it starts — it compiles `tools/bootstrap_probe.b`
+this tree. `make` checks before it starts - it compiles `tools/bootstrap_probe.b`
 first and stops with one line if the bootstrap is too old, rather than failing a
 thousand lines deep in `src/llvm.b`.
 
@@ -60,7 +60,7 @@ A feature the compiler does not use itself needs none of this.
 
 ## Iterating
 
-Fastest loop — run the compiler under its own interpreter, no rebuild at all
+Fastest loop - run the compiler under its own interpreter, no rebuild at all
 (~1s vs ~27s):
 
 ```bash
@@ -140,15 +140,15 @@ make fuzz-oop            # generated OOP semantics
   it means `src/` uses something that compiler does not have.
 - **macOS signature cache.** Never `cp` over an existing compiler binary; `rm -f`
   first. The kernel SIGKILLs the new binary on exec with no message. The Makefile
-  already does this — match it in any script you add.
+  already does this - match it in any script you add.
 - **`make clean` wipes all of `build/`,** including the built compiler and the
   package cache.
 
 ## Layout
 
-- `src/` — the self-hosted compiler, 82 `.b` files
-- `VERSION` — compiler, language and runtime-ABI versions
-- `runtime/` — portable C runtime
-- `stdlib/std/` — shipped standard library
-- `test/` — the gate scripts each `make test-*` target runs
-- `tools/` — build, packaging and fuzz-generator scripts
+- `src/` - the self-hosted compiler, 82 `.b` files
+- `VERSION` - compiler, language and runtime-ABI versions
+- `runtime/` - portable C runtime
+- `stdlib/std/` - shipped standard library
+- `test/` - the gate scripts each `make test-*` target runs
+- `tools/` - build, packaging and fuzz-generator scripts

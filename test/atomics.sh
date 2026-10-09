@@ -59,7 +59,7 @@ echo "checking wait and notify"
 # not spin forever and not miss the wakeup.
 grep -q '^worker saw 9$' "$tmp/interp"
 # A bounded wait on a value that never changes has to report the timeout rather
-# than block. If this ever hangs, the test hangs — so the budget is 2ms and the
+# than block. If this ever hangs, the test hangs, so the budget is 2ms and the
 # assertion is that it came back false.
 grep -q '^timed out true$' "$tmp/interp"
 # Already a different value: nothing to wait for, so it returns immediately.
@@ -70,7 +70,7 @@ grep -q '^woke 0 and 0$' "$tmp/interp"
 echo "checking every order reaches the instruction"
 ./build/beansc build examples/atomics.b --emit ir >/dev/null
 # LLVM spells relaxed "monotonic". If any of these were missing the operation
-# would still run, just with a stronger or weaker barrier than asked for — which
+# would still run, just with a stronger or weaker barrier than asked for, which
 # is why this greps the instruction and not the output.
 grep -q 'atomicrmw add ptr .*, i64 1 monotonic' build/atomics.ll
 grep -q 'store atomic i8 1, ptr .* release' build/atomics.ll
@@ -90,7 +90,7 @@ grep -q 'call i64 @beans_atomic_wait(ptr .*, i64 32, i64 3, i64 2000000, i64 1, 
 grep -q 'beans_ordered_load(address, width, order)' runtime/beans_rt.c
 grep -q 'call i64 @beans_atomic_notify(ptr .*, i64 32, i64 1)' build/atomics.ll
 grep -q 'call i64 @beans_atomic_notify(ptr .*, i64 32, i64 0)' build/atomics.ll
-# Narrow cells use their own width, not a widened one — a u8 counter that wrapped
+# Narrow cells use their own width, not a widened one, a u8 counter that wrapped
 # at 2^64 instead of 2^8 would be a different program.
 grep -q 'atomicrmw add ptr .*, i8 10 monotonic' build/atomics.ll
 grep -q 'atomicrmw add ptr .*, i16 10 monotonic' build/atomics.ll
@@ -125,14 +125,14 @@ if grep -q 'WARNING: ThreadSanitizer' "$tmp/tsan.err"; then
     exit 1
 fi
 # ThreadSanitizer needs personality(ADDR_NO_RANDOMIZE) to disable ASLR before it can
-# map its shadow memory, and qemu-user — which is what runs an x86-64 container on an
-# arm64 host — does not emulate that syscall. TSan then aborts during start-up with
+# map its shadow memory, and qemu-user, which is what runs an x86-64 container on an
+# arm64 host, does not emulate that syscall. TSan then aborts during start-up with
 # "CHECK failed", before a single line of the program runs.
 #
 # That is a property of the emulator, not of the program, so it is reported and skipped
 # rather than failed. The distinction is exact and worth keeping: a real data race
 # prints "WARNING: ThreadSanitizer", which is checked *first* and always fails. Native
-# x86-64 CI runs TSan for real, so the coverage is not lost — only unavailable here.
+# x86-64 CI runs TSan for real, so the coverage is not lost, only unavailable here.
 if grep -q 'ThreadSanitizer: CHECK failed' "$tmp/tsan.err"; then
     echo "note: ThreadSanitizer cannot start in this environment (emulated syscall);" \
          "the atomics TSan run was skipped" >&2

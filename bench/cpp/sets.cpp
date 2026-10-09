@@ -6,7 +6,7 @@
 #include <unordered_set>
 
 // Twin for bench/sets.b: std::unordered_set with the same operation stream and
-// the same checksum. BEANS_MATCHED changes nothing here on purpose — a
+// the same checksum. BEANS_MATCHED changes nothing here; a
 // membership set is probed with count()/insert()/erase(), which have no
 // unchecked variant a tuned build could use and a safe build would give up, the
 // way vector::operator[] versus at() differ. Beans' Set does no element
@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
         a.insert(scatter(i));
         b.insert(scatter(i + n / 8));
     }
-    // union: clone the larger, insert the smaller — the same shape Set uses.
+    // union: clone the larger, insert the smaller, matching Set.
     std::unordered_set<int64_t> u(a.size() >= b.size() ? a : b);
     {
         const auto& small = a.size() >= b.size() ? b : a;

@@ -2,7 +2,7 @@
 //
 // `f64` and `float` are one type spelled two ways, so a `?` between them
 // must pass the box straight through. `Result<int>` and `Result<int, Error>`
-// are one type to the *checker* — the defaulted error is `Error` — but the
+// are one type to the *checker*, the defaulted error is `Error`, but the
 // `?` lowering builds a fresh error box for the second, so the emitter must
 // not treat them as one representation. hir_types_equal says they are;
 // hir_types_identical, which the emitter uses, says they are not.

@@ -1,6 +1,6 @@
 // The netpoller (spec/CONCURRENCY.md, F3): net waits park the calling
 // fiber in its worker's kernel poller instead of blocking the thread.
-// Both ends of a TCP conversation run as fibers of ONE worker — before
+// Both ends of a TCP conversation run as fibers of ONE worker, before
 // the netpoller, the server's accept would have blocked the only thread
 // and no client could ever reach it. Ports are system-chosen, so every
 // printed line is a derived fact; the facts are deterministic and the
@@ -37,7 +37,7 @@ fn talk(port: int, rounds: int) -> Result<int> {
 }
 
 // The keep-alive shape: one connection, two spaced messages. The gap makes
-// the server's second read_into park in the netpoller — the exact wait a
+// the server's second read_into park in the netpoller, the exact wait a
 // per-connection server fiber lives on between requests, and the one a raw
 // would-block bridge once answered with an instant timeout instead.
 fn hold_serve(listener: net.TcpListener) -> Result<int> {

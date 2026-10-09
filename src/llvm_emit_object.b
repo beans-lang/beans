@@ -174,7 +174,7 @@ partial class LlvmTextEmitter {
     // exist before its descriptor names it. A direct call raises the
     // instantiation itself, but an interface call resolves through the
     // vtable, so nothing else would raise a method that is only ever
-    // called that way — and the row would emit as null.
+    // called that way, and the row would emit as null.
     fn instantiate_dispatch_methods(
         instruction: MirInstruction,
         layout: LlvmClassLayout,
@@ -192,7 +192,7 @@ partial class LlvmTextEmitter {
                 continue
             }
             // A method with generics of its own binds them at the call
-            // site, not here — the class's arguments alone would leave
+            // site, not here: the class's arguments alone would leave
             // them open. Such a method never fills a vtable row anyway.
             if function.generics.len() != 0 { continue }
             let method: string =
@@ -213,7 +213,7 @@ partial class LlvmTextEmitter {
             // selector the template answers. Register them under the
             // instance key, the way the base-method and interface-default
             // raises already do, so the descriptor walk can ask whether a
-            // symbol fills a slot instead of trusting the name alone —
+            // symbol fills a slot instead of trusting the name alone:
             // which is what lets one walk serve a generic class and a
             // plain one.
             for slot: string in function.dispatch_slots {
@@ -341,7 +341,7 @@ partial class LlvmTextEmitter {
 
     // A base written `extends Base<int>` compiles its methods as templates,
     // the way every owner-generic method does, so a class inheriting one
-    // has no symbol to call — through the table or through a devirtualized
+    // has no symbol to call: through the table or through a devirtualized
     // call. Raise each inherited method under the inheriting class's own
     // name with the arguments the `extends` pinned, nearest link first so
     // an override closer to the leaf wins, and register its selectors so
@@ -392,13 +392,13 @@ partial class LlvmTextEmitter {
                 var key: string = "{instance}.{method}"
                 // `deinit` needs care. A descriptor names one release symbol
                 // per class, found by walking the chain for `{owner}.deinit`,
-                // and a generic base is a template with nothing at that name —
+                // and a generic base is a template with nothing at that name:
                 // the row emitted null and dropping the subclass jumped to
                 // address zero. The whole object's release row is the nearest
                 // *declared* deinit, and each body chains into the next declared
                 // one up the chain. So a generic base's deinit is raised under
                 // the instance's plain name only when no class from this base
-                // down to the instance declares one — then the base body *is*
+                // down to the instance declares one: then the base body *is*
                 // the instance's release. When the instance declares its own,
                 // the raised base is what that deinit chains into, filed under
                 // an @-key so it cannot be mistaken for the instance's own row,
@@ -406,7 +406,7 @@ partial class LlvmTextEmitter {
                 // strictly between this base and the instance declares one,
                 // that middle class is the release row and its own deinit
                 // chains into the base on demand (deinit_parent_call raises the
-                // link) — raising the base under the instance's plain name here
+                // link): raising the base under the instance's plain name here
                 // would out-rank the middle class in method_slot_symbol and run
                 // the base body twice.
                 if method == "deinit" {
@@ -423,9 +423,9 @@ partial class LlvmTextEmitter {
                 } else if self.function_symbols.contains_key(key) {
                     // A method already at this plain name is an override of the
                     // base's only when it fills the base method's dispatch
-                    // slots. When it does not — a same-named package-private
+                    // slots. When it does not: a same-named package-private
                     // method in another package, whose selector carries a
-                    // different package — the base's own vtable rows would be
+                    // different package: the base's own vtable rows would be
                     // left null. Raise the base under an @-key and register its
                     // slots there so method_slot_symbol still finds them.
                     if self.symbol_covers_slots(key, candidate) {
@@ -466,8 +466,8 @@ partial class LlvmTextEmitter {
     // `instantiate_base_methods` skips `init` on purpose: a subclass that
     // writes its own chains through `super.init`, and that chain raises the
     // base's instantiation on the way past. A subclass that writes no `init`
-    // never chains — the checker resolves `new Leaf()` straight to the base's
-    // template — so nothing raised it and the emitter failed the BUILD asking
+    // never chains: the checker resolves `new Leaf()` straight to the base's
+    // template, so nothing raised it and the emitter failed the BUILD asking
     // for a symbol named after the open template. Raise it here instead,
     // under the leaf's own instance name and with the arguments the `extends`
     // pinned, which is the same thing the chain would have raised.
@@ -526,8 +526,8 @@ partial class LlvmTextEmitter {
 
     // Whether a class strictly nearer the leaf than chain[index] declares its
     // own deinit in source. `class_has_deinit` reads program.functions, which
-    // holds only source-declared bodies — raised base instances live on the
-    // generic queue — so this answers "declares one", not "has a symbol at
+    // holds only source-declared bodies: raised base instances live on the
+    // generic queue, so this answers "declares one", not "has a symbol at
     // that name". Used to decide whether a generic base's deinit is this
     // instance's release row or belongs to a middle class that outranks it.
     fn nearer_link_declares_deinit(
@@ -581,7 +581,7 @@ partial class LlvmTextEmitter {
     }
 
     // the base-first declaration chain; empty while a relation shape
-    // (interfaces, generics, a missing base) is still unsupported —
+    // (interfaces, generics, a missing base) is still unsupported:
     // a real chain always holds at least the class itself
     // relations mix the base class and implemented interfaces;
     // relation_kinds tells them apart, and only "extends" is a base
@@ -611,7 +611,7 @@ partial class LlvmTextEmitter {
         // class appears at most once in an acyclic chain, and the checker
         // refuses an inheritance cycle outright (has_inheritance_cycle walks
         // the whole relation graph for every declaration). A fixed cap of 32
-        // was not that — a 40-link hierarchy of plain classes checked, ran on
+        // was not that: a 40-link hierarchy of plain classes checked, ran on
         // the interpreter, and then failed the build claiming the class shape
         // exceeded runtime metadata capacity, which was nothing to do with it.
         // Overrunning this bound now means the HIR is cyclic, which is an
@@ -631,7 +631,7 @@ partial class LlvmTextEmitter {
                 some(base) => {
                     // A generic base is laid out through the arguments
                     // the `extends` pinned, so it needs no class id of
-                    // its own — only a non-generic one is a class the
+                    // its own: only a non-generic one is a class the
                     // pre-pass could have numbered.
                     if base.kind != "class" ||
                        (base.generics.len() == 0 &&
@@ -669,7 +669,7 @@ partial class LlvmTextEmitter {
         var current_type: HirType = instance
         var depth: int = 0
         // the same bound class_chain uses, so the two lists stay the same
-        // length — class_layout refuses the pair when they differ
+        // length: class_layout refuses the pair when they differ
         let limit: int =
             self.program.declarations.len() + 1
         for self.class_base_index(current) >= 0 {
@@ -705,7 +705,7 @@ partial class LlvmTextEmitter {
     // A generic link's deinit is a template, so it has a body only once some
     // site raises it for concrete arguments. When a deriving class writes its
     // own deinit, that body is emitted before any `new` site has done so, and
-    // the chain call had no symbol to name — it was dropped, and the link's
+    // the chain call had no symbol to name: it was dropped, and the link's
     // release silently stopped running. Raising it from the chain call itself
     // fixes the order: the symbol is handed back straight away and the body
     // follows off the generic queue.
@@ -1139,16 +1139,7 @@ partial class LlvmTextEmitter {
 
     // The symbol a class's descriptor names in one dispatch slot.
     //
-    // `instance` is the key this class's own bodies are filed under, and it
-    // is the class's identity for every raise: a plain class keeps its
-    // qualified name, a generic one is raised per argument list under the
-    // rendered instance (`main.Holder<int>`), and every raiser —
-    // instantiate_dispatch_methods, instantiate_base_methods,
-    // instantiate_interface_default — files under that same key. Walking the
-    // chain with it is what lets one walk answer for both: a generic class
-    // used to get a separate lookup that only ever asked its own instance
-    // name and its own `implements` relations, so every row it inherited
-    // without overriding emitted null and calling one jumped to address zero.
+        // Use the concrete instance key for dispatch lookup so inherited generic methods resolve under the same key as methods declared on that instance.
     fn method_slot_symbol(
         declaration: HirDeclaration,
         instance: string,
@@ -1174,7 +1165,7 @@ partial class LlvmTextEmitter {
             // package-private method is raised under an @-key instead. It fills
             // this owner's slot; the plain name at this owner is the base's own
             // template, which never has a symbol. deinit never uses the @-key
-            // for a descriptor row — it is only the parent link a declared
+            // for a descriptor row: it is only the parent link a declared
             // deinit chains into, read by deinit_parent_call, not here.
             if slot != "deinit" {
                 let raised: string =
@@ -1314,8 +1305,8 @@ partial class LlvmTextEmitter {
     // name and only when nothing holds it yet, and the class's own name is
     // the first place the chain walk looks, so a row that resolves there
     // is the row that stands. An inherited body is the case neither
-    // covers — a generic base raises it per subclass, partway through the
-    // emit — and it keeps the fallback.
+    // covers: a generic base raises it per subclass, partway through the
+    // emit, and it keeps the fallback.
     fn class_dispatch_row_is_fixed(
         declaration: HirDeclaration,
         slot: string) -> bool {
@@ -1330,7 +1321,7 @@ partial class LlvmTextEmitter {
 
     // Whether an object of `candidate` can stand behind a receiver written
     // `instance`, whose declaration is `target`. class_conforms answers by
-    // name alone, which is all a settled row needs — a wider set there only
+    // name alone, which is all a settled row needs: a wider set there only
     // makes that answer stricter. A guarded arm binds the other way: an arm
     // for a class that cannot be behind this receiver is unreachable code
     // calling a method whose signature is not the call's, so a
@@ -1394,7 +1385,7 @@ partial class LlvmTextEmitter {
     //
     // A receiver's runtime class is always some class that conforms to the
     // call's static receiver type, and a non-generic class's descriptor row
-    // for a dispatch slot is exactly `method_slot_symbol(class, slot)` —
+    // for a dispatch slot is exactly `method_slot_symbol(class, slot)`:
     // the same question asked here. So when every class that could stand
     // behind the receiver answers one symbol, every table this call could
     // read holds that symbol, and the indirect call is that call. Beans
@@ -1456,16 +1447,10 @@ partial class LlvmTextEmitter {
         return resolved
     }
 
-    // The type an instance key names — the key every raise files a class's
+    // The type an instance key names: the key every raise files a class's
     // bodies under, and the stem of every body's own name.
     //
-    // A declared non-generic class keeps its qualified name, so the type is
-    // just that name. A generic class is filed under its *rendered* instance
-    // (`main.Holder<int>`), and rendering is lossy — it prints `::` as `.` —
-    // so the key cannot be read back as a type. The layout class_layout built
-    // when the instance was first laid out is what answers it; a body under a
-    // rendered key exists only because some site raised it, and that site
-    // built the layout first.
+        // Resolve rendered generic instance keys through their stored layout because rendering loses the distinction between `::` and `.`.
     fn instance_key_type(instance_name: string) -> HirType {
         match self.declarations.get(instance_name) {
             some(declaration) => {
@@ -1489,7 +1474,7 @@ partial class LlvmTextEmitter {
     //
     // A class with no arguments keeps the id the pre-pass gave its
     // declaration. A generic one is a different runtime class per argument
-    // list — `G<int>` and `G<string>` share no object — so it is identified
+    // list (`G<int>` and `G<string>` share no object) so it is identified
     // by its rendered instance, the same key class_layout numbers it under.
     // A link no object was ever built of is numbered here so a walk can pass
     // *through* it; nothing reads a descriptor by id, so a link with no
@@ -1603,7 +1588,7 @@ partial class LlvmTextEmitter {
                     // their own field offsets, pointer masks and descriptor.
                     //
                     // A base contributes its fields, laid out at the
-                    // arguments this class's `extends` pinned — the walk
+                    // arguments this class's `extends` pinned: the walk
                     // below does that through class_chain_types, the same
                     // way a non-generic class extending a generic base is
                     // laid out. An implemented interface contributes no
@@ -1802,7 +1787,7 @@ partial class LlvmTextEmitter {
     // this layout, raising a generic owner's template on demand.
     //
     // A default written on a generic class is a template like any other body,
-    // so it has no symbol until an instantiation asks for one — and a
+    // so it has no symbol until an instantiation asks for one, and a
     // subclass of a closed generic inherits that template as its own field's
     // default. Both the written `new` path and the reflective constructor ask
     // this one question, so a class cannot be constructible one way and
@@ -1901,7 +1886,7 @@ partial class LlvmTextEmitter {
         // early used to hand back that zero in silence while the
         // interpreter panicked. Each carries a flag saying whether its
         // initializer has run, and one module-wide flag says whether the
-        // prologue has finished at all — so an ordinary read, after main
+        // prologue has finished at all, so an ordinary read, after main
         // starts, costs a single predictable branch.
         if index == 0 {
             self.static_field_definitions.push(
@@ -2018,7 +2003,7 @@ partial class LlvmTextEmitter {
         }
         // the copy this load makes has live storage behind it, and unlike a
         // local's slot or a heap object that storage is a module-lifetime
-        // global — so a field or element store through the copy can write
+        // global, so a field or element store through the copy can write
         // back to the static rather than to the copy
         let place: LlvmBorrowedPlace =
             new LlvmBorrowedPlace(-1, "")
@@ -2029,13 +2014,7 @@ partial class LlvmTextEmitter {
     }
 
     // A write is the other way into a static, and it was the unguarded one.
-    // A shared module has no main, so the prologue runs on first touch — and
-    // a host that calls a writing export before any reading one stored into
-    // statics the prologue had not reached, then the next read ran the
-    // prologue on top of them. The export answered ok and the writes were
-    // gone. A write runs the prologue first for the same reason a read does.
-    // `running` means the prologue is mid-flight and this write comes from
-    // inside an initialiser, where storing is the whole point.
+    // Run the shared module's prologue before writes as well as reads; while it is running, initializer writes are allowed to avoid recursive entry.
     fn static_prologue_guard(key: string) -> string {
         if self.static_field_ready_for_key(key) == "" {
             return ""
@@ -2528,7 +2507,7 @@ partial class LlvmTextEmitter {
                 // The object exists from here, so the pad owns it from
                 // here: a field initializer that panics used to unwind
                 // past an object nothing had recorded, which leaked it
-                // whole. The construction flag goes up with it — the
+                // whole. The construction flag goes up with it: the
                 // fields are all still zero, and a release before the
                 // initializer returns must not run a deinit over them
                 // (#120).
@@ -2602,8 +2581,8 @@ partial class LlvmTextEmitter {
                             "{argument_setup}{self.append_internal_argument(operand_type, operand, arguments)}"
                     }
                     // If the init panics (contained), the cleanup pad
-                    // releases the object — fields yes, deinit no, since
-                    // its construction never finished — as the
+                    // releases the object: fields yes, deinit no, since
+                    // its construction never finished: as the
                     // interpreter does. The construction flag comes down
                     // where the initializer returned: from here the
                     // object is finished, and an unwind that passes it
@@ -2961,8 +2940,8 @@ partial class LlvmTextEmitter {
         if record_struct {
             // A record is an SSA aggregate everywhere else, so the store
             // has to reach the storage that copy was read out of. The place
-            // chain says where that is — a local's slot, or a byte offset
-            // inside a heap object — through as many struct fields and
+            // chain says where that is: a local's slot, or a byte offset
+            // inside a heap object: through as many struct fields and
             // fixed-array elements as the source wrote. It is the same
             // chain an array element store walks.
             match self.record_layout(receiver_type) {
@@ -3045,7 +3024,7 @@ partial class LlvmTextEmitter {
                         // shared owner and needs none. A record in a static
                         // is reachable from every thread by construction
                         // and has no owner whose bit could gate the write,
-                        // which is the static form's whole reason — the
+                        // which is the static form's whole reason: the
                         // same one a whole-static store emits.
                         let barrier: string =
                             if static_owner {
@@ -3445,8 +3424,8 @@ partial class LlvmTextEmitter {
     // call site, so it holds no dispatch row and nothing can replace it: the
     // receiver's static type alone decides which body runs, and that body
     // may be one a base declares. Walk the receiver's chain nearest owner
-    // first for the template — the same walk method_slot_symbol makes for
-    // symbols — pinning each link's own arguments on the way, and raise the
+    // first for the template: the same walk method_slot_symbol makes for
+    // symbols: pinning each link's own arguments on the way, and raise the
     // instance from there.
     //
     // Reading only the receiver's own declaration left an inherited generic
@@ -3593,14 +3572,14 @@ partial class LlvmTextEmitter {
     // be called direct, else "". Direct is sound when no class that can stand
     // behind the receiver overrides the method: each such class then inherits
     // the base body. The question is asked of the class graph, not of raised
-    // rows — for every concrete non-generic conformer, does a link between it
+    // rows: for every concrete non-generic conformer, does a link between it
     // and the generic base declare this method in this slot? A declaration in
     // the slot is an override; none means the conformer inherits base_symbol.
     // `declared_dispatch_slots` is the pre-pass's own record, fixed before any
     // body is emitted, so the answer is the same wherever the call sits in the
     // emit order. A generic subclass (its arguments are not bound here) and a
     // non-class conformer both force the descriptor. Slot-less and private
-    // (`type:`) calls never reach here — the caller sends those direct,
+    // (`type:`) calls never reach here: the caller sends those direct,
     // because nothing can replace them and they hold no row to read.
     fn generic_base_dispatch_symbol(
         declaration: HirDeclaration,
@@ -3624,8 +3603,8 @@ partial class LlvmTextEmitter {
             }
             // Whether an object of this class can stand behind the receiver.
             // A generic candidate stands at arguments this walk does not
-            // know — `Sub<T> extends Base<T>` is behind a `Base<int>`
-            // receiver exactly when T is int — so comparing the arguments as
+            // know: `Sub<T> extends Base<T>` is behind a `Base<int>`
+            // receiver exactly when T is int, so comparing the arguments as
             // written answers no for a class that can in fact be there, and
             // its override was then never weighed at all. Such a candidate is
             // matched by name, which over-approximates the set: every extra
@@ -3652,8 +3631,8 @@ partial class LlvmTextEmitter {
             // behind a receiver; a concrete subclass of it is weighed on its
             // own row
             if candidate.is_abstract { continue }
-            // Walk this conformer's chain from itself up to — but not
-            // including — the generic base. A link between them that declares
+            // Walk this conformer's chain from itself up to, but not
+            // including: the generic base. A link between them that declares
             // the method in this slot overrides the base body, so the object
             // does not run base_symbol and the descriptor must be read. If no
             // link overrides, the conformer inherits the base body, which is
@@ -3754,7 +3733,7 @@ partial class LlvmTextEmitter {
                     }
                     // The exact class may inherit the template rather than
                     // declare it. Only a call with no slot is bound this
-                    // way — anything that holds a row is found through the
+                    // way: anything that holds a row is found through the
                     // row. A generic exact class already returned above, so
                     // its own qualified name is the whole instance here and
                     // the chain climbs from there.
@@ -3781,7 +3760,7 @@ partial class LlvmTextEmitter {
                     if symbol == "null" {
                         // a method inherited from a generic base, or a
                         // kept default from a generic interface, has no
-                        // symbol until its arguments are bound — and the
+                        // symbol until its arguments are bound, and the
                         // receiver's `new` may not have been emitted yet
                         if !self.instantiate_base_methods(
                                instruction, declaration,
@@ -3835,7 +3814,7 @@ partial class LlvmTextEmitter {
                     return ""
                 }
                 // A default body an interface supplies is not a template
-                // of the class's — it belongs to the interface, and for a
+                // of the class's: it belongs to the interface, and for a
                 // non-generic interface it is an ordinary function that
                 // takes `self` as a pointer and dispatches from there. Only
                 // methods the class itself declares are raised per
@@ -3885,7 +3864,7 @@ partial class LlvmTextEmitter {
                         instruction.dispatch_slot
                     // Nothing can replace this body, so call it directly. A
                     // slot-less call is one to a method carrying its own type
-                    // parameters — the checker forbids overriding it, so it
+                    // parameters: the checker forbids overriding it, so it
                     // holds no descriptor row to read. A `type:` slot is a
                     // private method's, which only its declaring type can ever
                     // hold. Reading a descriptor for either loads a row that is
@@ -3898,7 +3877,7 @@ partial class LlvmTextEmitter {
                     }
                     // `Shelf<int>` is only the receiver's static type. The
                     // runtime class is any non-generic subclass, and one that
-                    // overrides this method replaces the body — so calling the
+                    // overrides this method replaces the body, so calling the
                     // base body outright runs the wrong method, silently, while
                     // the interpreter dispatches through the object and the
                     // backends part. Call direct only when no class that can
@@ -3922,8 +3901,8 @@ partial class LlvmTextEmitter {
                 if self.generic_templates.contains_key(
                        method_template) {
                     // A generic method on a non-generic class: dispatch
-                    // is direct — a template cannot sit in a dispatch
-                    // table — and the instance binds from explicit type
+                    // is direct: a template cannot sit in a dispatch
+                    // table, and the instance binds from explicit type
                     // arguments plus unification, like a free generic
                     // call.
                     var bindings: Map<string, HirType> = {}
@@ -4098,13 +4077,13 @@ partial class LlvmTextEmitter {
         // The class this body runs on comes from `self`, not from the
         // function's name. Slicing the name off worked only while the class
         // was non-generic: a generic class's body is emitted as a raised
-        // instance named for the *rendered* instance type — `main.Sub<int>`,
-        // which is no declaration's key — while the template's own name
+        // instance named for the *rendered* instance type: `main.Sub<int>`,
+        // which is no declaration's key, while the template's own name
         // `main::Sub.init` names the declaration but not the arguments this
         // instance stands at. The `self` parameter carries both at once:
         // clone_generic_function substitutes local types, so self is
         // `main::Sub<int>` in an instance and the plain `main::Leaf` in a
-        // non-generic body. Templates never reach here — only their
+        // non-generic body. Templates never reach here: only their
         // instances are emitted.
         var root: HirType = new HirType("")
         for local: MirLocal in function.locals {

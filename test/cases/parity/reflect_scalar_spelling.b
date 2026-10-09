@@ -2,8 +2,8 @@
 // and `float`, `i64` and `int`, `byte` and `u8` are one type each, and a
 // program writes whichever it likes.
 //
-// Two tables answered `Kind` for a builtin scalar — the runtime's
-// beans_reflect_type_kind and the tree interpreter's own copy — and BOTH were
+// Two tables answered `Kind` for a builtin scalar, the runtime's
+// beans_reflect_type_kind and the tree interpreter's own copy, and BOTH were
 // missing the same three aliases, so `f64` reported `other` and every
 // reflective decoder mishandled the commoner spelling. Two implementations of
 // one table is exactly why this belongs in the parity gate: fixing one and

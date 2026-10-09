@@ -2,14 +2,14 @@
 # The portable fallible-builtin ABI, asserted on emitted IR.
 #
 # Generated code must call the runtime's fallible/optional builtins through the
-# scalar `<sym>_out` wrappers — value returned normally, error/presence word
-# through an output pointer — and must never take a BRes/BOpt struct back across
+# scalar `<sym>_out` wrappers, value returned normally, error/presence word
+# through an output pointer, and must never take a BRes/BOpt struct back across
 # the C boundary. This test fails if either compiler reintroduces an aggregate
 # return or an sret call for a runtime builtin, on any target.
 #
 # It runs both compilers over a spread of targets, including the two whose native
-# aggregate ABI disagree with each other — x86_64 Windows (sret) and aarch64
-# Windows (register pair) — because encoding that difference is the bug this ABI
+# aggregate ABI disagree with each other, x86_64 Windows (sret) and aarch64
+# Windows (register pair), because encoding that difference is the bug this ABI
 # removes. `--emit ir` needs no sysroot, so every target is checkable here.
 #
 # The ban is scoped to the runtime's own `@beans_` symbols. User `extern "C"`

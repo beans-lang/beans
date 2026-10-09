@@ -1,4 +1,4 @@
-// Socket extras for std.net — the operations too specialized for the core
+// Socket extras for std.net: the operations too specialized for the core
 // syscall layer in beans_rt.c but still part of the socket contract. This
 // file owns multicast membership, reusable listener creation, and reads into
 // caller-owned storage.

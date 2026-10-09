@@ -80,7 +80,7 @@ head -c 4 "$tmp/beans.wasm" | od -An -tx1 | tr -d ' \n' | grep -q '^0061736d$' |
 
 echo "checking the module runs and agrees with both other backends"
 # The whole claim: the same source, three ways, byte for byte. If 32-bit pointers were
-# wrong anywhere — the layout engine, the pointer-slot mask, Error's fields — this is
+# wrong anywhere, the layout engine, the pointer-slot mask, Error's fields, this is
 # where it would show as a wrong number or a crash, not as a warning.
 wasmtime "$tmp/beans.wasm" >"$tmp/wasm.out" 2>"$tmp/wasm.err" || {
     echo "the module trapped or exited non-zero" >&2
@@ -187,8 +187,8 @@ grep -q '^42$' "$tmp/library.out"
 grep -q 'beans_wasm_add.command_export$' "$tmp/library.symbols"
 # Two exports, and the second is deliberate: `beans_module_start` is the
 # module's own startup, which a library has no `main` to run. Everything else
-# — the runtime's entry points, the Beans functions the program did not mark
-# `pub extern "C"` — must stay inside. A third name here is a leak.
+# Only the runtime's entry points and Beans functions not marked
+# `pub extern "C"`, must stay inside. A third name here is a leak.
 grep -q 'beans_module_start.command_export$' "$tmp/library.symbols" || {
     echo "the WASM library does not export its own startup" >&2
     echo "  without beans_module_start a host cannot register the reflection" >&2
@@ -268,7 +268,7 @@ grep -q '^reader source true true 9014$' "$tmp/reader.out"
 
 echo "checking the parts that only a 32-bit run would catch"
 # Decimal is a 128-bit coefficient, so it exercises the hand-written __multi3, __udivti3
-# and the shift helpers in the host — none of which compiler-rt provides for wasm32 here.
+# and the shift helpers in the host, none of which compiler-rt provides for wasm32 here.
 grep -q '^three at 19.99 is 59.97$' "$tmp/wasm.out" || {
     echo "decimal multiplication is wrong under wasm, so the 128-bit helpers are wrong" >&2
     exit 1
@@ -336,7 +336,7 @@ if [[ "$boom_status" -eq 0 ]]; then
 fi
 grep -q '^before$' "$tmp/boom.out"
 # The panic message, through beans_host_write to WASI's fd_write, byte-identical to the
-# interpreter's — which is what the hand-written integer formatter is for.
+# interpreter's, which is what the hand-written integer formatter is for.
 grep -q 'index 99 out of range' "$tmp/boom.err" || {
     echo "the wasm panic did not report the interpreter's message" >&2
     cat "$tmp/boom.err" >&2
@@ -409,7 +409,7 @@ wasmtime "$tmp/simd.wasm" >"$tmp/simd.wasm.out" 2>"$tmp/simd.wasm.err"
 diff -u "$tmp/simd.interp" "$tmp/simd.wasm.out"
 
 echo "checking the capability rules still hold for wasm"
-# A wasm module has no filesystem and no sockets, and the profile is what says so — the
+# A wasm module has no filesystem and no sockets, and the profile is what says so, the
 # refusal comes at check time with a name, not as a link error.
 if ./build/beansc check --target wasm32-wasip1 --runtime freestanding \
         test/cases/profile_sockets.b >"$tmp/refuse" 2>&1; then

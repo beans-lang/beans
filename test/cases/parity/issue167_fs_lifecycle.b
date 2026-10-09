@@ -1,12 +1,12 @@
-// #167: std.fs named a file by its path and covered only its bytes — there was
+// #167: std.fs named a file by its path and covered only its bytes, there was
 // no way to remove one, so a program could create a temp file it could never
 // release. The blocked shape is a spooled upload part: bytes go to a temp file
 // named by a generated id, and the file must be released when the request
 // finishes *or* unwinds. The ownership half already worked; the removal did
 // not exist, and a release hook cannot spawn `rm` out of a path a client sent.
 //
-// So this walks a file's whole life through std.fs on both backends — where to
-// put it, whether it is there, how big it is, moving it, and ending it — and
+// So this walks a file's whole life through std.fs on both backends, where to
+// put it, whether it is there, how big it is, moving it, and ending it, and
 // then the real shape: a class whose deinit removes its spooled file, dropped
 // on an ordinary scope exit and again on a contained panic, where the unwind
 // runs the same hooks. The arc+/arc- markers pin that every part is built and

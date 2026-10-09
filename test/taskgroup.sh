@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # TaskGroup<T> (spec/CONCURRENCY.md, F3): dynamic fleets on the fiber
 # scheduler. The differential case pins delivery order, spawn-order
-# wait_all, panic-as-err delivery, reuse after draining, and cancel_all —
+# wait_all, panic-as-err delivery, reuse after draining, and cancel_all,
 # byte-identical on both engines. The walls keep the group scope-bound
 # exactly as a Brew handle is, and a fleet nobody can wake lands in the
 # deadlock report instead of hanging.
 set -euo pipefail
 
 # macOS runners ship no GNU timeout; stand in for it when absent. The
-# stand-in reports 137 (SIGKILL) where GNU prints 124 — every use here
+# stand-in reports 137 (SIGKILL) where GNU prints 124, every use here
 # only cares that a hang cannot pass, and neither code ever matches an
 # expected exit.
 if ! command -v timeout >/dev/null 2>&1; then

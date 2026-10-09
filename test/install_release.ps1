@@ -2,7 +2,7 @@
 #
 # The package is built by tools/package_windows_release.sh, a release manifest
 # is written beside it, and tools/install-release.ps1 is run against that
-# directory exactly as it would run against a GitHub release — same checksum
+# directory exactly as it would run against a GitHub release, same checksum
 # check, same staging, same PATH handling. What differs is where the bytes come
 # from, and that the target is named rather than detected: see BEANS_TARGET
 # below for why detection cannot work here.
@@ -81,7 +81,7 @@ Remove-Item -Recurse -Force $peek
 $prefix = Join-Path $stage 'home'
 $env:BEANS_INSTALL_BASE_URL = $Dist
 # Naming the target is what makes this runnable at all. One Windows runner
-# packages seven triples — gnu, gnullvm and msvc across three architectures —
+# packages seven triples, gnu, gnullvm and msvc across three architectures,
 # but host detection can only ever answer with one of them, so every job whose
 # target is not the runner's own default would be told there is no package for
 # this machine. Detection itself is covered on Unix by test/install_release.sh,

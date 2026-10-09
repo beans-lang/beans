@@ -1,5 +1,5 @@
 // #94: the checker proves an object is fully built. Each class here breaks one
-// clause of that proof, and check refuses it — every one of these once passed
+// clause of that proof, and check refuses it, every one of these once passed
 // check and then panicked interpreted while a native build read a raw slot.
 
 // a field construction never assigns
@@ -11,7 +11,7 @@ class NeverAssigned {
     }
 }
 
-// a pointer-shaped field never assigned — the case a native build answered
+// a pointer-shaped field never assigned, the case a native build answered
 // none for while the interpreter panicked
 class SlotUnset {
     p: Option<int>
@@ -124,7 +124,7 @@ class InterpEarly {
 
 // a non-init method called through super before every field is assigned. The
 // super_call HIR node carries only its arguments, never a `local self`, so the
-// escape check has to catch it on the node kind or it slips through — the same
+// escape check has to catch it on the node kind or it slips through, the same
 // crash #94 was filed for, one keyword over.
 class SuperCallEarly extends NeedsSuperBase {
     tag: string

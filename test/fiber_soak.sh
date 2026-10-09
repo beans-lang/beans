@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The panic-storm soak (spec/CONCURRENCY.md, F3): panic containment is a
-# per-fiber guarantee, so it is proven at storm scale — ~2600 fibers and
+# per-fiber guarantee, so it is proven at storm scale, ~2600 fibers and
 # ~900 contained panics across TaskGroup fleets, lone joined handles, a
 # gate storm, senders panicking on a closed channel, and four threads
 # running fleets of their own. Every failure arrives as a value, the
@@ -8,7 +8,7 @@
 set -euo pipefail
 
 # macOS runners ship no GNU timeout; stand in for it when absent. The
-# stand-in reports 137 (SIGKILL) where GNU prints 124 — every use here
+# stand-in reports 137 (SIGKILL) where GNU prints 124, every use here
 # only cares that a hang cannot pass, and neither code ever matches an
 # expected exit.
 if ! command -v timeout >/dev/null 2>&1; then

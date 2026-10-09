@@ -5,7 +5,7 @@
 # platform's debug information for both halves of the binary: the C runtime,
 # which Clang has always described, and the Beans program itself, which the
 # emitter now describes with a DWARF line table of its own. That is what lets
-# `lldb` and `gdb` — and the VS Code and Zed extensions that drive them — stop
+# `lldb` and `gdb`, and the VS Code and Zed extensions that drive them, stop
 # on a Beans line, name Beans functions in a backtrace, step a statement at a
 # time and print a local.
 #
@@ -243,7 +243,7 @@ fi
 # --- an object's fields, at the offsets the program really uses -------------
 # The whole risk of describing a layout is describing it wrong: a debugger that
 # reads the wrong offset shows a wrong value confidently, which is worse than
-# showing an address. So this does not assert a layout — it makes the program
+# showing an address. So this does not assert a layout, it makes the program
 # print its own fields and requires the debugger to agree, field for field,
 # across widths that pack and pad differently.
 cat >"$work/obj.b" <<'BEANS'

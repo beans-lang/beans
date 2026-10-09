@@ -36,7 +36,7 @@ fn sem_scopes_overlap(left: SemanticBinding,
 
 // Every index below is a multimap, and a multimap cannot store a `List<T>`
 // directly: a list is move-only, so stage 0 can read it back neither with
-// `m.get(k)` nor with `m[k]` — "a consuming map read is not available yet".
+// `m.get(k)` nor with `m[k]`: "a consuming map read is not available yet".
 // A class is a reference, so a bucket holding the list reads out fine, the
 // same way `Map<string, HirFunction>` does elsewhere in the compiler.
 //

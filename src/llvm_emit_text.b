@@ -191,7 +191,7 @@ partial class LlvmTextEmitter {
             // way the checker's splitter does. Where the expression ends
             // and the format spec begins is a second question, and it is
             // asked of the one walk the checker and the tree interpreter
-            // also ask (src/interpolation.b) — a `:` inside `(` or `[` is
+            // also ask (src/interpolation.b): a `:` inside `(` or `[` is
             // part of the expression, and this loop is not counting those.
             let segment: string =
                 source.slice(index + 1, cursor - 1)
@@ -748,8 +748,8 @@ partial class LlvmTextEmitter {
     //
     // The std.encoding packages marshal payloads through a small set of
     // private helpers with fixed shapes. Their Beans bodies are the
-    // reference definition — both interpreters run them, and every backend
-    // must keep agreeing — but a byte loop is the wrong instruction sequence
+    // reference definition: both interpreters run them, and every backend
+    // must keep agreeing, but a byte loop is the wrong instruction sequence
     // for a bulk copy, and no Beans expression can name a heap buffer's
     // address at all. Native code therefore lowers calls to these helpers
     // directly.
@@ -759,7 +759,7 @@ partial class LlvmTextEmitter {
     // of these hold:
     //
     //   1. its unqualified name is one of the reserved names below;
-    //   2. it was loaded from the compiler-shipped standard library — the
+    //   2. it was loaded from the compiler-shipped standard library: the
     //      package's source file sits under the stdlib root that this same
     //      compiler resolves imports against;
     //   3. its declaring package is one of std.encoding.{json,xml,base64};

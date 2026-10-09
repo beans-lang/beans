@@ -1,15 +1,5 @@
-// A Deque is a queue you can push and pop at either end in constant time.
-// `List` is the right choice when you only ever work at the back; reach for a
-// Deque when the front is a working end too — a work queue, a sliding window,
-// an undo/redo pair, a breadth-first walk.
-//
-// The last part of this file is about teardown, which is the part that is
-// easy to get wrong: while a Deque is dropping what it holds, the elements'
-// own `deinit` bodies can look back at the container. What they see there is
-// a rule, not an accident — the storage is set aside and the empty deque
-// published *before* the first element is released, so a `deinit` that reads
-// it sees an empty container rather than one still claiming to hold what is
-// being destroyed.
+// A Deque supports constant-time pushes and pops at either end.
+// Teardown publishes the empty container before releasing elements, so their `deinit` can inspect it safely.
 import std.io
 import std.collections
 

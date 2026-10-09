@@ -3,13 +3,13 @@
 // `Base<int>`, so the parent/child message would be a lie.
 //
 // The reason is that a downcast is decided at run time from the object's own
-// class, and the tree interpreter carries no type arguments on an object —
+// class, and the tree interpreter carries no type arguments on an object,
 // every instantiation of a class is one runtime name there. Relaxing the check
 // makes the two backends disagree: with a `G<string>` held as a plain base,
 // the interpreter answers yes to `as? G<int>` and the native backend, which
 // numbers each instantiation, answers no. Refusing is the only answer both
 // can give. Lifting this means carrying an object's type arguments in the
-// interpreter, not changing the emitter — the native side already answers it.
+// interpreter, not changing the emitter, the native side already answers it.
 //
 // The downcast that *does* work is the other one: a receiver written at an
 // instantiation, tested against a non-generic class under it. That is section

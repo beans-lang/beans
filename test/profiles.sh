@@ -123,7 +123,7 @@ expect_refusal() {
         sed -n '1,10p' "$tmp/refuse" >&2
         exit 1
     fi
-    # One capability, one error — not one per file that happens to import it.
+    # One capability, one error, not one per file that happens to import it.
     local count
     count=$(grep -c "does not have" "$tmp/refuse" || true)
     if [[ "$count" -ne 1 ]]; then
@@ -171,18 +171,18 @@ echo "checking what each profile still allows"
 
 echo "checking the freestanding runtime needs no libc service"
 # What "freestanding" has to mean, measured rather than asserted: the object may need
-# compiler primitives — memcpy and friends, and the 128-bit helpers the decimal type uses
-# — because every freestanding toolchain provides those. It must need no libc *service*:
+# compiler primitives, memcpy and friends, and the 128-bit helpers the decimal type uses
+# These are provided by every freestanding toolchain; the compiler needs no libc *service*:
 # no allocator, no stdio, no exit, no threads, no environment, no snprintf.
 #
 # Mach-O prefixes every symbol with an underscore and ELF does not, and GNU nm prints
 # "U name" where Apple's prints just the name. Both are normalized to a bare name here,
-# because the previous form matched Mach-O spellings only — which meant that on Linux
+# because the previous form matched Mach-O spellings only, which meant that on Linux
 # *nothing* matched the allowlist and this check could never have passed there.
 leftovers=$(nm -u "$tmp/rt1.o" | awk '{ print $NF }' | sed 's/^_*//' | sort -u |
             grep -v '^beans_' || true)
 # The 128-bit helpers decimal needs, the memory primitives a compiler open-codes calls
-# to, the stack-protector hooks, and arm64's outline atomics — all compiler builtins,
+# to, the stack-protector hooks, and arm64's outline atomics, all compiler builtins,
 # all supplied by any freestanding toolchain.
 allowed='^(divti3|modti3|udivti3|umodti3|multi3|floattidf|floatuntidf)$'
 allowed="$allowed"'|^(bzero|bcmp|memchr|memcmp|memcpy|memmove|memset|strlen)$'
@@ -203,7 +203,7 @@ for hook in beans_host_alloc beans_host_realloc beans_host_free beans_host_write
 done
 # Hosted profiles must not require them: the weak defaults are there, so nothing to link.
 # The pattern allows either symbol spelling. It used to demand a leading underscore,
-# which meant the check could never fire on ELF — it passed on Linux for the wrong
+# which meant the check could never fire on ELF, it passed on Linux for the wrong
 # reason.
 if requires 3 beans_host_alloc; then
     echo "the full profile requires a hook it should default" >&2

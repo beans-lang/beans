@@ -80,7 +80,7 @@ def parse_flat(path):
             continue
         if not line.startswith(" "):
             break
-        # "        symbol  (in image)        123"   — image is optional
+        # "        symbol  (in image)        123"; image is optional
         m = re.match(r"\s+(.+?)\s+(?:\(in (.+?)\))?\s*(\d+)\s*$", line)
         if not m:
             continue

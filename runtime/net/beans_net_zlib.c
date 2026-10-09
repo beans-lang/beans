@@ -1,4 +1,4 @@
-// DEFLATE for std.compress — zlib-ng in compat mode, generic lane.
+// DEFLATE for std.compress: zlib-ng in compat mode, generic lane.
 //
 // The vendored tree compiles beside this shim as separate translation
 // units (zlib-ng shares static helper names across files); the generated
@@ -10,7 +10,7 @@
 // callers.
 //
 // Everything here is bounded. One-shot inflate takes a mandatory output
-// capacity and reports crossing it as its own status — a decompression
+// capacity and reports crossing it as its own status: a decompression
 // bomb is an API impossibility, not a caller's afterthought. Streams carry
 // their counters on the Beans side, which enforces the same rule per
 // Inflater.
@@ -48,12 +48,7 @@ static int beans_zlib_window_bits(uint64_t format, int inflating,
     return window;
 }
 
-// 9 is the smallest window this bridge will agree to, not 8. zlib's
-// deflateInit2 documents that it silently promotes a request for 8 to 9
-// (its deflate cannot emit a 256-byte window), while inflateInit2 honours 8
-// exactly -- so a peer told "8" and reading with a 256-byte window would
-// reject the 512-byte matches the encoder actually produced. Refusing 8 is
-// the only answer that cannot lie about what went on the wire.
+// Refuse window size 8 because deflateInit2 promotes it to 9 while inflateInit2 accepts 8, which could make peers disagree about the negotiated window.
 static int beans_zlib_bits_ok(uint64_t bits) {
     return bits == 0 || (bits >= 9 && bits <= 15);
 }
@@ -231,7 +226,7 @@ BEANS_NET_API long long beans_zlib_stream_run(const uint8_t* src,
     req[6] = rc == Z_STREAM_END ? 1 : 0;
     if (rc == Z_OK || rc == Z_STREAM_END) return BEANS_NET_OK;
     if (rc == Z_BUF_ERROR) {
-        // No progress possible with these buffers — not corruption. The
+        // No progress possible with these buffers: not corruption. The
         // Beans side distinguishes "give me more input" from "give me more
         // room" by the counters it already has.
         return BEANS_NET_OK;

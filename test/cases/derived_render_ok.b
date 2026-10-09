@@ -78,7 +78,7 @@ fn main() {
     edited["z"] = 9
     io.println("{edited}")
 
-    // A removal is the one case a plain Map does not hold order through —
+    // A removal is the one case a plain Map does not hold order through,
     // it swap-removes, and the two engines do not agree on what that
     // leaves behind, so nothing here pins it. OrderedMap is the one that
     // keeps its order across a removal, and both backends walk it alike.
@@ -91,7 +91,7 @@ fn main() {
     kept["q"] = 100
     io.println("{kept}")
 
-    // A key too wide for one runtime slot — a struct, a decimal — is boxed
+    // A key too wide for one runtime slot, a struct, a decimal, is boxed
     // by the map and rendered from the box, not refused.
     var wide_keys: Map<Point, string> = {}
     wide_keys[Point { x: 1, y: 1 }] = "a"

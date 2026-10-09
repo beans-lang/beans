@@ -14,7 +14,7 @@
 //   fragments claiming a huge total is refused rather than buffered.
 //
 // The frames are fed to a real Connection over a loopback socket pair, so
-// the whole path — socket, framer, event drain — is under test rather than
+// the whole path, socket, framer, event drain, is under test rather than
 // the bridge alone.
 //
 // Usage: websocket_fuzz <seed> <rounds>
@@ -89,7 +89,7 @@ fn garbage(rng: Rng, count: int) -> Bytes {
 // One session: a server Connection reading whatever the generator sends.
 //
 // Single-threaded on purpose. The payloads here
-// do not need to cross a spawn — they are
+// do not need to cross a spawn, they are
 // small enough to sit in the kernel's socket buffer, so the client can
 // write and step aside before the server reads a byte.
 fn one_round(rng: Rng, report: Bytes) -> Result<bool> {

@@ -3,7 +3,7 @@
 // an expression into a `const` and computes the same expression at run time,
 // on the same type, and asserts they are equal. If the fold ever narrows,
 // wraps or rounds differently than a backend does, one of these lines prints
-// false — and it must hold on both backends, byte for byte.
+// false, and it must hold on both backends, byte for byte.
 import std.io
 
 // Integers: every operator, and the narrowing that makes a const of type T
@@ -29,7 +29,7 @@ const C_I64: i64 = (1 << 62) + (1 << 62) - 1
 const C_CHAIN: i8 = (100 + 100) / 2
 
 // A u64 at or above 2^63 is the one value the fold cannot compute with, so
-// it must still be declarable and usable — the spelling a use site
+// it must still be declarable and usable, the spelling a use site
 // materializes is the source's own, not the fold's accumulator. Both
 // spellings of the same number, because a decimal magnitude past i64 comes
 // back from `to_int()` as i64's maximum rather than as a failure, and the

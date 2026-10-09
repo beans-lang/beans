@@ -1,4 +1,4 @@
-// "What happens next" — an expiry wheel, a scheduler, a Dijkstra frontier.
+// "What happens next": an expiry wheel, a scheduler, a Dijkstra frontier.
 // A sorted list gives the same answer and pays O(n) for every insert; a heap
 // pays O(log n) and never sorts what it is not asked about.
 
@@ -17,7 +17,7 @@ package collections
 /// ```
 ///
 /// The priority and the payload are separate type parameters on purpose. Only
-/// `Order` types compare — the numbers, `bool` and `string` — so a queue over
+/// `Order` types compare (the numbers, `bool` and `string`) so a queue over
 /// one comparable type could not carry a class, a struct or a list as its
 /// payload. Splitting them means the thing being ordered is always something
 /// the language can order, and the thing being carried is anything at all.
@@ -46,7 +46,7 @@ package collections
 ///
 /// **Reads answer from a published view, not from the heap mid-sift.** A user's
 /// `deinit` can run in the middle of a `push` or a `pop`: the cycle collector
-/// runs deinits, an allocation is where it runs, and a sift allocates — under
+/// runs deinits, an allocation is where it runs, and a sift allocates: under
 /// the tree interpreter essentially every operation does. A sift moves the heap
 /// through a hole, so between its first write and its last the root slot holds a
 /// stale entry and `entries.len()` has already changed; `len()` and `peek()`
@@ -66,7 +66,7 @@ pub class PriorityQueue<P implements Order & Clone, V implements Clone> {
     entries: List<Entry<P, V>> = []
     // The settled count and the settled smallest entry, together, so one store
     // publishes both. A reader caught between two heap writes sees the `view`
-    // from before the operation — the whole old shape — until the final store
+    // from before the operation (the whole old shape) until the final store
     // swaps in the whole new one.
     view: PqView<P, V> = new()
     next_sequence: int = 0
@@ -170,7 +170,7 @@ pub class PriorityQueue<P implements Order & Clone, V implements Clone> {
     pub fn clear() {
         // Publish the empty view before dropping anything, so an element's
         // `deinit` running as the heap releases it reads the count it will have
-        // — empty — rather than the old count over storage already going away.
+        // (empty) rather than the old count over storage already going away.
         self.view = new()
         self.entries.clear()
     }

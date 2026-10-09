@@ -2,8 +2,8 @@
 // release_order_deep.b pins the same rule for a chain with no deinit, which
 // the host runtime releases with its own iterative cascade; this one is the
 // half that used to recurse. An object with a deinit takes the host-wrapper
-// path, and the wrapper's teardown released the object's fields by hand — one
-// host frame per link — so the interpreter smashed its stack where the same
+// path, and the wrapper's teardown released the object's fields by hand, one
+// host frame per link, so the interpreter smashed its stack where the same
 // chain without a deinit, and the native backend for either, dropped it in
 // constant stack (issue #96). The fields are handed to the host cascade now,
 // exactly as they are for a deinit-less object, so the chain unwinds flat.

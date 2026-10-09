@@ -1,14 +1,6 @@
-// Direct C tests for the fiber runtime core (runtime/beans_fiber.c) — the
-// F1 gate of spec/CONCURRENCY.md. No compiler involved: every property the
-// compiler will later lean on is pinned here first.
-//
-//   fiber_core            run every in-process test
-//   fiber_core bench      print and gate the context-switch cost
-//   fiber_core overflow   recurse off the stack (the script expects the
-//                         guard report and exit 134)
+// Direct C tests for the fiber runtime core, before compiler integration.
+// Usage: fiber_core, fiber_core bench, or fiber_core overflow.
 
-// glibc hides clock_gettime and CLOCK_MONOTONIC under a strict -std; this
-// gate compiles with -std=c11, so ask for the full surface first.
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
 #endif
@@ -98,7 +90,7 @@ static void test_park_resume(void) {
     beans_worker_free(worker);
 }
 
-// A resume that lands while the fiber is READY — before it ever parks — is
+// A resume that lands while the fiber is READY, before it ever parks, is
 // latched, and the next park consumes it instead of sleeping.
 static void early_wake_target(void* arg) {
     (void)arg;
@@ -368,7 +360,7 @@ static void run_bench(void) {
     double nanos = (double)(end.tv_sec - begin.tv_sec) * 1e9 +
                    (double)(end.tv_nsec - begin.tv_nsec);
     // Each round is one park and one resume on each side: four context
-    // switches (two out, two in) per round pair — count the switches the
+    // switches (two out, two in) per round pair, count the switches the
     // scheduler actually made: every park is a switch out and a switch in.
     double switches = (double)PONG_ROUNDS * 4.0;
     double each = nanos / switches;
@@ -402,7 +394,7 @@ static void run_overflow(void) {
 //
 // This is the shape a compiled Beans program has: main() is already running
 // on the thread stack, promotes itself on the first brew, and parks in
-// joins while the scheduler — on its own carved stack — runs the children.
+// joins while the scheduler, on its own carved stack, runs the children.
 
 static void boot_child(void* arg) {
     *(int*)arg += 1;
@@ -538,7 +530,7 @@ static void test_netpoll(void) {
     NetpollProbe probe = { fds[0], fds[1], 0 };
     BeansWorker* worker = beans_worker_new();
 
-    // park-until-readable between two fibers of one worker — with the
+    // park-until-readable between two fibers of one worker, with the
     // hopeless-idle check armed: an io waiter must keep the report quiet
     memset(order_log, 0, sizeof order_log);
     beans_fiber_set_may_wake(np_no_wake);
@@ -566,7 +558,7 @@ static void test_netpoll(void) {
     CHECK(took < 2000000000LL, "the timeout did not hang");
 
     // the kick: the worker blocks in the poller (an io waiter exists), a
-    // plain thread resumes an ordinarily-parked fiber — the inbox post
+    // plain thread resumes an ordinarily-parked fiber, the inbox post
     // must reach through the poller wait
     memset(order_log, 0, sizeof order_log);
     probe.got = 0;

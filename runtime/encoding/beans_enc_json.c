@@ -1,47 +1,12 @@
-// std.encoding.json native bridge over yyjson (vendored, see vendor/VENDOR.md).
-//
-// One translation unit: the vendored implementation is included below so the
-// whole feature is a single cached object, compiled only into programs that
-// import std.encoding.json. Everything yyjson is internal; only the
-// beans_enc_json_* entry points are visible.
-//
-// ABI shape (shared by every encoding bridge): payload buffers cross as
-// direct RawPtr parameters and everything else — lengths, flags, handles,
-// outputs — rides in a RawPtr<u64> request buffer. Interpreter compatibility
-// forces the split: both interpreters hand extern "C" calls a real host copy
-// of each RawPtr *argument*, but a pointer smuggled through an integer word
-// would be a synthetic interpreter address no C code can dereference.
-// Handles this bridge itself returned (documents, values, write buffers) are
-// opaque words and safe to embed.
-//
-// Handle lifetimes:
-//   - a document handle is a heap BeansEncJsonDoc* (imm or mut)
-//   - a value handle is a yyjson_val* / yyjson_mut_val*, valid only while
-//     its document is alive; the Beans package keeps every Value holding an
-//     ARC reference to its Doc owner, and Doc.deinit frees the handle
-//   - a write-buffer handle stays alive until take_buf copies and frees it
+// Native std.encoding.json bridge over vendored yyjson; only beans_enc_json_* entry points are exported.
+// Payload bytes cross as RawPtr arguments; lengths, flags, handles, and outputs use the u64 request buffer for interpreter compatibility.
+// Value handles remain valid while their owning document lives; write-buffer handles live until take_buf copies and frees them.
 
 #include "beans_enc_common.h"
 
-// The escape scan reads 16 bytes at a time where the machine has a vector
-// unit — NEON on aarch64, SSE2 on x86-64, both baseline for the targets Beans
-// ships. These headers are compiler intrinsics with no runtime library behind
-// them, so encoding_symbols.sh still sees the bridge resolve against libc
-// alone. The 8-byte SWAR path stays as the fallback and for the tail.
-//
-// __aarch64__, not __ARM_NEON: clang defines __ARM_NEON for
-// armv7-unknown-linux-gnueabihf as well — it is a supported target and its
-// default FPU is NEON — but vmaxvq_u8 and the other across-vector reductions
-// the scan uses are AArch64 instructions arm32 does not have, so the vector
-// block does not compile there. Guarding on the feature macro alone made a
-// program whose only sin was importing std.encoding.json fail its arm32 build
-// with a C error naming this file. The byte-order test is here for the same
-// reason the SWAR block has one: the lane index comes from counting trailing
-// zeros of the flag vector read as two 64-bit words, which is the first
-// flagged byte only on a little-endian machine.
-//
-// One decision, named once: the include below and the scan itself both read
-// it, so the header and the code that needs it cannot drift apart.
+// Use 16-byte NEON/SSE2 scans where supported; the 8-byte SWAR path handles fallbacks and tails.
+// Gate NEON on AArch64 and little endian: armv7 defines __ARM_NEON but lacks the reduction instructions used here.
+// These compiler intrinsics add no runtime symbols, so the bridge remains libc-only.
 #if defined(__aarch64__) && defined(__ARM_NEON) && \
     defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ && \
     !defined(BEANS_JSON_SCALAR_SCAN)
@@ -56,12 +21,7 @@
 #include <emmintrin.h>
 #endif
 
-// Nothing here may reference a symbol outside libc — encoding_symbols.sh
-// holds that line, which is why the ABI passes callbacks instead of calling
-// runtime entry points directly. That rules out pthread and thread-locals,
-// and C11 atomics too: on aarch64, GCC lowers a compare-exchange to
-// libgcc's outline-atomics helper. So the typed encoder keeps no state
-// between calls.
+// Keep this bridge libc-only: runtime access uses callbacks, with no pthread, TLS, or C11 atomic dependencies.
 
 // The vendored sources stay byte-identical to the upstream release; all
 // Beans-specific configuration happens here, before inclusion.
@@ -314,19 +274,7 @@ static uint64_t beans_json_typed_key_hash(const unsigned char* text,
     return hash;
 }
 
-// Compares a JSON key against a schema field name, both known to be the same
-// length.
-//
-// Field names are short — "id", "name", "email", "active" — and at that size a
-// memcmp call costs more in call and return than the bytes cost to compare.
-// The benchmark's /echo route decodes a thousand objects of four fields each,
-// and the calls alone were 18 of the 204 microseconds of user time the route
-// spends per request: nine percent, spent reaching a comparison rather than
-// making it.
-//
-// The loop is bounded so it stays a loop the compiler unrolls rather than one
-// it turns back into a call; anything longer than a field name is left to
-// memcmp, which is better at length than this is.
+// Compare short schema names inline; use memcmp for names longer than 16 bytes.
 static inline int beans_json_name_eq(const unsigned char* a,
                                      const unsigned char* b, size_t len) {
     if (len <= 16) {
@@ -352,19 +300,8 @@ static const BeansJsonTypedKey* beans_json_typed_find_key(
     return NULL;
 }
 
-// Rejects a document nested deeper than `maximum`, counting the root as 1.
-//
-// Every value counts as a level, scalars included: in {"inner":{"value":7}}
-// the 7 sits at depth 3, so a maximum of 2 refuses that document. That is what
-// test/cases/encoding_json_typed_options.b pins, and it is the reason this
-// cannot simply skip scalars.
-//
-// It does not have to visit them, though. Every child of a container sits at
-// depth + 1 whatever it is, so one test against a non-empty container settles
-// every scalar it holds, and only containers are recursed into. Scalars are
-// almost all of a document — the benchmark's 101 KB body is a thousand objects
-// of four scalar fields each — so this is four calls in five that no longer
-// happen, with the same answer for every input.
+// Reject documents deeper than `maximum`, counting the root and scalar values as levels.
+// Check child depth at each non-empty container; recurse only into nested containers.
 static int beans_json_typed_within_depth(yyjson_val* value,
                                          uint64_t depth,
                                          uint64_t maximum) {
@@ -937,8 +874,8 @@ static void beans_json_typed_release_record(
 //
 // This is the only decode engine. A from-bytes scanner that stored into the
 // target structs with no tree in between was built and measured against it
-// (issue #144): on the benchmark's /echo body — a 101 KB document of about
-// 1,900 small records — it took ~285-334us a decode against this path's
+// (issue #144): on the benchmark's /echo body: a 101 KB document of about
+// 1,900 small records: it took ~285-334us a decode against this path's
 // ~186-238us, because yyjson's SIMD reader parses many small objects faster
 // than a schema-driven byte scanner and the tree it leaves is cheap to walk.
 // It was removed rather than kept as a second engine nobody runs. The gate
@@ -996,8 +933,8 @@ static long long beans_json_typed_decode_walk(
 
     yyjson_val* root = yyjson_doc_get_root(doc);
     // The depth limit is no longer a whole-document pre-pass; it is folded into
-    // the walk below (issue #142). A limit of 0 refuses everything — the root
-    // itself sits at depth 1 — which is the one case the walk cannot reach.
+    // the walk below (issue #142). A limit of 0 refuses everything: the root
+    // itself sits at depth 1, which is the one case the walk cannot reach.
     uint64_t max_depth = req[1] >> 8;
     if (max_depth == 0) {
         req[5] = BEANS_JSON_TYPED_ERR_DEPTH;
@@ -1069,38 +1006,9 @@ static long long beans_json_typed_decode_walk(
     return status;
 }
 
-// Test observability. The last decode's outcome, handed where a test can read
-// it: none of these numbers reach a Beans program, because typed decoding
-// collapses every failure to one error of kind "invalid" at the language
-// boundary, so without this the gate could pin only accept-or-refuse and never
-// WHY or WHERE. test/json_typed_decode.sh records the code and the byte offset
-// of every refusal — over the JSONTestSuite corpus and over every truncation
-// and byte flip of a valid document — in goldens, and this is how it reads
-// them.
-//
-// The four words used to be stored here, in a file-scope array, on the premise
-// that the gate reading them is one thread. That was true of the gate and false
-// of this entry, which is what json.decode, json.decode_bytes,
-// json.decode_bytes_in_place and json.decode_with_options all lower to — public
-// API, so two threads decoding at once raced the stores (issue #152). Nothing
-// about the data wants a global: three of the four words are already in the
-// caller's request buffer and the fourth is this function's return value. Only
-// the reader wanted one, because a Beans program calls it after the decode has
-// returned and cannot see the caller's buffer.
-//
-// So the words leave through the request buffer like every other output of this
-// ABI, and land in per-thread storage the runtime owns: req[4] carries
-// beans_json_decode_probe_publish, and beans_json_decode_probe (also in the
-// runtime) reads this thread's copy back. The storage cannot live here — this
-// bridge must resolve against libc alone (test/encoding_symbols.sh) and
-// _Thread_local puts __tlv_bootstrap in the object on Darwin — so it sits on
-// the runtime's side of the boundary and is reached only through this pointer,
-// exactly as the allocator callbacks in req[9..11] are.
-//
-// The parameter types are spelled the way the runtime spells them, not with
-// uint64_t: calling through a function pointer whose type differs from the
-// callee's declared type is undefined behaviour, and uint64_t is `unsigned
-// long` on LP64 — a different type from the same-width `unsigned long long`.
+// Tests read the last decode's error code and offset through runtime-owned per-thread probe storage; language errors expose only `invalid`.
+// The request buffer carries probe values between this libc-only bridge and the runtime, avoiding shared mutable state and TLS here.
+// Callback parameters must match the runtime's `unsigned long long` declarations; `uint64_t` is a different type on LP64.
 typedef void (*BeansJsonProbeFn)(unsigned long long status,
                                  unsigned long long code,
                                  unsigned long long detail,
@@ -1441,23 +1349,15 @@ static yyjson_mut_val* beans_json_typed_encode_value(
     return NULL;
 }
 
-// ---- direct compact writer ------------------------------------------------
-// The DOM path below builds a yyjson document per call only to serialize it
-// once and free it. For compact mode over schemas without float fields, this
-// writer emits bytes straight from the record — no document, no nodes, no
-// serializer walk — and byte-identically: integers have one decimal spelling,
-// and strings follow yyjson's default escaping exactly (short escapes,
-// uppercase \u00XX for other controls, validated UTF-8 copied raw). Schemas
-// with floats keep the DOM path so real-number formatting stays yyjson's own
-// dtoa, and nested-list elements keep it so unsupported shapes fail the same
-// way they always did.
+// Compact schemas without floats write directly from records with yyjson-compatible escaping.
+// Float and nested-list schemas keep the DOM path for matching number formatting and error behavior.
 
 typedef struct {
     char* data;
     size_t len;
     size_t cap;
     int oom;
-    // Append-into mode (encode_into): when `reserve` is non-NULL, `data`
+    // Append-into mode (encode_into), when `reserve` is non-NULL, `data`
     // points into a caller-owned Bytes rather than a private malloc, and a
     // grow goes through the callback so the writer writes straight into that
     // backing. NULL leaves the malloc/realloc path untouched.
@@ -1472,7 +1372,7 @@ typedef struct {
 } BeansJsonDirectContext;
 
 // One kilobyte to start: an ordinary API object lands inside it, so the
-// common encode grows its buffer exactly once — at allocation — instead of
+// common encode grows its buffer exactly once: at allocation: instead of
 // climbing a ladder of reallocs from a small first guess.
 #define BEANS_JSON_DIRECT_FIRST 1024
 
@@ -1514,26 +1414,13 @@ static int beans_json_direct_grow(BeansJsonDirect* out, size_t extra) {
     return 1;
 }
 
-// always_inline, not merely inline: this is called once per token and the
-// chunked copy below made the body large enough that the compiler stopped
-// folding it into its callers, which cost more in call overhead than the
-// copy saved.
+// Keep this small per-token copy inline to avoid call overhead.
 __attribute__((always_inline))
 static inline int beans_json_direct_raw(BeansJsonDirect* out, const char* text,
                                         size_t len) {
     if (!beans_json_direct_grow(out, len)) return 0;
     char* destination = out->data + out->len;
-    // Almost every append here is a token, not a payload: a key fragment, a
-    // run of digits, a short string field. Encoding a thousand records of
-    // eight fields is around twenty-five thousand of these per document, and
-    // at that size the call into memcpy costs more than the bytes do — it was
-    // 63 of the 358 microseconds of user time the benchmark's /records route
-    // spends per request.
-    //
-    // The chunks are fixed-size memcpys on purpose. A byte loop would be
-    // turned back into a memcpy call by loop-idiom recognition, which is the
-    // thing being avoided; a copy of a size the compiler knows becomes a load
-    // and a store. Longer runs are left to memcpy, which is better at length.
+    // Fixed-size copies avoid a memcpy call for short tokens; longer runs use memcpy.
     if (len <= 32) {
         size_t at = 0;
         for (; at + 8 <= len; at += 8) memcpy(destination + at, text + at, 8);
@@ -1587,7 +1474,7 @@ static int beans_json_direct_sint(BeansJsonDirect* out, int64_t value) {
 // anything non-ASCII. Eight at a time on little-endian hosts, the same trick
 // yyjson's writer uses; the classification is identical to the byte loop.
 // BEANS_JSON_SCALAR_SCAN forces the 8-byte SWAR path even where a vector unit
-// is present — the compile-time A/B lever the encode bench uses to prove the
+// is present: the compile-time A/B lever the encode bench uses to prove the
 // 16-byte scan is doing the work, the way BEANS_JSON_NO_DIRECT is the runtime
 // lever for the direct writer. It never affects output, only which scan runs.
 static size_t beans_json_plain_span(const unsigned char* src, size_t len) {
@@ -1598,7 +1485,7 @@ static size_t beans_json_plain_span(const unsigned char* src, size_t len) {
 #if defined(BEANS_JSON_SCAN_NEON)
     // Sixteen bytes at a time. A byte ends the run if it is below 0x20, has its
     // high bit set (start or continuation of a multibyte sequence), or is a
-    // quote or a backslash — byte for byte the classification the scalar loop
+    // quote or a backslash: byte for byte the classification the scalar loop
     // below uses. Strings shorter than sixteen bytes skip this entirely and
     // take the 8-byte SWAR path, so the short fields a record schema is full
     // of are no slower than before.
@@ -1681,7 +1568,7 @@ static size_t beans_json_plain_span(const unsigned char* src, size_t len) {
     return at;
 }
 
-// 1 written, 0 out of memory, -1 invalid UTF-8 — the same byte classes and
+// 1 written, 0 out of memory, -1 invalid UTF-8: the same byte classes and
 // sequence checks as yyjson's writer with default flags.
 static int beans_json_direct_string(BeansJsonDirect* out,
                                     const unsigned char* src, size_t len) {
@@ -1750,8 +1637,8 @@ static int beans_json_direct_string(BeansJsonDirect* out,
 static int beans_json_direct_eligible(const BeansJsonTypedSchema* schema,
                                       int depth);
 
-// The constant text between one field's value and the next — brace or comma,
-// quote, key, quote, colon — laid out once so a list of records emits each
+// The constant text between one field's value and the next: brace or comma,
+// quote, key, quote, colon: laid out once so a list of records emits each
 // key as a single copy instead of re-deciding how to escape it a thousand
 // times. Built for the duration of one encode and freed with it: the bridge
 // keeps no state between calls, so there is nothing to synchronize.
@@ -1831,7 +1718,7 @@ static int beans_json_direct_object(const BeansJsonTypedSchema* schema,
                                     BeansJsonDirectContext* context);
 
 // 1 written, 0 out of memory, -1 invalid string bytes, -2 a shape the DOM
-// walk also refuses (null string or list, missing schema) — mapped by the
+// walk also refuses (null string or list, missing schema): mapped by the
 // caller to the same error codes the DOM path reports.
 static int beans_json_direct_value(uint64_t kind, uint64_t flags,
                                    const BeansJsonTypedSchema* child_schema,
@@ -2010,8 +1897,8 @@ static int beans_json_direct_eligible(const BeansJsonTypedSchema* schema,
 // Roughly how many bytes one record of this schema will occupy: the keys
 // exactly, the values by kind. Nothing is read from the record itself, so
 // this costs one walk of read-only schema data and cannot fail. It only
-// sizes the first allocation — a short guess still grows, a long one only
-// wastes a little — which is what keeps a 50,000-element list from climbing
+// sizes the first allocation: a short guess still grows, a long one only
+// wastes a little, which is what keeps a 50,000-element list from climbing
 // a ladder of reallocs and copying itself at every rung.
 static size_t beans_json_direct_record_size(
         const BeansJsonTypedSchema* schema, int depth) {
@@ -2103,7 +1990,7 @@ static long long beans_json_direct_encode(unsigned char* root,
     }
     if (wrote != 1) {
         if (reserve) {
-            // Nothing to free — the store is the caller's. Roll the Bytes
+            // Nothing to free: the store is the caller's. Roll the Bytes
             // back to what it held before, so a failed encode_into leaves the
             // target exactly as it was.
             unsigned long long cap = 0;
@@ -2111,8 +1998,8 @@ static long long beans_json_direct_encode(unsigned char* root,
         } else {
             free(context.out.data);
         }
-        // The DOM walk reports its refusals — null strings and lists, memory
-        // trouble — as a memory error, and only bad string bytes as invalid;
+        // The DOM walk reports its refusals: null strings and lists, memory
+        // trouble: as a memory error, and only bad string bytes as invalid;
         // this path keeps that exact mapping.
         if (wrote == -1) {
             req[5] = BEANS_JSON_WERR_INVALID;
@@ -2166,7 +2053,7 @@ BEANS_ENC_API long long beans_enc_json_typed_encode(
         return BEANS_ENC_ERR_INVALID;
     }
 
-    // BEANS_JSON_NO_DIRECT routes every encode through the DOM path — the
+    // BEANS_JSON_NO_DIRECT routes every encode through the DOM path: the
     // A/B lever the byte-equality fuzz uses, and the escape hatch if the
     // direct writer is ever suspected in the field. Read once before main,
     // so the hot path neither rescans the environment nor races on a lazy
@@ -2220,7 +2107,7 @@ BEANS_ENC_API long long beans_enc_json_typed_encode(
     }
     if (append) {
         // A float schema still routes here. yyjson wrote to its own buffer;
-        // append that once into the caller's Bytes and free it — the copy the
+        // append that once into the caller's Bytes and free it: the copy the
         // direct path avoids, but this path is not the hot one.
         unsigned long long cap = 0;
         unsigned char* base =

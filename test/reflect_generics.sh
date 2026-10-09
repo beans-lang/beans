@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# #158 — what reflection answers, and what it refuses, for members a generic
+# #158, what reflection answers, and what it refuses, for members a generic
 # class declares.
 #
 # The registry is erased over type arguments on both backends: one row per
 # open declaration, reached alike by `type_of(Grid<int>)` and
 # `type_of(Grid<string>)`. The tree interpreter served a call or a field off
 # the live object; the native backend had to hand the runtime a monomorphic
-# function pointer, had no instantiation to name, and passed null — so the
+# function pointer, had no instantiation to name, and passed null, so the
 # same checked program answered on one backend and said `unsupported` on the
 # other.
 #
 # This is a GOLDEN gate, not a parity one, and that is the point.
 # test/backend_parity.sh compares the two backends against each other with no
-# golden, so a change that moves both legs together passes it — and the
+# golden, so a change that moves both legs together passes it, and the
 # erasure refusals here are exactly that shape. The expected kinds and
 # messages are pinned so the refusals cannot quietly become answers, or
 # answers refusals, on both legs at once.
@@ -46,8 +46,8 @@ run_both issue158_reflect_generic
 
 # A subclass that writes no `init` of its own inherits a generic base's, and
 # that body is a template filed under no symbol. Nothing raised it, so the
-# ordinary `new` failed the BUILD talking about the emitter — for a program
-# the checker had accepted — while the interpreter ran it. The golden above
+# ordinary `new` failed the BUILD talking about the emitter, for a program
+# the checker had accepted, while the interpreter ran it. The golden above
 # runs the class; this asserts the emitter names no such failure.
 echo "checking a plain subclass of a closed generic builds"
 cat >"$tmp/inherited_init.b" <<'PROGRAM'

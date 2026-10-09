@@ -1,6 +1,6 @@
 // the simple container rows: clear (death order is back to
 // front, same as the interpreter's vector teardown), reverse,
-// clone (an independent copy — mutating one side must not touch
+// clone (an independent copy, mutating one side must not touch
 // the other), Map.values, Map.clear, and List<decimal>.sort.
 import std.io
 

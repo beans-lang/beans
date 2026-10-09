@@ -6,7 +6,7 @@
 #include <vector>
 
 // Twin for bench/sorted_map.b: std::map, a red-black tree, over the same
-// operation stream and the same checksum. `set` is `m[key] = value` — no
+// operation stream and the same checksum. `set` is `m[key] = value`, with no
 // insert hint, because SortedMap.set takes none and the ascending fill is
 // exactly the case a hint would erase. `get` is `find`, which is what an
 // Option-returning lookup costs; `ceiling_key` is `lower_bound`; the ordered

@@ -63,7 +63,7 @@ fn ticker(ready: Gate) {
 
 fn main() {
     // two fibers of one worker on opposite ends of small channels: each
-    // side parks while the other runs — without fiber-aware channels this
+    // side parks while the other runs, without fiber-aware channels this
     // is an instant thread deadlock
     let ping: Channel<int> = new Channel(1)
     let pong: Channel<int> = new Channel(1)
@@ -94,7 +94,7 @@ fn main() {
         err(error) => { io.println("bad receiver") }
     }
 
-    // a send on a closed channel panics — contained to its fiber, surfaced
+    // a send on a closed channel panics, contained to its fiber, surfaced
     // at the join as an ordinary error
     let s: Brew<int> = brew closed_sender(drained)
     match s.join() {
@@ -104,7 +104,7 @@ fn main() {
 
     // a fiber joining an OS thread parks; a sibling fiber runs meanwhile.
     // The thread waits on the gate the ticker opens, so the sibling has to
-    // have run for the join to answer at all — the order is a fact here,
+    // have run for the join to answer at all, the order is a fact here,
     // not a race the faster sleeper happens to win.
     let ready: Gate = new Gate()
     let t: Thread<int> = thread.spawn(fn() -> int {

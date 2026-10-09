@@ -1,19 +1,19 @@
-// ABI probe — evidence for why the fallible-builtin boundary must not take a
-// BRes/BOpt struct back from C.
-//
-// `probe_bres`/`probe_bopt` return the 16-byte aggregate by value, exactly as the
-// runtime's BRes/BOpt-returning functions used to. How that return is lowered is a
-// per-target C-ABI decision Clang makes — a register pair on SysV and AAPCS64, a
-// hidden sret pointer on Win64/i686/ARMv7/s390x, and so on. That is precisely the
-// fact the compiler must not hard-code, and hard-coding it (object_format==coff)
-// produced broken IR on ARM64 Windows.
-//
-// `probe_bres_out`/`probe_bopt_out` are the portable form the generated code now
-// calls: the raw value returned normally, the second word written through an
-// output pointer. Their signature is `i64 (..., ptr)` on every target.
-//
-// test/abi_probe.sh compiles this for each supported triple and shows the first
-// group's return ABI diverging while the `_out` group stays scalar everywhere.
+// Compare target-specific aggregate returns with the portable i64-plus-output-pointer ABI.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 typedef struct {
     long long val;

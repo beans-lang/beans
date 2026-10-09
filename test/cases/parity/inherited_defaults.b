@@ -6,7 +6,7 @@
 //     dynamic lookup walked `extends` only, and a class reaches its interface
 //     through `implements`, so the call fell back to the bodyless declaration
 //     the checker had resolved and answered a value with no type at all.
-//     Native had always been right — the only fault so far where the
+//     Native had always been right, the only fault so far where the
 //     interpreter was the wrong half, which matters because goldens are
 //     produced by `beansc run`.
 //

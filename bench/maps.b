@@ -3,7 +3,7 @@
 // timed them; this is that number.
 //
 // Map carries an open-addressed hash index beside its insertion-ordered
-// entry array, so get/set/contains are O(1) — these sizes are a real
+// entry array, so get/set/contains are O(1). These sizes use the hash index.
 // workload, comparable across the three languages.
 import std.io
 import std.os

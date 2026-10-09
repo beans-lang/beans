@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Derived rendering (#34): the shapes the language builds out of other values
-# — maps as {k: v}, results as ok(x)/err(e), class instances as
-# Name { field: value } — each have a form a string can hold. The two
+# Supported shapes include maps, results, and class instances such as
+# Name { field: value }, each have a form a string can hold. The two
 # compilers must print the golden byte for byte, and a value the backends
 # cannot render alike must be refused by the checker, not by an emitter.
 set -euo pipefail
@@ -15,8 +15,8 @@ BEANSC=${BEANSC:-./build/beansc}
 run_both() {
     local name=$1
     "$BEANSC" run "test/cases/$name.b" >"$tmp/$name.interp"
-    # A refusal here is the interesting failure — the checker let something
-    # through that an emitter cannot produce — so say what it was instead of
+    # A refusal here is the interesting failure, the checker let something
+    # through that an emitter cannot produce, so say what it was instead of
     # dying on set -e with the reason buried in a temp file.
     if ! "$BEANSC" build "test/cases/$name.b" -o "$tmp/$name.native" \
         >"$tmp/$name.build" 2>&1; then
@@ -56,8 +56,8 @@ refuse_both() {
 echo "checking maps, structs, classes and cycles render alike on both backends"
 run_both derived_render_ok
 
-# A class whose real type is not its declared one — an interface, a base a
-# subclass extends — and a class carrying an unrenderable field, each refused
+# A class whose real type is not its declared one, an interface, a base a
+# subclass extends, and a class carrying an unrenderable field, each refused
 # at check time, the same way on both backends.
 echo "checking an interface value is refused"
 refuse_both derived_render_iface_bad "give it a string form first"

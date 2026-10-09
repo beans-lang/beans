@@ -1,6 +1,6 @@
 // Phi joins through the self-host LLVM emitter. Every phi lowers to
 // a stack slot stored on the taken edge: a real LLVM phi would name
-// values from blocks that are not emitted yet — `a && (b || c)`
+// values from blocks that are not emitted yet, `a && (b || c)`
 // joins on a value defined two blocks later in block order, which
 // is exactly the shape that broke.
 import std.io

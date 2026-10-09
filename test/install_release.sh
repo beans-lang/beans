@@ -3,7 +3,7 @@
 #
 # The package is built, a release manifest is written beside it, and
 # tools/install-release.sh is run against that directory exactly as it would run
-# against a GitHub release — same detection, same checksum check, same staging,
+# against a GitHub release, same detection, same checksum check, same staging,
 # same PATH handling. What differs is only where the bytes come from.
 set -euo pipefail
 
@@ -39,7 +39,7 @@ dist="$tmp/dist"
 prefix="$tmp/home"
 
 # A full Linux package needs a pinned sysroot, which is built from dpkg's own
-# manifests. A host without dpkg — Alpine, for one — can only produce a slim
+# manifests. A host without dpkg, Alpine, for one, can only produce a slim
 # package, so say so rather than fail while building a sysroot it cannot have.
 if [[ "$(uname -s)" == Linux && "${BEANS_RELEASE_CLASS:-auto}" != slim ]]; then
     if command -v dpkg-query >/dev/null 2>&1; then

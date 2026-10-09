@@ -1,8 +1,8 @@
 // #123: a generic class extending a generic base in another package. The
 // override lives on a generic class, so the record of which slots a name
 // declares had no entry for it (a template carries no symbol), and matching
-// the class against a `Base<int>` receiver by its written arguments — which
-// say `Base<T>` — answered no. Both made the emitter believe nothing could
+// the class against a `Base<int>` receiver by its written arguments, which
+// say `Base<T>`, answered no. Both made the emitter believe nothing could
 // replace the base body, and it compiled the call direct while the
 // interpreter dispatched to the override.
 package main

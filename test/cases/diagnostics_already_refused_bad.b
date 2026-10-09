@@ -2,7 +2,7 @@
 // must never reach a message: a reader handed it is told about a type they
 // never wrote, on a line whose real problem was reported somewhere else.
 // Every rule that reads a value's type and refuses what it finds is here,
-// each applied to a value that already has no type — one error for the
+// each applied to a value that already has no type, one error for the
 // declaration, and nothing after it.
 import std.io
 
@@ -37,7 +37,7 @@ fn main() {
 }
 
 // A type is refused when any part of it is, so the rules below are reached
-// with the marker nested inside a type the reader really did write —
+// with the marker nested inside a type the reader really did write,
 // "unknown class 'List<poison>'", "expected Option<main.Real>, got
 // Option<poison>", "got fn(poison) -> int" (#175). One error for each
 // mention of the unknown name, and nothing after it.

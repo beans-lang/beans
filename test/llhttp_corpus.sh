@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Replays llhttp's own markdown corpus (test/fixtures/llhttp-corpus, tag
 # v9.4.3, unmodified) through the beans_h1 bridge and holds its event trace
-# to the upstream expectations line for line — offsets, span merging, pause
+# to the upstream expectations line for line, offsets, span merging, pause
 # points, error text. Every case also re-runs split in two at every byte,
 # so the chunking-invariance property is part of the same gate. The case
 # count is pinned: a runner that silently skips files cannot pass.

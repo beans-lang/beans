@@ -2,7 +2,7 @@
 // declarations appear in the emitted IR: to_int (Result, {i64,ptr}), find
 // (Option, {i64,i64}), map get and index (beans_map_get_raw). test/runtime_abi.sh
 // asserts none of these cross the C boundary as a struct return or through sret.
-// Deliberately no `extern "C"` — user aggregate ABI is a separate, legitimate use
+// Deliberately no `extern "C"`, user aggregate ABI is a separate, legitimate use
 // of sret, and this program keeps the runtime-builtin boundary in isolation.
 import std.io
 

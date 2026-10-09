@@ -381,7 +381,7 @@ for want in io thread encoding process; do
 $got"
 done
 # The networking packages are ordinary source packages, so they arrive here
-# through the same module walk as everything else — no compiler-side list to
+# through the same module walk as everything else, no compiler-side list to
 # keep in step. That is the property under test, not a spelling.
 for want in net poll http websocket compress tls crypto; do
     grep -q "^item module $want import:std.$want$" <<<"$got" ||
@@ -491,7 +491,7 @@ grep -q "^type type:std.http::RequestParser$" <<<"$members" ||
     fail "the receiver's type should be reported:
 $members"
 
-# Package members, from an incomplete line — the shape an editor actually
+# Package members, from an incomplete line, the shape an editor actually
 # asks about, mid-keystroke.
 cat >"$scratch/net_members.b" <<'BEANS'
 package main
@@ -520,7 +520,7 @@ echo "ok semantic completion: receiver members, builtins, scopes, prefixes"
 # Module constants are first-class semantic symbols (#37)
 # ---------------------------------------------------------------------------
 # A `const` answers hover with its type and folded value, a use resolves to
-# its declaration, its references are found, and it completes by name — the
+# its declaration, its references are found, and it completes by name, the
 # three editor features the feature is not done without.
 echo "checking module constant semantics"
 
@@ -539,7 +539,7 @@ fn main() {
 BEANS
 
 # Hover on the use: it is a const, its detail carries the folded value, and it
-# names the declaration to jump to — go-to-definition without guessing.
+# names the declaration to jump to, go-to-definition without guessing.
 expect_line symbol "$scratch/consts.b:8:18" 'symbol const:main::MAX_FRAME'
 expect_line symbol "$scratch/consts.b:8:18" 'kind const'
 expect_line symbol "$scratch/consts.b:8:18" \
@@ -569,7 +569,7 @@ $got"
 
 # #59: a constant that sizes a fixed array is a use of that constant, in every
 # position a type can be written. The array length is not text the editor
-# re-scans — the resolver decided which constant it is, so hover, definition,
+# re-scans, the resolver decided which constant it is, so hover, definition,
 # references and rename all answer from the same index a read answers from.
 cat >"$scratch/arraylen.b" <<'BEANS'
 package main
@@ -596,8 +596,8 @@ for pos in 6:29 8:21 11:18; do
     expect_line symbol "$scratch/arraylen.b:$pos" 'rename yes'
 done
 
-# References from the declaration find all three lengths — a field, a
-# parameter and a local — and nothing else.
+# References from the declaration find all three lengths, a field, a
+# parameter and a local, and nothing else.
 refs=$(probe refs "$scratch/arraylen.b:4:7")
 for expected in "arraylen.b:4:7+5 decl" "arraylen.b:6:29+5 read" \
                 "arraylen.b:8:21+5 read" "arraylen.b:11:18+5 read"; do
@@ -666,7 +666,7 @@ fn main() {
 }
 BEANS
 
-# the editor side: the piece resolves at the columns it really occupies —
+# the editor side: the piece resolves at the columns it really occupies,
 # `b` is the local, `get_u64` is the built-in method on it
 expect_line symbol "$scratch/interp.b:7:18" 'symbol local:fn:main::main#0'
 expect_line symbol "$scratch/interp.b:7:20" 'symbol builtin:Bytes.get_u64'

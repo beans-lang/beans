@@ -171,7 +171,7 @@ if [[ "$busy" == yes ]]; then
 fi
 
 echo "checking a child never inherits a blocked signal"
-# The parent may be watching signals, which means blocking them — and a signal mask is
+# The parent may be watching signals, which means blocking them, and a signal mask is
 # inherited across exec. A child that starts with TERM blocked cannot be stopped by
 # anyone, including its parent, so the mask is cleared in the child. Without that fix
 # `stop` on the child below would hang until the kill.
@@ -288,7 +288,7 @@ expect_error "is move-only" test/cases/child_no_copy.b
 expect_error "init of 'process.Child' isn't pub" test/cases/child_private_init.b
 
 echo "checking no memory errors under ASan"
-# leaks cannot follow a fork, so ASan is the memory check here — and forking with pipes
+# leaks cannot follow a fork, so ASan is the memory check here, and forking with pipes
 # and reaping is exactly where a lifetime bug would live.
 ./build/beansc build examples/child_process.b --emit ir >/dev/null
 BEANS_SANITIZE=address ./build/beansc llvm "examples/child_process.b" \

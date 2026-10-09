@@ -416,7 +416,7 @@ partial class LlvmTextEmitter {
         // above it has run its defers and dropped what it owned by the time
         // the pad here is reached, and the pad does not resume: it ends the
         // fiber. Nothing therefore unwinds out of Beans code into the C
-        // frames that started it — the fiber core's entry trampoline carries
+        // frames that started it: the fiber core's entry trampoline carries
         // no unwind information and is not a frame to walk through.
         //
         // A thread spawn shares this thunk and pays nothing for the pad: a
@@ -470,11 +470,11 @@ partial class LlvmTextEmitter {
         return "spawn.eh:\n  %spawn.lp = landingpad \{ ptr, i32 \} cleanup\n  call void @beans_fiber_unwind_finish()\n  unreachable\n"
     }
 
-    // brew — start the fabricated closure on a child fiber of this worker
+    // brew: start the fabricated closure on a child fiber of this worker
     // (spec/CONCURRENCY.md). The closure rides the exact thread-spawn thunk
     // convention, so spawn_thunk is reused as is; what changes is the
     // runtime entry, the borrowed report name, and that nothing here marks
-    // shared graphs — the fiber shares this worker's heap view.
+    // shared graphs: the fiber shares this worker's heap view.
     fn emit_brew(
         function: MirFunction,
         instruction: MirInstruction,
@@ -620,7 +620,7 @@ partial class LlvmTextEmitter {
         return output
     }
 
-    // contained — the catch frame (spec/CONCURRENCY.md).
+    // contained: the catch frame (spec/CONCURRENCY.md).
     //
     // The call runs on this fiber, in this frame, as an `invoke` whose
     // exception edge is a landing pad that does NOT resume. That single
@@ -631,8 +631,8 @@ partial class LlvmTextEmitter {
     // join.
     //
     // The operand is the closure `brew` fabricates, called the way the spawn
-    // thunk calls it — the first word of the box is the function and the box
-    // is the environment — so this needs to know nothing about the call that
+    // thunk calls it: the first word of the box is the function and the box
+    // is the environment, so this needs to know nothing about the call that
     // was written. It is deliberately not consumed here: the plan releases
     // it, which puts the release on the ok path and the caught path alike,
     // and puts it in the cleanup pad for a panic that escapes past the
@@ -665,7 +665,7 @@ partial class LlvmTextEmitter {
         }
         let result_type: HirType = instruction.type
         let payload: HirType = result_type.args[0]
-        // There is no Result<unit> in Beans — `ok` takes a value — and the
+        // There is no Result<unit> in Beans (`ok` takes a value) and the
         // checker refuses a unit-returning contained call for exactly that
         // reason, so seeing one here is the checker and the emitter
         // disagreeing rather than a program to diagnose.
@@ -770,9 +770,9 @@ partial class LlvmTextEmitter {
     }
 
     // The caught arm's Error: the report the unwind was carrying moves into a
-    // fresh Error of kind `panic`. There is only one kind here — a cancel
+    // fresh Error of kind `panic`. There is only one kind here: a cancel
     // passes through the catch pad to the frame's cleanup, and there is no
-    // handle to close twice — which is the
+    // handle to close twice, which is the
     // whole difference from brew_error_build's three-way select.
     fn contained_error_build(
         instruction: MirInstruction,
@@ -798,8 +798,8 @@ partial class LlvmTextEmitter {
         return "  call void @beans_brew_cancel(ptr {receiver})\n"
     }
 
-    // group.brew — the fleet flavor of emit_brew: the group rides first,
-    // the runtime keeps the row, nothing comes back.
+    // `group.brew` passes the group first; the runtime retains the row and
+    // returns no handle.
     fn emit_group_brew(
         function: MirFunction,
         instruction: MirInstruction,
@@ -904,10 +904,7 @@ partial class LlvmTextEmitter {
         return output
     }
 
-    // next / try_next: a delivered row arrives already joined — NULL is
-    // none, anything else becomes some(Result<T>) built exactly as the
-    // boxed join arm builds it, and the row is released once read. The
-    // Option rides as a nullable pointer because Result is a reference.
+        // `next` and `try_next` return none for NULL; otherwise they wrap the joined row in some(Result<T>) and release it. Option uses a nullable pointer representation.
     fn emit_taskgroup_next(
         function: MirFunction,
         instruction: MirInstruction,
@@ -938,7 +935,7 @@ partial class LlvmTextEmitter {
             "i64 @beans_brew_status(ptr)")
         // A payload wider than one runtime slot makes Result<T> the inline
         // {i1, T, Error} aggregate, and Option<Result<T>> an aggregate in
-        // turn — so neither the nullable-pointer Option nor the boxed Result
+        // turn, so neither the nullable-pointer Option nor the boxed Result
         // below can carry it, and a fleet returning a struct, an Option, a
         // Result or a decimal ran interpreted and refused to build. The
         // group itself has always taken wide payloads (brew goes through
@@ -989,7 +986,7 @@ partial class LlvmTextEmitter {
     }
 
     // wait_all: the runtime joins the rest in spawn order. NULL back
-    // means everyone was ok — collect builds the List<T> and the ok arm
+    // means everyone was ok: collect builds the List<T> and the ok arm
     // boxes it; a row back is the first failure, dressed exactly as a
     // join's err arm and released once read.
     fn emit_taskgroup_wait_all(
@@ -1007,7 +1004,7 @@ partial class LlvmTextEmitter {
         }
         let payload: HirType = receiver_type.args[0]
         // A decimal rides a brew row as a boxed slot, but List<decimal>
-        // stores 32-byte elements — the two cannot meet here yet.
+        // stores 32-byte elements: the two cannot meet here yet.
         if self.type_text(instruction.type) != "ptr" ||
            canonical_hir_name(payload.name) ==
                "decimal" {
@@ -1171,8 +1168,8 @@ partial class LlvmTextEmitter {
     }
 
     // Atomic<T>: orders fold into the instruction, which is why
-    // the checker requires literals. Atomic<bool> is an i8 cell —
-    // LLVM refuses non-byte atomics — widening on the way in and
+    // the checker requires literals. Atomic<bool> is an i8 cell:
+    // LLVM refuses non-byte atomics: widening on the way in and
     // truncating on the way out, like production's emit_atomic_op.
     fn emit_atomic_method(
         function: MirFunction,
@@ -1548,7 +1545,7 @@ partial class LlvmTextEmitter {
             let id: int = self.fresh()
             // Disarm before the body runs. A defer runs once: if its body
             // panics (contained), the cleanup pad walks this same list and
-            // must not run it a second time — that would be a panic raised
+            // must not run it a second time: that would be a panic raised
             // during the unwind, reported as a double panic. The interpreter
             // likewise moves past a defer that panicked and runs the older
             // ones (issue #44).

@@ -1,4 +1,4 @@
-// bun fib.js — mirror of fib.b / fib.go
+// Bun mirror of fib.b and fib.go.
 function fib(n) {
     if (n < 2) return n;
     return fib(n - 1) + fib(n - 2);

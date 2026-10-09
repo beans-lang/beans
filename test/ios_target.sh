@@ -4,7 +4,7 @@
 # `--target arm64-apple-ios` is easy to add and easy to get subtly wrong: a
 # Mach-O that is arm64 and built against the macOS SDK looks fine to `file` and
 # is rejected by the device at load. What distinguishes them is the
-# LC_BUILD_VERSION platform byte — 1 macOS, 2 iOS, 7 iOS Simulator — so that is
+# LC_BUILD_VERSION platform byte, 1 macOS, 2 iOS, 7 iOS Simulator, so that is
 # what this checks, along with the SDK the binary was actually linked against.
 #
 # The simulator leg goes further and runs the program, because a binary that

@@ -1,4 +1,4 @@
-// a generic class with a deinit — destruction dispatches through the same
+// A generic class with deinit dispatches through the same
 // descriptor slot as a non-generic class, per instantiation. run vs build
 // must print the same lines in the same order.
 import std.io

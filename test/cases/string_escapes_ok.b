@@ -50,7 +50,7 @@ fn chars_inverse() {
     io.println("{pieces[1] == "\u{e9}"} {pieces[2] == "\u{4e2d}"} {pieces[3] == "\u{1f600}"}")
 }
 
-// An escaped brace is a brace, not a slot — the escape has to be consumed
+// An escaped brace is a brace, not a slot, the escape has to be consumed
 // whole or the interpolation walker loses the string's structure.
 fn braces() {
     let n: int = 7

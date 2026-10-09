@@ -2,12 +2,12 @@
 //
 // This is the program that tells the two apart, and it is the only shape that
 // can: the count is read to decide whether a panic unwinds at all, and a
-// brewed fiber always unwinds anyway — so the difference only shows on the
+// brewed fiber always unwinds anyway, so the difference only shows on the
 // ROOT fiber, which unwinds only when a frame of its own is standing.
 //
 // A brewed child opens a catch frame and parks inside it. The root then panics
 // with no frame of its own. That panic is uncontained: it must abandon its
-// frames — no defer, no deinit — print the ordinary report and exit 3.
+// frames, no defer, no deinit, print the ordinary report and exit 3.
 //
 // With a per-thread count the root reads the child's frame and unwinds instead:
 // the tree walker runs the root's defers and drops its locals, and the native

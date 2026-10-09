@@ -1,6 +1,6 @@
 // A partial class is one class written in more than one place. Every part
-// says `partial`, exactly one part may carry the header — modifiers,
-// generic parameters, extends and implements — and the members of every
+// says `partial`, exactly one part may carry the header, modifiers,
+// generic parameters, extends and implements, and the members of every
 // part belong to the one class the parts describe together.
 import std.io
 

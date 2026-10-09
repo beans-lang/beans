@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# G7: LocalStoredCallback.create — captures unrestricted (no
+# G7: LocalStoredCallback.create, captures unrestricted (no
 # Send+Sync), every invocation checked against the registering thread,
 # cross-thread invocation is a runtime abort. Same close() discipline.
 set -euo pipefail
@@ -111,7 +111,7 @@ run_cross() {
         exit 1
     fi
     # both compilers stop the same way: beans_panic wording and exit
-    # code 3 — the interpreter used to abort with 134 here
+    # code 3, the interpreter used to abort with 134 here
     if [[ "$status" -ne 3 ]]; then
         echo "cross-thread violation exited $status, want 3 ($label)" >&2
         cat "$tmp/cross.out" >&2

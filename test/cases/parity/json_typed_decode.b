@@ -3,7 +3,7 @@
 // `json.decode<T>` and its three siblings are lowered natively into a walk of
 // the parsed document straight into the target struct. Nothing replaced the
 // stdlib body under `beansc run`, so the call answered that body's own
-// `err("typed JSON decoding was not lowered", "unsupported")` — an ordinary
+// `err("typed JSON decoding was not lowered", "unsupported")`, an ordinary
 // Result failure, no diagnostic and no panic, so a program that branches on the
 // result took a different branch under the interpreter than in its own binary.
 // Silently, which is the worst shape a backend split can have.
@@ -11,7 +11,7 @@
 // The tree interpreter decodes for itself now, over the same parse tree:
 // json.parse is an extern "C" call into the one vendored yyjson on both sides,
 // so only the mapping from document to struct is written twice. This case is
-// that mapping, rule by rule — the rules are beans_json_typed_object_direct and
+// that mapping, rule by rule, the rules are beans_json_typed_object_direct and
 // beans_json_typed_value_direct in runtime/encoding/beans_enc_json.c.
 //
 // Every refusal the decoder answers is the same error whatever the reason

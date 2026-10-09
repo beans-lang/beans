@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-shm.XXXXXX")
 # A shared-memory name outlives the process that made it, so it is unlinked on the
-# way out whatever happens — a leaked name is a resource leak the OS keeps.
+# way out whatever happens, a leaked name is a resource leak the OS keeps.
 name="/beans_test_$$"
 trap 'rm -rf "$tmp"; ./build/beansc run "$tmp/unlink.b" >/dev/null 2>&1 || true' EXIT
 

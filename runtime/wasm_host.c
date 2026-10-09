@@ -6,7 +6,7 @@
 //   1. the five hooks from the object-ABI contract in beans_rt.c
 //   2. the memory and string primitives used by the freestanding Beans core
 //   3. the 128-bit integer helpers clang calls for `decimal`, which normally come from
-//      compiler-rt's wasm32 build — absent here, so they are written out
+//      compiler-rt's wasm32 build: absent here, so they are written out
 //   4. the WASIp1 imports used for I/O and hosted services, plus `_start`
 //
 // This is linked automatically by `beansc build --target wasm32-wasip1`. Keeping the
@@ -178,7 +178,7 @@ void bzero(void* dst, size_t32 n) { memset(dst, 0, n); }
 //
 // The catch that shapes all of it: writing `v >> 64` on a `u128` makes clang call
 // `__lshrti3`, which is one of the functions being defined. So everything below works on
-// an explicit pair of 64-bit halves through a union — no 128-bit shift appears anywhere,
+// an explicit pair of 64-bit halves through a union: no 128-bit shift appears anywhere,
 // and the bootstrap loop cannot happen.
 
 typedef union {

@@ -59,7 +59,7 @@ case "${1:-gate}" in
         BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_arch.sh s390x
         # Hosted gates: beansc itself, as that architecture's binary under
         # qemu-user, reaches its self-compile fixed point and drives the
-        # examples byte-identical — the bar for calling a target a host.
+        # examples byte-identical, the bar for calling a target a host.
         BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_hosted.sh ppc64le
         BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_hosted.sh riscv64
         BEANS_LINUX_ARCH_REQUIRE=1 bash test/linux_hosted.sh i686

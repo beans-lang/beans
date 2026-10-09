@@ -16,8 +16,8 @@ fn canonical_hir_name(name: string) -> string {
 }
 
 // A function type's result is optional in the *syntax*, never in the *type*.
-// `fn(T)` and `fn(T) -> unit` are one type — hir_type_key renders both as
-// `fn(T)->unit` — but only the second carries the result in `args`, because
+// `fn(T)` and `fn(T) -> unit` are one type: hir_type_key renders both as
+// `fn(T)->unit`, but only the second carries the result in `args`, because
 // the lowerings build `args` from the syntax's children and append a result
 // only when one was written. So a reader that walks `args` directly sees two
 // different arities for one type, and any rule it draws from that is wrong.
@@ -148,13 +148,13 @@ fn hir_type_keys_equal(left: HirType, right: HirType) -> bool {
 // wrong and with the reason. Every rule that reads a value's type stops
 // there: a second message about a value that has no type tells a reader
 // nothing they can act on, and "poison" is the checker's own word for
-// "already reported" — never a type anyone wrote, so it must never reach a
+// "already reported": never a type anyone wrote, so it must never reach a
 // diagnostic. test/diagnostics.sh fails if one does.
 //
 // The walk goes into the arguments, because a type is refused when any part
 // of it is. `List<Nope>` is not itself the marker, but the only thing wrong
 // with it was already reported against `Nope`, and a rule that goes on to
-// render it composes the marker into a type the reader is told they wrote —
+// render it composes the marker into a type the reader is told they wrote:
 // "unknown class 'List<poison>'", "expected Option<main.Real>, got
 // Option<poison>" (#175). One refused part refuses the whole.
 fn hir_already_refused(type: HirType) -> bool {
@@ -163,7 +163,7 @@ fn hir_already_refused(type: HirType) -> bool {
     // every type asked is a bare name, and this is on the path of every
     // expect_type: a `for x in xs` here parks a cycle-collection candidate
     // per element per call, and a checker that parks more raises
-    // cc_threshold for whatever runs next in the same process — which under
+    // cc_threshold for whatever runs next in the same process, which under
     // `beansc run` is the program itself.
     let count: int = type.args.len()
     if count == 0 { return false }
@@ -190,12 +190,7 @@ fn hir_is_numeric(type: HirType) -> bool {
            type.name == "decimal"
 }
 
-// What may cross a C `...` tail. Past the last named parameter the
-// prototype describes nothing, so the value's own type is the whole
-// contract: it has to have one unambiguous C spelling that the target's
-// variadic rules and C's default argument promotions both know. A
-// by-value record, a Beans closure and every managed Beans value are out
-// — the caller and the callee would be agreeing about nothing.
+// C variadic arguments require one unambiguous C spelling accepted by target rules and default promotions; by-value records, closures, and managed values are excluded.
 //
 // `decimal` is deliberately excluded even though hir_is_numeric accepts
 // it: it is two limbs, not a C scalar.
@@ -323,7 +318,7 @@ fn builtin_generic_arity(name: string) -> int {
 // `unit` is the absence of a value, not a value. It is meaningful exactly
 // where a *result* is named: a function's or closure's declared result, and
 // the payload of a concurrent handle, which is the result type of the call
-// the handle runs — `Thread<unit>`, `Brew<unit>` and `TaskGroup<unit>` all
+// the handle runs: `Thread<unit>`, `Brew<unit>` and `TaskGroup<unit>` all
 // name a child that computes nothing, and both backends run them. Anywhere
 // else a value of the type would have to exist and there is none: a local, a
 // field, a parameter, an element, and above all a `Result` payload, because
@@ -369,13 +364,13 @@ fn hir_unit_misplacement(type: HirType,
         }
         return none
     }
-    // Four builtins already state what their element may be — a fixed array
+    // Four builtins already state what their element may be: a fixed array
     // and a Slice want inline scalars, RawPtr, fixed arrays or extern "C"
-    // records, a RawPtr the same, an Atomic integers and bool — and each says
+    // records, a RawPtr the same, an Atomic integers and bool, and each says
     // so with its own sentence, naming `unit` outright, wherever such a type
     // is validated. Walking into them here would answer one mistake twice.
-    // The three callback holders say the same thing about their argument —
-    // it has to be a C callback function type — so they are skipped for the
+    // The three callback holders say the same thing about their argument:
+    // it has to be a C callback function type, so they are skipped for the
     // same reason.
     if name == "array" || name == "RawPtr" ||
        name == "Slice" || name == "Atomic" ||
@@ -417,7 +412,7 @@ fn hir_unit_named(parent: HirType,
 }
 
 // The sentence for a misplaced unit. It names the program's own type and
-// says what to write instead — never the backend that could not emit it.
+// says what to write instead: never the backend that could not emit it.
 fn unit_misplacement_message(
         offender: HirType) -> string {
     let name: string = canonical_hir_name(offender.name)
@@ -432,7 +427,7 @@ fn unit_misplacement_message(
 
 // Whether a type is or carries a Brew handle anywhere. Brew is scope-bound:
 // it may appear only as the outermost type of the let that brewed it, so
-// every stored position — fields, parameters, results, type arguments —
+// every stored position: fields, parameters, results, type arguments:
 // asks this and refuses.
 fn hir_type_contains_brew(type: HirType) -> bool {
     if canonical_hir_name(type.name) == "Brew" { return true }
@@ -566,7 +561,7 @@ fn generic_name_listed(generics: List<string>,
 // depth: `T`, `List<T>` and `Map<string, Option<T>>` all do.
 //
 // Reflection describes a generic declaration once, under its open name, and
-// substitutes nothing — `Grid<int>` and `Grid<string>` reach the same rows. So
+// substitutes nothing: `Grid<int>` and `Grid<string>` reach the same rows. So
 // a member whose signature reaches a parameter has no type the registry can
 // state: its row says `T`, and no value carries that as its type, which makes
 // the member undescribable rather than merely unimplemented. The tree
@@ -578,7 +573,7 @@ fn generic_name_listed(generics: List<string>,
 // as unreachable as one declared `T` outright. ExpressionChecker.
 // type_mentions_generic looks like this function and deliberately answers
 // `false` for `fn`, because a function value that returns T owns the recipe
-// rather than a T and may still be moved. Same shape, different questions —
+// rather than a T and may still be moved. Same shape, different questions:
 // do not unify them.
 fn hir_type_mentions_generic(
     type: HirType, generics: List<string>) -> bool {

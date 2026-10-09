@@ -1,8 +1,8 @@
 package main
 
 // IEEE 754 totalOrder as an unsigned key, the twin of rt_f64_total_key in
-// runtime/beans_rt.c. `<` and `==` on a float are IEEE — NaN is unordered
-// with everything and the two zeros compare equal — which is not an order,
+// runtime/beans_rt.c. `<` and `==` on a float are IEEE: NaN is unordered
+// with everything and the two zeros compare equal, which is not an order,
 // so a container that sorts or binary-searches on it answers wrongly rather
 // than merely unhelpfully. Inverting a negative and setting the top bit of a
 // positive lays the whole float line out as unsigned integers in totalOrder:
@@ -36,7 +36,7 @@ fn tree_float_total_less(left: float,
 
 // The relational operators as the `Order` interface means them. `<=` is the
 // negation of the reversed `<` and so on, which is exactly what comparing the
-// two integer keys with sle/sgt/sge gives natively — totalOrder is total, so
+// two integer keys with sle/sgt/sge gives natively: totalOrder is total, so
 // the four follow from one.
 fn tree_float_total_compare(operation: string,
                             left: float,
@@ -139,7 +139,7 @@ fn tree_integer_unsigned(name: string) -> bool {
 // A float with no value in the integer type it is cast to saturates at that
 // type's own bounds, and NaN is zero (spec/SYNTAX.md, "Number rules"). The
 // bounds are tested before the host conversion, so the conversion that does
-// run is always in range — the native backend spells the same rule with
+// run is always in range: the native backend spells the same rule with
 // llvm.fptosi.sat / llvm.fptoui.sat, and both answer the same number.
 //
 // Each guard is exact in a double. The narrow limits are integers a double
@@ -274,7 +274,7 @@ fn tree_parse_int(source: string) -> int {
     // error when the digits run past i64, so the wrapping branch below is
     // unreachable through it: "18446744073709551615" comes back as i64's
     // maximum, not as a failure. A magnitude too large for i64 is therefore
-    // decided from the digits, and its bit pattern is what comes back — a
+    // decided from the digits, and its bit pattern is what comes back. A
     // u64 literal at or above 2^63 is the whole reason this function must
     // answer bits and not a nearest number.
     let negative: bool = clean.starts_with("-")

@@ -1,37 +1,17 @@
-// glibc hides siginfo_t, sigaction, sigaltstack and the ucontext family
-// behind feature macros under a strict -std. The full runtime includes this
-// file after its own headers, but the fiber core gate compiles it alone
-// with -std=c11 — so ask for the whole surface here, before any header.
+// Define _GNU_SOURCE before headers so the standalone -std=c11 fiber build sees glibc signal APIs.
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
 #endif
 
-// The fiber runtime core — see beans_fiber.h and spec/CONCURRENCY.md.
-//
-// A fiber is a fixed, never-moving stack reservation plus a saved register
-// frame. Parking swaps callee-saved registers and the stack pointer with the
-// worker's scheduler context; nothing else is saved because a park is a
-// cooperative call site — caller-saved state is already dead across it, the
-// same contract an ordinary function call has.
-//
-// State machine. RUNNING fibers park by entering PARKING and switching to
-// the scheduler; only the scheduler — running after the switch, when the
-// fiber's stack is quiescent — publishes PARKED. A resume that lands in the
-// PARKING window sets the pending-wake latch instead, and the scheduler
-// turns that latch into an immediate requeue. That order is what makes a
-// resume/park race unable to lose a wake or run a fiber on two stacks.
-//
-// Cross-thread resumes go through the worker's inbox (mutex + condvar): the
-// waker moves the fiber to READY, appends it to the inbox, and signals. The
-// owning worker is the only thread that ever switches to a fiber.
+// Fiber core; see beans_fiber.h and spec/CONCURRENCY.md.
+// Fibers use fixed stacks and save callee-saved registers at cooperative park points.
+// The scheduler marks PARKED after the stack switch; resumes during PARKING set a pending wake.
+// Cross-thread resumes enter the worker's mutex-protected inbox; only that worker switches fibers.
 
 #include "beans_fiber.h"
 
-// Whether this build carries the controlled unwind (see the unwind section
-// below). The build driver defines it to 1 for a program that can contain a
-// panic on a target whose unwinder we use; every other build keeps F1's
-// abandoned frames. Defaulted here so the file compiles standalone —
-// test/fiber_core.c builds it with no driver at all.
+// The build driver enables controlled unwind only for supported panic-capable targets.
+// Keep it disabled by default so test/fiber_core.c can compile this file standalone.
 #ifndef BEANS_FIBER_UNWIND
 #define BEANS_FIBER_UNWIND 0
 #endif
@@ -52,10 +32,7 @@
 #include <unistd.h>
 #endif
 
-// The netpoller backend: kqueue on the BSD family, epoll (with an eventfd
-// kick) on Linux. Elsewhere — Windows, wasm — there is no poller and
-// beans_fiber_wait_io answers "no poller"; net waits block the worker
-// thread there exactly as they did before fibers.
+// Use kqueue on BSD and epoll with eventfd on Linux; Windows and wasm keep thread-blocking waits.
 #if !defined(_WIN32) && !defined(__wasi__)
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || \
     defined(__OpenBSD__) || defined(__DragonFly__)
@@ -75,7 +52,7 @@
 
 // AddressSanitizer needs to be told about every stack switch, or it keeps
 // poisoning the fake frames of whichever stack it believes is current. The
-// scheduler's thread-stack bounds are captured by the first fiber entry —
+// The scheduler's thread-stack bounds are captured by the first fiber entry.
 // __sanitizer_finish_switch_fiber hands back the bounds of the stack that
 // was switched away from.
 #if defined(__has_feature)
@@ -136,32 +113,12 @@ struct BeansFiber {
     int status; // BEANS_FIBER_OK / _PANICKED / _CANCELLED once DONE
     char message[BEANS_FIBER_MSG_MAX];
 
-    // Controlled unwind (spec/CONCURRENCY.md). unwind_status is the ending
-    // the unwind carries — 0 while the fiber is running normally, so it
-    // doubles as "this fiber is unwinding" and a panic raised during one is
-    // the double-panic case. unwind_exc is storage for the platform's
-    // _Unwind_Exception: it must outlive every frame the unwind pops, so it
-    // cannot sit on the stack being unwound, and one per fiber is enough
-    // because a fiber unwinds one at a time. A brewed fiber's unwind ends the
-    // fiber, so it has exactly one; a `contained` call's ends at the catch
-    // pad and the fiber runs on, so the same fiber may unwind again and
-    // reuse this — safely, because the record is only live between
-    // begin_unwind and the pad that stops the walk, and a panic raised in
-    // between is the double panic, which aborts instead of starting a second
-    // unwind. The record wants 16-byte
-    // alignment and this struct comes from calloc, which promises only
-    // max_align_t's — 8 on a 32-bit target — so the storage is over-allocated
-    // and the record is aligned where it is used, not declared _Alignas on
-    // the member: a declared alignment the allocator does not honour is
-    // undefined behaviour in every memset and store of the struct.
+    // Per-fiber unwind storage must outlive unwound frames; contained calls reuse it sequentially.
+    // A second panic during unwind aborts. Over-allocate and align the record because calloc may provide only 8-byte alignment.
     int unwind_status;
     unsigned char unwind_exc[64 + 16];
 
-    // How many `contained` catch frames stand on this fiber's stack
-    // (spec/CONCURRENCY.md). Non-zero is what makes a panic unwind on a
-    // fiber that would otherwise end the process — the root fiber of a
-    // plain program. Per fiber rather than per thread: the catch frame is a
-    // frame, and one fiber's frames are not on another fiber's stack.
+    // Catch depth is per fiber because each `contained` frame belongs to one fiber's stack.
     int contained_depth;
 
     BeansFiber* joiner;    // parked fiber waiting on this one, if any
@@ -172,11 +129,7 @@ struct BeansFiber {
     void* cancel_argument;
     int cancel_mask;
 
-    // Completion hook: fires in settle() when the fiber ends — return,
-    // panic, or cancel alike — on the owner worker, before any joiner is
-    // woken. TaskGroup uses it to stamp completion order; a panicking
-    // fiber never returns through its entry function, so the entry
-    // function is not a place a completion can be observed.
+    // Runs on the owner worker before joiners wake, for return, panic, or cancel.
     void (*done_hook)(void*);
     void* done_arg;
 
@@ -186,10 +139,7 @@ struct BeansFiber {
     BeansFiber* all_next;
     BeansFiber* all_prev;
 
-    // io park record (netpoller): armed while this fiber is registered in
-    // its worker's kernel poller, signalled when readiness was delivered.
-    // Touched only by the owner worker's thread — registration, delivery,
-    // and the waiting fiber itself all run there.
+    // Netpoller registration state; only the owner worker reads or writes it.
     int io_armed;
     int io_signalled;
     long long io_fd;
@@ -205,7 +155,7 @@ struct BeansFiber {
 
 // One sleeping fiber: resumed when the monotonic clock passes its
 // deadline. Entries live in a per-worker binary min-heap, touched only by
-// the worker's own thread — no lock.
+// the worker's own thread: no lock.
 typedef struct {
     long long deadline;
     BeansFiber* fiber;
@@ -229,7 +179,7 @@ struct BeansWorker {
     // The netpoller: one kernel poller per worker, created at the first io
     // park. io_waiters counts armed fibers; while it is nonzero the idle
     // wait blocks in the poller (kicked by inbox_post) instead of the
-    // inbox cond, and the deadlock report stays quiet — the kernel can
+    // inbox cond, and the deadlock report stays quiet: the kernel can
     // always wake an io waiter.
     int poll_fd;
     int poll_kick_fd; // epoll: eventfd registered in poll_fd; kqueue: unused
@@ -237,9 +187,7 @@ struct BeansWorker {
     _Atomic int in_poll; // worker is inside (or committing to) the poller wait
 #if defined(FIBER_NETPOLL_KQUEUE)
     // Registrations queued since the last poller wait. The next
-    // poller_drain kevent call submits the whole batch as its changelist —
-    // one syscall carries every re-arm plus the wait, so a park costs no
-    // syscall of its own. Owner-thread only, like the rest of the poller.
+    // One kevent call submits all queued re-arms with the wait, so parking costs no separate syscall.
     struct kevent* poll_queue;
     int poll_queue_len;
     int poll_queue_cap;
@@ -281,7 +229,7 @@ static _Thread_local BeansWorker* tls_worker = NULL;
 // ---- context switch --------------------------------------------------------
 //
 // beans_fiber_ctx_switch(from, to): push callee-saved registers on the
-// current stack, store sp into from->sp, load to->sp, pop, return — into
+// current stack, store sp into from->sp, load to->sp, pop, return: into
 // whatever return address `to` saved when it switched away (or into the
 // spawn trampoline the first time). AAPCS64 owes x19–x28, fp, lr and
 // d8–d15; SysV x86-64 owes rbx, rbp, r12–r15. Windows x64 has a different
@@ -380,7 +328,7 @@ __asm__(
 #else
 // No hand-written switch for this architecture yet: ride the POSIX
 // ucontext family instead. A swapcontext also saves the signal mask (a
-// syscall on most libcs), so this tier is slower — correctness first;
+// syscall on most libcs), so this tier is slower: correctness first;
 // an arch earns its asm when someone needs it fast. glibc keeps these
 // functions on every hosted tier CI runs (musl lacks them, but the musl
 // lane is x86-64 and takes the asm above).
@@ -410,7 +358,7 @@ __attribute__((used, noreturn)) void fiber_entry_shim(BeansFiber* fiber) {
 #if defined(FIBER_CTX_UCONTEXT)
 // ctx->sp holds a heap ucontext_t for this variant. Both sides of a swap
 // need storage, and the very first switch away from a plain thread has
-// nowhere prepared — so storage appears on first touch and lives as long
+// nowhere prepared, so storage appears on first touch and lives as long
 // as the record that owns the ctx.
 static ucontext_t* ctx_storage(BeansFiberCtx* ctx) {
     if (!ctx->sp) {
@@ -427,8 +375,7 @@ void beans_fiber_ctx_switch(BeansFiberCtx* from, BeansFiberCtx* to) {
     swapcontext(ctx_storage(from), ctx_storage(to));
 }
 
-// makecontext passes ints, so the carrier pointer rides as two halves —
-// the double shift keeps the high half defined on 32-bit pointers.
+// makecontext passes ints, so split the carrier pointer into two halves; the double shift defines the high half on 32-bit targets.
 static void ctx_ucontext_entry(unsigned int hi, unsigned int lo) {
     uintptr_t bits = ((uintptr_t)hi << 16 << 16) | (uintptr_t)lo;
     fiber_entry_shim((BeansFiber*)bits);
@@ -550,7 +497,7 @@ static void guard_report_install(void) {
 
 // The handler must not run on the overflowed fiber stack itself. One
 // alternate stack per thread, installed at the thread's first worker and
-// kept for the thread's life — a replaced stack could still be under a
+// kept for the thread's life: a replaced stack could still be under a
 // live signal frame, so it is never swapped or freed, and the
 // thread-local keeps the one allocation reachable for leak checkers.
 static _Thread_local void* guard_altstack = NULL;
@@ -587,7 +534,7 @@ BeansWorker* beans_worker_new(void) {
     pthread_cond_init(&worker->inbox_c, NULL);
 #else
     // Timed idle waits (sleeping fibers) measure against CLOCK_MONOTONIC,
-    // so the cond must too — a realtime-clock wait would drift with ntp.
+    // so the cond must too: a realtime-clock wait would drift with ntp.
     {
         pthread_condattr_t attr;
         pthread_condattr_init(&attr);
@@ -644,8 +591,8 @@ static void all_remove(BeansWorker* worker, BeansFiber* fiber) {
     fiber->all_next = fiber->all_prev = NULL;
 }
 
-// Installed by the hosting runtime: answers whether anything outside this
-// worker — another live thread — could still resume a parked fiber. NULL
+// Installed by the hosting runtime to report whether another live thread
+// could resume a parked fiber. NULL
 // (the standalone default) means "assume yes" and the idle wait blocks as
 // before; the compiled runtime installs a check over its thread count.
 static int (*fiber_may_wake)(void) = NULL;
@@ -679,7 +626,7 @@ static void poller_kick(BeansWorker* worker); // defined with the netpoller
 #endif
 
 // Moves cross-thread wakes into the run queue. With `block`, sleeps until
-// one arrives — the caller checked that parked fibers still exist, so a
+// one arrives: the caller checked that parked fibers still exist, so a
 // wake is the only thing that can happen next.
 static void inbox_drain(BeansWorker* worker, int block) {
 #if defined(_WIN32)
@@ -724,7 +671,7 @@ static void inbox_post(BeansWorker* worker, BeansFiber* fiber) {
 #if defined(FIBER_NETPOLL)
     // A worker blocked in its kernel poller hears nothing from the cond.
     // The post above happened before this read; the worker raises in_poll
-    // before its final inbox recheck — so either that recheck sees the
+    // before its final inbox recheck, so either that recheck sees the
     // fiber, or this read sees the flag and the kick wakes the poller.
     if (atomic_load(&worker->in_poll)) poller_kick(worker);
 #endif
@@ -788,8 +735,7 @@ static void sleeper_pop_min(BeansWorker* worker) {
 }
 
 // Resumes every sleeper whose deadline has passed. A fiber that stopped
-// sleeping early (some other resume) may get one extra wake out of this —
-// park sites loop, so a stale fire is just a spurious wake.
+// A fiber resumed before its deadline may get one extra wake; park sites loop to handle stale timers.
 static void sleeper_fire_due(BeansWorker* worker, long long now) {
     while (worker->sleeper_count &&
            worker->sleepers[0].deadline <= now) {
@@ -819,7 +765,7 @@ void beans_fiber_sleep(long long nanos) {
     }
 }
 
-// Removes a fiber's heap entry without firing it — the readiness half of
+// Removes a fiber's heap entry without firing it: the readiness half of
 // an io wait with a deadline won, and the timer must not resume the fiber
 // later, when it may be parked somewhere unrelated (or gone). Absence is
 // fine: a due entry may already have been popped by sleeper_fire_due.
@@ -859,10 +805,7 @@ static void sleeper_remove(BeansWorker* worker, BeansFiber* fiber) {
 // must wait for a descriptor arms a one-shot registration carrying the
 // fiber pointer and parks; the worker's idle wait pulls kernel events and
 // resumes the fibers they name. Cross-thread resumes keep using the inbox
-// — inbox_post kicks the poller (a user event on kqueue, an eventfd on
-// epoll) when the worker is blocked inside it. Everything except the kick
-// runs on the owner worker's thread, which is what keeps the arm/deliver/
-// disarm bookkeeping lock-free.
+// inbox_post kicks a blocked poller (a user event on kqueue or eventfd on epoll); all other bookkeeping stays on the owner thread.
 
 #if defined(FIBER_NETPOLL)
 
@@ -901,7 +844,7 @@ static int poller_arm(BeansWorker* worker, BeansFiber* fiber, long long fd,
     if (worker->poll_fd < 0 && !poller_init(worker)) return 0;
 #if defined(FIBER_NETPOLL_KQUEUE)
     // Queued, not submitted: the batch rides the next poller wait's
-    // changelist. Registering late is safe — kqueue evaluates readiness
+    // changelist. Registering late is safe: kqueue evaluates readiness
     // when it scans, so an fd that became ready in the meantime is
     // reported by the very call that registers it.
     if (worker->poll_queue_len == worker->poll_queue_cap) {
@@ -932,7 +875,7 @@ static int poller_arm(BeansWorker* worker, BeansFiber* fiber, long long fd,
     return 1;
 }
 
-// Drops the armed registration without a delivery — the deadline won.
+// Drops the armed registration without a delivery: the deadline won.
 // Removing the event also removes anything pending for it in the kernel
 // queue, so no stale delivery can name this fiber afterwards.
 static void poller_disarm(BeansWorker* worker, BeansFiber* fiber) {
@@ -1038,7 +981,7 @@ static void poller_kick(BeansWorker* worker) {
 // The idle wait while io waiters exist: block in the kernel poller with
 // the nearest sleeper deadline as the timeout. The in_poll flag and the
 // one extra inbox check before blocking are the handshake with
-// inbox_post's kick — a poster either sees the flag and kicks, or posted
+// inbox_post's kick: a poster either sees the flag and kicks, or posted
 // before it was raised and the recheck finds the fiber.
 static void io_idle_wait(BeansWorker* worker) {
     long long timeout_ns = -1;
@@ -1068,7 +1011,7 @@ static void io_idle_wait(BeansWorker* worker) {
 
 #endif // FIBER_NETPOLL
 
-// Whether this build has a kernel poller — the gate for making a socket
+// Whether this build has a kernel poller: the gate for making a socket
 // nonblocking on a fiber's behalf. Without one, sockets stay blocking and
 // net waits block the worker thread exactly as they did before fibers.
 long long beans_fiber_netpoll(void) {
@@ -1082,7 +1025,7 @@ long long beans_fiber_netpoll(void) {
 // Parks the calling fiber until `fd` is ready for reading (write == 0) or
 // writing, or until timeout_ms passes (timeout_ms < 0 waits forever).
 // Answers 0 for ready, 1 for timeout, -2 when there is no poller here or
-// no current fiber — the caller then waits the thread-blocking way.
+// no current fiber: the caller then waits the thread-blocking way.
 long long beans_fiber_wait_io(long long fd, long long write,
                               long long timeout_ms) {
 #if !defined(FIBER_NETPOLL)
@@ -1240,7 +1183,7 @@ BeansFiber* beans_fiber_spawn(BeansWorker* worker, void (*fn)(void*),
 
     BeansFiber* fiber = NULL;
     // Reuse a pooled record when its reservation is big enough; the pool
-    // holds the common case — every fiber on the default size.
+    // holds the common case, every fiber on the default size.
     BeansFiber** link = &worker->pool;
     while (*link) {
         if ((*link)->stack_reserve >= stack_reserve) {
@@ -1339,7 +1282,7 @@ static void fiber_finish(int status) {
 // A contained failure does not abandon the fiber's stack: it runs every
 // frame's cleanup on the way out, so defers fire newest-first and owned
 // values drop exactly as a return would drop them. The mechanism is the
-// platform's forced unwind — the compiler emits `invoke`/`landingpad`
+// platform's forced unwind: the compiler emits `invoke`/`landingpad`
 // cleanup pads and marks each frame with __gcc_personality_v0, and this
 // walks them. Nothing is executed on the non-failing path: the pads are
 // side tables, reached only from here.
@@ -1360,7 +1303,7 @@ const char* beans_fiber_message(BeansFiber* fiber) {
 
 // ---- contained calls -------------------------------------------------------
 //
-// The catch frame itself is emitted code — an `invoke` whose landing pad does
+// The catch frame itself is emitted code: an `invoke` whose landing pad does
 // not resume (src/llvm_emit_concurrency.b). What lives here is the count of
 // such frames, because the panic path has to know whether one is standing
 // before it decides between unwinding and ending the process, and it has to
@@ -1393,8 +1336,8 @@ void beans_fiber_contained_caught(BeansFiber* fiber) {
 #include <unwind.h>
 
 // The unwind is one-phase and forced, because there is no handler to search
-// for: every Beans frame carries cleanup only. The stop function is the
-// backstop, not the exit — the emitted pad on the fiber's entry frame calls
+// for, every Beans frame carries cleanup only. The stop function is the
+// backstop, not the exit: the emitted pad on the fiber's entry frame calls
 // beans_fiber_unwind_finish and never resumes, so END_OF_STACK is reached
 // only when the frames above carry no cleanup at all (a fiber entered from
 // something the compiler did not emit). Ending the fiber there is exactly
@@ -1412,11 +1355,9 @@ static _Unwind_Reason_Code fiber_unwind_stop(
         BeansFiber* fiber = tls_worker->current;
         // The root fiber is the promoted thread itself and is never joined,
         // so there is no fiber for the scheduler to end here. It unwinds for
-        // one reason — a `contained` call put a catch frame on its stack —
-        // and reaching the end of the stack means the walk could not get back
-        // to that frame: something in between carries no unwind table, which
-        // for a Beans program means a C frame built without one. Nothing is
-        // left to catch with, so the failure ends the process exactly as it
+        // A `contained` call put a catch frame on its stack. Reaching the end
+        // means the walk could not return to that frame because an intervening
+        // C frame has no unwind table. Nothing can catch the failure, so the process ends
         // would have with no frame at all, and says why. Finishing the root
         // fiber instead would switch to a scheduler with nowhere to return.
         if (fiber->is_root) {
@@ -1460,7 +1401,7 @@ void beans_fiber_begin_unwind(int status) {
     BeansFiber* fiber = tls_worker->current;
     fiber->unwind_status = status;
     // No cleanup pads in this build, so a brewed fiber ends here with its
-    // frames abandoned — F1's behaviour, and what a target without the
+    // frames abandoned: F1's behaviour, and what a target without the
     // unwinder keeps. The root fiber has no such ending: only a `contained`
     // call brings it here, and this build has no pad for that call to catch
     // with. So the failure ends the process the way it would have with no
@@ -1536,7 +1477,7 @@ int beans_fiber_park(void) {
     if (atomic_exchange(&fiber->pending_wake, 0)) return BEANS_FIBER_WOKEN;
     atomic_store(&fiber->state, FIBER_PARKING);
     fiber_to_scheduler(DISPOSE_PARK);
-    // Resumed. A cancel that raced the wake still reads as cancelled — the
+    // Resumed. A cancel that raced the wake still reads as cancelled: the
     // contract is "observed at the next park", and this is that park.
     if (fiber_cancel_observable(fiber)) return BEANS_FIBER_PARK_CANCELLED;
     return BEANS_FIBER_WOKEN;
@@ -1585,7 +1526,7 @@ int beans_fiber_is_root(BeansFiber* fiber) { return fiber->is_root; }
 
 void beans_fiber_forget(BeansFiber* fiber) { fiber->forgotten = 1; }
 
-// Owner-worker only, and only before the fiber could have finished — in
+// Owner-worker only, and only before the fiber could have finished: in
 // practice right after the spawn, while the child still sits in the ready
 // queue (spawning never yields, so the child has not run).
 void beans_fiber_set_done_hook(BeansFiber* fiber, void (*hook)(void*),
@@ -1714,13 +1655,13 @@ void beans_worker_run(BeansWorker* worker) {
     }
 }
 
-// The bootstrap scheduler: same loop, no exit — the root fiber ending the
+// The bootstrap scheduler uses the same loop; the root fiber ending the
 // program is the only way out, and it ends the process, not this loop.
 static void sched_main(void* raw) {
     BeansWorker* worker = (BeansWorker*)raw;
     // The switch that started this loop came from the root fiber's first
     // park. Every later park returns into a run_one frame below, which
-    // settles its fiber — but this first one has no frame waiting, so the
+    // settles its fiber. This first park has no frame waiting, so the
     // root would stay PARKING forever unless it is settled here.
     if (worker->current) {
         BeansFiber* from = worker->current;
@@ -1775,7 +1716,7 @@ BeansWorker* beans_worker_bootstrap(void) {
 #else // _WIN32
 // The Windows bootstrap: beans_worker_new converted the calling thread to
 // an OS fiber, and that fiber is the root; the scheduler loop runs on an
-// OS fiber of its own — the CreateFiber mirror of the POSIX build's
+// OS fiber of its own: the CreateFiber mirror of the POSIX build's
 // carved-stack scheduler.
 static void CALLBACK sched_main_win(void* raw) { sched_main(raw); }
 

@@ -1,242 +1,34 @@
-# The one source of the compiler, language and runtime-ABI versions. Edit
-# here and nowhere else.
-#
-# tools/gen_version_b.sh copies these numbers into src/version.b, which is
-# what the compiler itself reads; test/version.sh refuses a stale copy. The
-# release packagers read this file to check a release tag matches what the
-# tree declares.
-#
-# This was compiler/version.h, a C++ header, because the stage-0 bootstrap
-# was C++ and included it. Nothing compiles it now — every reader parses it —
-# so it is a plain file in the format the installed toolchain already ships
-# its own VERSION in.
-#
-# The project is still in the public 1.0 bake, so do not call it 1.0.0 until
-# every release gate has passed.
+# Authoritative compiler, language and runtime ABI versions.
+# tools/gen_version_b.sh generates src/version.b; test/version.sh checks synchronization.
+# Release packagers require the tag to match this file.
+# Keep the compiler below 1.0.0 until all public 1.0 release gates pass.
 compiler=0.1.52
 language=1.0
 
-# 22: on the existing ELF/Mach-O x86_64/arm64 unwind targets,
-# parked cancellation uses native cleanup while interpreted host calls hand
-# cancellation back to the tree walker. Per-fiber handler, cancellation-state,
-# and cleanup-mask entries keep both executors on the same cleanup contract.
-#
-# 21: beans_with_collection_deferred invokes a scoped closure behind the
-# existing collector/deinit exclusion counters. Both backends use this entry;
-# nesting and contained unwind restore the counters, while immediate ARC
-# destruction remains unchanged. No new object layout or collector exists.
-#
-# 20: beans_json_decode_probe_publish and beans_json_decode_probe — the typed
-# JSON decoder's diagnostic probe, moved out of the encoding bridge and made
-# per thread. Typed decoding collapses every failure to one error of kind
-# "invalid" at the language boundary, so the gate that holds it to the
-# JSONTestSuite answer sheet can otherwise pin only accept-or-refuse and never
-# why or where; the probe is those four words — status, error code, byte offset
-# or record count, field index. The bridge kept them in a file-scope array and
-# wrote all four on every call to beans_enc_json_typed_decode_direct, which is
-# what json.decode, json.decode_bytes, json.decode_bytes_in_place and
-# json.decode_with_options all lower to. That is public API, so two threads
-# decoding at once raced the stores — a data race by the language's own memory
-# model on the hot path of the framework we benchmark, and the reason TSan
-# could not be pointed at any threaded program that decodes JSON (issue #152).
-#
-# The words leave through the request buffer instead, the way every other
-# output of that ABI already travels: req[4], documented "unused" until now,
-# carries beans_json_decode_probe_publish, and the bridge calls it once with
-# the status it is about to return and the three words it already wrote into
-# req[5..7]. That is a compiler-to-runtime contract like ABI 19's three
-# widened request layouts, not a call the compiler makes itself — the emitter
-# stores the entry's address beside the four callbacks it already stores at
-# req[8..11].
-#
-# The storage had to leave the bridge with it. runtime/encoding must resolve
-# against libc alone (test/encoding_symbols.sh), and _Thread_local puts
-# __tlv_bootstrap in the object on Darwin, so per-thread words cannot live
-# there at all; relaxed 64-bit atomics were the other way and they pull
-# __atomic_store_8 on arm32. In the runtime they are ordinary — a
-# _Thread_local array with the freestanding fallback reflect_error_code
-# already uses, one thread by contract and no TLS runtime service. The bridge
-# still names no runtime symbol: it reaches the slot only through the pointer
-# in req, exactly as it reaches beans_alloc_bytes through req[9] and the
-# encoder reaches beans_bytes_reserve_raw through req[6].
-#
-# beans_json_decode_probe reads this thread's copy back, and is a hosted row,
-# because a Beans program calls it by name and an executable exports no names
-# on Linux. It replaces beans_enc_json_decode_probe, which no longer exists:
-# the beans_enc_ prefix would be a lie for a function that is not in the
-# encoding bridge. Under `beansc run` it answers zeros — typed decoding is not
-# lowered in the tree interpreter, so nothing has been filed.
-#
-# 19: permessage-deflate (RFC 7692) reached std.websocket, and the framing
-# bridge grew the one entry the Beans half cannot do for itself.
-# beans_ws_valid_utf8 answers the RFC 6455 text check for bytes wslay never
-# saw: a compressed message is still compressed when the framer hands it
-# over, so its UTF-8 validity can only be decided after the Beans side
-# inflates it, and running the bridge's own Table 3-7 walk keeps one
-# implementation of that table. Three request layouts widened with it, each
-# a compiler-to-runtime contract like ABI 16's order kind rather than a new
-# symbol: beans_ws_new takes [2] "permessage-deflate negotiated", which is
-# what turns wslay's allowed RSV bits on; beans_ws_queue takes [2] reserved
-# bits, so a compressed message can carry RSV1 through
-# wslay_event_queue_msg_ex; and beans_zlib_stream_new takes [3] window bits
-# (0, or 9..15) for the negotiated LZ77 window. The message event record
-# grew the byte that carries those reserved bits out — [u8 opcode][u8 rsv]
-# [u64 len][payload], a 10-byte header where it was 9.
-#
-# 18: beans_contained_enter, beans_contained_leave, beans_contained_caught —
-# the runtime half of a `contained` call (spec/CONCURRENCY.md). Containing a
-# panic used to need a fiber: the only boundary a failure could stop at was a
-# brewed fiber's entry, so a server that wanted a panicking handler to become
-# a 500 paid a spawn, two context switches and a join on every request whether
-# or not anything ever panicked (issue #145). The unwind that walks the frames
-# was never the fiber's — it is the platform's forced unwind, brought in with
-# runtime ABI 12 — and it stops wherever a landing pad declines to resume. So
-# the boundary moves to a call: the emitter issues the call as an `invoke`
-# whose exception edge is a pad that does not resume, and the failure becomes
-# a Result at the call site.
-#
-# The three entries are the count of catch frames standing on one fiber's
-# stack, and the pad's read of the report. enter/leave bracket the
-# non-failing path; caught hands over the message and takes the fiber back
-# out of the unwind. The count is per fiber, not per thread, because a catch
-# frame is a frame and one fiber's frames are not on another's stack; enter
-# promotes the calling thread to a worker so the count always has a fiber to
-# live on, which is what lets a program that never brews contain a panic on
-# its main fiber. beans_panic reads the count: a failure unwinds when the
-# fiber is a brewed one OR a catch frame stands on it, and the root fiber of
-# a plain program with no catch frame keeps today's report and exit 3.
-#
-# 17: beans_net_send_pair_wait — one write of two buffers, so a response can
-# be sent without first being assembled. A server frames a head and already
-# holds a body; joining them copies the body, and on a one-megabyte response
-# that copy costs more than everything else the process does for that request.
-# The entry takes the two buffers and an offset into their concatenation, so a
-# short write resumes correctly whether it stopped inside the head or inside
-# the body and the caller never has to know which. sendmsg on POSIX — the
-# vectored send that still takes MSG_NOSIGNAL, so a peer that has gone away is
-# an EPIPE and not a SIGPIPE — and WSASend on Windows. Two buffers rather than
-# an iovec array: a response is a head and a
-# body, the pair needs no allocation to describe, and an array built per
-# response would be the hot-path allocation this entry exists to remove.
-#
-# 17: beans_rt_host_invoke — the runtime calls its own entries for the tree
-# interpreter, so running a program never needs a C compiler. beans_rt_host_
-# symbol already answered the address of an entry that lives in this process;
-# an address is only usable by the interpreter's 64-bit word ABI, which does
-# not cover every hosted shape, and everything wider went to a C shim written
-# and compiled with Clang while the program ran. beans_net_send_from_wait is
-# four parameters and beans_net_send_pair_wait is six, so under `beansc run`
-# every socket write started a compiler — invisible where a toolchain matches
-# the host, fatal where none does: the i686 and aarch64 Windows legs died on a
-# socket write with "cannot find dllcrt2.o". The entry takes a name, the
-# packed words, their count and a result slot, casts each word back to the
-# type the named entry really declares — pointers included, which is what
-# makes it right where a pointer is half a word — and calls it in-process. It
-# answers 1 when it called the entry, 0 when the name is not hosted, and -1
-# when the name is hosted but the `extern "C"` declaration naming it does not
-# fit, which the interpreter reports against the program rather than re-routing
-# to a shim that would call the same function with the wrong words. Every
-# hosted row now carries its call beside its address, and beans_rt_host_symbol
-# and beans_rt_host_invoke are themselves rows, so an interpreter running under
-# an interpreter reaches them the same way at every depth.
-# 17: beans_net_send_pair_text — the string form of that vectored send. A
-# server holds a response body as a string, the shape a handler hands back,
-# and framing it into a Bytes to send it is the copy the pair send exists to
-# remove; this entry sends the string body where it already lives, its length
-# read with beans_slen exactly as beans_net_send_text reads its text's. It
-# reuses beans_net_send_pair_wait's sendmsg engine rather than a second loop,
-# driving it from a local req, so it needs no scratch of its own and no
-# per-response iovec allocation. std.sock.send_pair_text lowers to it, the way
-# std.sock.send_text lowers to beans_net_send_text; the tree interpreter,
-# whose bootstrap predates the entry, joins head and body and sends that once,
-# which writes the same bytes and short-writes at the same boundary.
-# 17 (also): beans_bytes_reserve_raw — the grow hook json.encode_into hands
-# the std.encoding.json direct writer so it appends JSON straight into a
-# caller-owned Bytes instead of a private malloc it then copies out. One call
-# sets the Bytes length and ensures capacity, returning the backing base and
-# capacity; the bridge, a separate translation unit that must not touch BList,
-# reaches it only through this pointer (req[6]). The Bytes is therefore an
-# opaque void* in the entry's own declaration, not a BList*: a call through a
-# function pointer whose type differs from the callee's declared type is
-# undefined behaviour, so the entry declares the same handle type the bridge's
-# typedef does and casts on this side, the way beans_list_new_typed_capacity
-# already returns void* rather than BList*. Emitted only into programs that
-# call json.encode_into; not reached by name from the interpreter, which runs
-# its own append.
-# 17 (also): beans_alloc_bytes — the pooled allocator without the recycled-block
-# memset, for callers that fill the whole payload the same instant (a decoded
-# string's bytes and its NUL terminator, a Bytes buffer's length). The typed
-# JSON decoder hands it to its bridge as the string-payload callback so a
-# 101 KB /echo body stops zeroing two thousand string buffers it overwrites
-# immediately (issue #144). Same size class, header and collector shape as
-# beans_alloc; only the recycled payload zeroing is skipped, and only on the
-# pooled arm — the non-pooled arm for large blocks still zeroes. It is a row
-# in the host table like every other hosted entry, so the interpreter can both
-# find its address and call it by word; a row is the only way in, which is what
-# keeps an entry from being reachable by address while uncallable by word.
-# 16: order kind 7 — a payload-free enum slot is a pointer at its tag word;
-# sort, min and max compare the loaded tags, where an older runtime compared
-# the pointers. No new symbol: the order kind is a compiler-to-runtime contract
-# passed to beans_list_sort/min/max, like ABI 14's beans_list_sort_by_key n=1
-# change. slot_cmp now also traps an unknown kind instead of sorting by the raw
-# slot, so a compiler/runtime mismatch fails loudly rather than silently.
-# 15: std.term's four entry points. beans_term_is_tty, beans_term_size,
-# beans_term_set_raw and beans_term_restore are the struct-shaped half of a
-# terminal, kept in C because `struct termios` is 72 bytes on macOS and 60 on
-# Linux and `struct winsize` has no portable Beans spelling. Each returns a
-# plain status — 0, or negative on failure (-errno on POSIX, -1000 where the
-# platform has no terminal control) — and a size comes back through the
-# caller's buffer, so a status is never read as a count. Compiled only at the
-# full runtime profile; the checker refuses std.term below it, so a smaller
-# build links none of this.
-# 14: `for x in xs` over a List got the invalidation rule maps already had.
-# beans_list_iter_invalid is the panic a loop raises when the list it is
-# reading was structurally changed under it. BList's last word became two:
-# change_count at offset 40 and change_kind at offset 44, which a generated
-# loop loads together as one 8-byte word and compares, and which every
-# structural list entry point (push, push_typed, insert, insert_typed,
-# remove, remove_typed, clear, reverse, sort, sort_by, sort_by_key and their
-# decv_/val_ twins) moves. The struct is still 48 bytes, so a list still fits
-# the 64-byte allocation class it has always used. beans_list_sort_by_key,
-# beans_list_decv_sort_by_key and beans_list_val_sort_by_key now call the key
-# function once per item at n = 1 instead of returning above the key loop.
-# 13: display width became a measure the language has. beans_str_width
-# answers string.width() in columns, and beans_width_utf8 is the same
-# measure over a pointer and a length — the tree interpreter calls it so
-# that both compilers read one table. The derived rendering of a Map, a
-# Result, a struct and a class instance added beans_show_map_iter, which
-# pushes a map's entries onto the iterative show driver's stack, and
-# beans_show_enter / beans_show_push_leave, which mark the objects on the
-# path so a reference cycle prints <cycle> instead of running forever, and
-# beans_list_join_wide, which joins a list whose elements are too wide for
-# one runtime slot by handing the driver each element's address.
-# 12: the contained-panic unwind (issue #44, spec/CONCURRENCY.md). A program
-# that brews now emits a fiber-entry cleanup pad that calls
-# beans_fiber_unwind_finish to end the fiber once its frames have run their
-# defers and dropped what they owned. The runtime gained that entry along with
-# beans_fiber_begin_unwind, beans_fiber_unwinding and beans_fiber_message,
-# which start the unwind and report it for the double-panic case. Emitted only
-# for a program that brews on a target whose unwinder the backend uses; every
-# other build keeps the earlier abandon behaviour and links none of it.
-# 11: the fiber runtime landed (spec/CONCURRENCY.md) — the beans_fiber_*
-# core (spawn, park, yield, resume, cancel, join, worker bootstrap) and the
-# brew layer the compiler lowers onto: beans_brew, beans_brew_typed,
-# beans_brew_join, beans_brew_value, beans_brew_value_typed,
-# beans_brew_message, beans_brew_cancel, beans_brew_scope_join. Channels
-# gained the non-blocking twins beans_chan_try_send, beans_chan_try_send_typed,
-# beans_chan_try_recv and beans_chan_try_recv_typed.
-# Version 10: async/await left the language, and the hidden executor entries
-# left the runtime with it — beans_task_slot, beans_set_task_slot and the
-# parked-readiness registry (beans_reactor_note_park, beans_reactor_bind_park,
-# beans_reactor_forget_park, beans_reactor_stale_park, beans_reactor_park_dead,
-# beans_reactor_note_close, beans_reactor_shutdown_parks) are gone.
-# Version 9 resolved reflection handles — beans_reflect_method_handle,
-# beans_reflect_method_call_handle, beans_reflect_initializer_handle,
-# beans_reflect_initializer_call_handle, beans_reflect_function_handle and
-# beans_reflect_function_call_handle — so cached descriptors stop
-# re-resolving strings on every call.
-# Version 8 added the beans_poll_wait_into runtime entry, which fills a
-# caller-owned event buffer instead of returning a fresh one.
-# Version 7 added Bytes.filled, Bytes.append_int_text, and Thread.detach.
-# Version 6 added per-thread runtime-hook guard entry points.
+# 22: Native parked cancellation uses cleanup on ELF/Mach-O x86_64/arm64; interpreted host calls return cancellation to the tree walker through shared per-fiber handler, cancellation-state and cleanup-mask entries.
+# 21: beans_with_collection_deferred scopes collector/deinit exclusion counters across nesting and contained unwind without changing immediate ARC destruction.
+# 20: beans_json_decode_probe_publish and beans_json_decode_probe replace the encoding bridge's shared probe with per-thread status, error code, offset/record count and field index storage.
+# ABI 20: Typed decoding passes the publish callback in req[4], probe values in req[5..7] and existing callbacks in req[8..11]; runtime TLS keeps the encoding bridge libc-only, with a single-thread freestanding fallback.
+# ABI 20: The hosted beans_json_decode_probe replaces beans_enc_json_decode_probe; the interpreter returns zeros because it does not lower typed JSON decoding.
+# 19: permessage-deflate adds beans_ws_valid_utf8 for inflated text, negotiated compression in beans_ws_new req[2], reserved bits in beans_ws_queue req[2] and window bits (0 or 9..15) in beans_zlib_stream_new req[3].
+# ABI 19: WebSocket message events use a 10-byte [u8 opcode][u8 rsv][u64 len] header before the payload.
+# 18: beans_contained_enter/leave/caught track per-fiber catch frames and recover a panic at the call site's forced-unwind landing pad; enter promotes a root thread to a worker when needed.
+# ABI 18: Panics unwind on brewed fibers or fibers with a catch frame; an uncontained root-fiber panic still exits with status 3.
+# 17: beans_net_send_pair_wait sends two buffers from a concatenation offset using sendmsg with MSG_NOSIGNAL or WSASend, allowing short-write retries without allocation.
+# ABI 17: beans_rt_host_invoke calls hosted entries in-process with typed word conversion, returning 1 for success, 0 for an unhosted name and -1 for a declaration mismatch; hosted rows expose both address and call entry points.
+# ABI 17: beans_net_send_pair_text reads string length with beans_slen and reuses the pair-send engine; older interpreters join the buffers before sending equivalent bytes.
+# ABI 17: beans_bytes_reserve_raw supplies json.encode_into req[6] with a void* callback that sets Bytes length/capacity and returns backing storage; the interpreter uses its own append path.
+# ABI 17: beans_alloc_bytes skips recycled pooled-payload zeroing for callers that overwrite the complete buffer; large allocations remain zeroed and hosted rows support address lookup and invocation.
+# 16: Order kind 7 compares loaded tags for payload-free enum slots; slot_cmp traps unknown kinds to detect compiler/runtime mismatches.
+# 15: beans_term_is_tty/size/set_raw/restore expose portable terminal control in the full runtime profile, returning 0 or a negative status (-errno on POSIX, -1000 when unsupported) with size written to caller storage.
+# 14: List iteration detects structural changes through beans_list_iter_invalid and the change_count/change_kind words at offsets 40/44 of the unchanged 48-byte BList.
+# ABI 14: All structural list operations update invalidation state; sort_by_key and its decv/val variants invoke the key function once for a single-element list.
+# 13: beans_str_width and beans_width_utf8 share column-width measurement; beans_show_map_iter, beans_show_enter/beans_show_push_leave and beans_list_join_wide add cycle-safe derived rendering of maps, results, structs, classes and wide list elements.
+# 12: beans_fiber_unwind_finish ends brewed fibers after defers and drops; beans_fiber_begin_unwind/unwinding/message manage platform unwinding and double-panic reports, while unsupported targets retain abandonment.
+# 11: beans_fiber_* and beans_brew* add fiber scheduling, cancellation, joins and scoped joins; beans_chan_try_send/recv and their typed variants add nonblocking channel operations.
+# 10: Removing async/await also removes beans_task_slot/beans_set_task_slot and the beans_reactor_* parked-readiness registry.
+# 9: Resolved reflection method, initializer and function handles avoid repeated name resolution through their call_handle entries.
+# 8: beans_poll_wait_into fills a caller-owned event buffer.
+# 7: Adds Bytes.filled, Bytes.append_int_text and Thread.detach.
+# 6: Adds per-thread runtime-hook guard entry points.
 runtime_abi=22

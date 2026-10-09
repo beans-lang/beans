@@ -176,7 +176,7 @@ fn drive_fives(count: int) {
 //
 // Every element here is a heap object the list owns. Growing the buffer must
 // carry the references across without retaining or releasing them, and freeing
-// the list must release each one exactly once — which is what the sanitizer
+// the list must release each one exactly once, which is what the sanitizer
 // lane of this case is checking.
 
 fn drive_slabs(count: int) {

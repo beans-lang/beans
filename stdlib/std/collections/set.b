@@ -13,10 +13,7 @@ package collections
 /// if seen.contains("beans") { ... }
 /// ```
 ///
-/// `T` must be `Eq & Hash` — the same requirement `Map` makes of a key —
-/// and `Clone`, because `items` and the set-algebra methods hand members back
-/// out. That rules out a move-only element such as `Bytes`, `List` or `File`:
-/// a value with one owner cannot also be a set member somebody can read.
+/// Requires `Eq`, `Hash`, and `Clone`, like `Map` keys that are returned by value.
 ///
 /// Iteration order is the underlying `Map`'s, which promises nothing. Use
 /// `SortedMap` when order matters.
@@ -25,7 +22,7 @@ package collections
 ///
 /// `add`, `contains` and `remove` are one `Map` operation each: O(1) expected.
 /// The algebra walks the maps directly and never builds an intermediate key
-/// list — the cost of each is the number of members it must look at, not the
+/// list: the cost of each is the number of members it must look at, not the
 /// size of both sets:
 ///
 /// - `union_with` clones the larger map (one C-level table copy) and inserts
@@ -40,12 +37,12 @@ package collections
 ///
 /// `items` is the exception: it exists to hand the members back as a `List<T>`,
 /// so it allocates that list and clones each member into it. Reach for it when
-/// you want the members, not to drive the algebra — the algebra above no longer
+/// you want the members, not to drive the algebra: the algebra above no longer
 /// needs it.
 ///
 /// The members live in one `Map<T, bool>`, so the storage cost is a map slot
 /// plus a byte per member. What this type buys is the API and the algebra, not
-/// a smaller footprint — a set with no per-entry value would need a key-only
+/// a smaller footprint: a set with no per-entry value would need a key-only
 /// table shape, and the runtime has one associative table (the open-addressed
 /// `Map`) and no set-only one. That is a runtime-shape decision, not a stdlib
 /// one: the value byte rides in the same cache line as the slot it belongs to,
@@ -102,7 +99,7 @@ pub class Set<T implements Eq & Hash & Clone> {
         }
     }
 
-    /// Every member, in the underlying map's order — which is to say, in no
+    /// Every member, in the underlying map's order, which is to say, in no
     /// order you may rely on. This allocates a list and clones each member into
     /// it; the algebra methods below do not use it.
     pub fn items() -> List<T> {
@@ -110,11 +107,11 @@ pub class Set<T implements Eq & Hash & Clone> {
     }
 
     /// A new set holding every member of either set. Named `union_with`
-    /// because `union` is a keyword — the same reason `poll.Interest` spells
+    /// because `union` is a keyword: the same reason `poll.Interest` spells
     /// its constructor `read_only`.
     ///
-    /// Clones the larger side's map — one C-level table copy sized for the
-    /// result — and inserts the smaller side into the copy, so the work is
+    /// Clones the larger side's map: one C-level table copy sized for the
+    /// result, and inserts the smaller side into the copy, so the work is
     /// O(larger) plus one lookup per member of the smaller side.
     pub fn union_with(other: Set<T>) -> Set<T> {
         let smaller: Set<T> = if self.len() >= other.len() { other } else { self }

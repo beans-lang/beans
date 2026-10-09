@@ -2,14 +2,14 @@
 //
 // A raw terminal delivers bytes, not keys: a printable character is its UTF-8,
 // but Enter is `0x0d`, Ctrl-C is `0x03`, and every arrow, Home, Page-Up and
-// function key is a CSI escape sequence — `ESC [ A`, `ESC [ 5 ~`, `ESC [ 1 ; 5 C`
+// function key is a CSI escape sequence: `ESC [ A`, `ESC [ 5 ~`, `ESC [ 1 ; 5 C`
 // for Ctrl-Right. Those sequences also **arrive split**: a read can end in the
 // middle of one, with the rest in the next read.
 //
 // `KeyDecoder` is fed bytes and asked for keys. It holds an incomplete sequence
 // until the bytes that finish it arrive, so a split sequence is one key, not two
-// wrong ones. A lone `ESC` is the one genuine ambiguity — the Escape key, or the
-// start of a sequence still on its way — so `next()` holds it and `flush()`,
+// wrong ones. A lone `ESC` is the one genuine ambiguity: the Escape key, or the
+// start of a sequence still on its way, so `next()` holds it and `flush()`,
 // which you call once input has settled, resolves it to the Escape key.
 
 package term
@@ -83,7 +83,7 @@ pub class KeyDecoder {
     }
 
     /// The next key, or `none` when what is buffered is only the start of a
-    /// sequence — read more, `feed` it, and call again. A lone `ESC` is held as
+    /// sequence: read more, `feed` it, and call again. A lone `ESC` is held as
     /// incomplete; `flush` resolves it.
     pub fn next() -> Option<Key> {
         let n: int = self.buffer.len()
@@ -109,7 +109,7 @@ pub class KeyDecoder {
 
     /// Resolves a buffer that `next` is holding as incomplete: a lone `ESC`, or
     /// an escape sequence that never completed, becomes the Escape key. Call it
-    /// once input has settled — after a poll timeout, say — so a real Escape
+    /// once input has settled (after a poll timeout, say) so a real Escape
     /// press is not held forever waiting for bytes that will never come.
     pub fn flush() -> Option<Key> {
         match self.next() {

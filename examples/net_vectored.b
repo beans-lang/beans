@@ -1,43 +1,13 @@
-// write_vectored: two buffers, one send, an offset that spans both.
-//
-// The interesting cases are not the happy ones. A short write is normal on a
-// socket, and the offset it resumes from can land inside the head or inside
-// the body; a caller that gets that wrong sends a valid-looking response with
-// bytes missing from the middle, which no small case would catch. So every
-// case here is compared byte for byte against the same two buffers joined the
-// old way.
-//
-// Whether a kernel short-writes is the kernel's business, not the test's:
-// macOS loopback splits a megabyte, Linux loopback takes it whole. So the
-// resume is not left to chance — `resume_from` starts the write at every
-// offset a short write could have stopped at and checks what arrives is
-// exactly the tail from there. The large cases still run the production loop
-// against whatever the kernel does.
-//
-// The writer runs on its own thread and the reader on this one. A thread,
-// not a fiber, on purpose: a fiber's blocked send holds the worker thread it
-// runs on, and on a platform with no fiber netpoller (Windows) the runtime
-// cannot park it — the reader would sit on that same held thread, and a
-// megabyte that needs draining would deadlock the example instead of testing
-// anything. On a thread the send blocks only that thread, which is what a
-// blocking socket is for. The fiber-parked form of the same send — the path
-// a server takes — is covered by test/fiber_net.sh and by espresso's own
-// large-body suite under its server.
+// Compare vectored writes with concatenated buffers, including every resume offset.
+// The writer uses a thread so a blocking send cannot prevent the reader from draining it.
+// Fiber send behavior is covered by test/fiber_net.sh and espresso's large-body suite.
 import std.io
 import std.net
 import std.http
 import std.thread
 import std.time
 
-// `count` bytes whose value repeats every 251 — a prime, so a resume that
-// lands on the wrong offset shifts the pattern instead of landing back on it.
-// Built one period at a time and copied in bulk rather than one `push` per
-// byte. The bytes are the same either way — the value at index j is
-// (j % 251) + 1, which is exactly the period repeated — but a push per byte is
-// interpreted a byte at a time, and this example builds a pattern sixteen
-// times: two buffers for each of five `case` rows and each of eight
-// `resume_from` offsets. Under the tree interpreter that cost 83s of the 96s
-// this example took; it is 2s now.
+// Build a repeated byte pattern in bulk so offset errors shift the data visibly.
 fn pattern(count: int) -> Bytes {
     let period: Bytes = new Bytes(0)
     period.reserve(251)
@@ -122,9 +92,7 @@ fn case(label: string, head_len: int, body_len: int) {
     io.println("{label} bytes {arrived.len()} identical {identical} calls>0 {calls > 0}")
 }
 
-// Starts the pair at `start` and checks the peer receives exactly the tail
-// from there — the offset arithmetic a short write depends on, driven by hand
-// so it is tested on every kernel.
+// Start at each offset to check the tail expected after a short write.
 fn resume_from(head_len: int, body_len: int, start: int) {
     let listener: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)
         .expect("bind")
@@ -191,55 +159,17 @@ fn head_framing() {
     }
 }
 
-// A peer that has gone away must come back as an error, never as a signal.
-// send() carries MSG_NOSIGNAL on Linux for exactly this; both vectored sends
-// have to carry it too, or a client that disconnects while a large response is
-// in flight takes the whole server down with it. macOS sets SO_NOSIGPIPE on the
-// socket and cannot show the difference, so this case is only a real test on
-// Linux — which is where CI runs it.
+// A peer disconnect must return an error, never signal.
+// send() and vectored sends suppress SIGPIPE on Linux; macOS sets SO_NOSIGPIPE.
 //
-// One case for both forms, driven by `text_form`, and not a pair of twins.
-// Everything here except the send itself — how big the pair is, how many turns
-// the loop takes, and the pause between them — is platform contract rather
-// than anything about vectored writing, and a twin is precisely how that
-// contract gets lost. It did: the string form was written by copying this case
-// while it still sent a megabyte in 64 unpaused turns, the Bytes form learned
-// both rules before the two branches merged, and the copy inherited neither.
-// The result sent a megabyte at a vanished peer and hung the Wine gate for the
-// full 600-second cap, twice — once as the cross-compiled binary and once
-// under beansc.exe's own interpreter. A third form has to come through here.
-//
-// On its own thread the socket is blocking, so a full buffer waits rather than
-// answering "timeout" — the refusal that matters here is the peer's, not the
-// buffer's. Both buffers are non-empty, so the send this covers really is the
-// two-iovec one.
+// One test body covers Bytes and string sends so both forms share peer handling.
+// A blocking send waits for the peer; a closed peer, rather than a full buffer, is the error.
 //
 // The pair is small and the loop pauses between turns, and both of those are
 // load-bearing.
 //
-// Small, because a blocking send does not short-write on Windows: it returns
-// when every byte has been accepted, so a send larger than the send buffer
-// waits for a peer that is never going to read again. Under Wine it does not
-// even end there — a plain Win32 `send` of a megabyte to a closed peer, built
-// with mingw and with no Beans runtime in it, never returns at all, while the
-// same program with a small buffer answers WSAECONNRESET. Real Windows breaks
-// the send on the reset and the native Windows CI legs run either size to
-// completion, so this is Wine's alone; but test/windows.sh runs every example
-// under Wine, and a megabyte here stops that gate dead. How much is being
-// written has nothing to do with whether a vanished peer is an error or a
-// signal, so nothing here writes more than a socket buffer holds — in either
-// form, which is the half that was missing.
-//
-// Paused, because the reset is not synchronous with our write. The first
-// turn's bytes are what provoke it, and back-to-back turns can put a dozen
-// more on the wire before it lands: sixteen immediate turns of 256 bytes
-// raced past it on a loaded macOS and printed "no error". With a pause the
-// answer arrives on the turn after the first, thirty runs out of thirty. Two
-// hundred turns of one millisecond is a fifth of a second of slack and 25 KB
-// at most, and running them out prints a line no golden accepts rather than
-// waiting forever. Unpaused, the two backends disagree instead of hanging —
-// the interpreter is slow enough to see the reset where the native binary
-// outruns it — which is the same defect wearing a different face.
+// Keep the payload within a socket buffer because Wine can hang on a large blocking send.
+// Poll with a bounded pause because the connection reset may arrive after the write.
 fn peer_closed_case(label: string, text_form: bool) {
     let listener: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)
         .expect("bind")
@@ -271,11 +201,7 @@ fn peer_closed_case(label: string, text_form: bool) {
     io.println("{label}: {outcome}")
 }
 
-// The string twin of `pattern`: `count` printable-ASCII bytes whose value
-// repeats every 89 — a prime, so a resume from a wrong offset shifts the
-// pattern instead of realigning on it. It is a string because the string send
-// path is what carries it; the bytes are ASCII, which is its own UTF-8, so
-// `Bytes.to_string` neither rejects nor rewrites a single one of them.
+// Use repeated printable ASCII so a wrong string offset shifts the expected pattern.
 fn pattern_text(count: int) -> string {
     let out: Bytes = new Bytes(0)
     out.reserve(count)
@@ -291,7 +217,7 @@ fn send_pair_text(stream: net.TcpStream, head: Bytes, body: string) -> Result<in
     return send_pair_text_from(stream, head, body, 0)
 }
 
-// The same loop, started at `start` — the string twin of send_pair_from.
+// String equivalent of send_pair_from, starting at `start`.
 fn send_pair_text_from(stream: net.TcpStream, head: Bytes, body: string,
                        start: int) -> Result<int> {
     var offset: int = start
@@ -306,11 +232,7 @@ fn send_pair_text_from(stream: net.TcpStream, head: Bytes, body: string,
     return ok(calls)
 }
 
-// The string twin of `case`: send a Bytes head and a string body vectored from
-// a thread while this thread reads, and compare what arrived against the head
-// and the body's bytes joined by hand. A thread, not a fiber, for the same
-// reason `case` uses one — Windows has no fiber netpoller to park a blocked
-// send behind.
+// Send a Bytes head and string body from a thread while this thread reads.
 fn case_text(label: string, head_len: int, body_len: int) {
     let listener: net.TcpListener = net.TcpListener.bind("127.0.0.1", 0)
         .expect("bind")
@@ -378,14 +300,7 @@ fn corner(label: string, outcome: Result<int>) {
 
 // The corners the sending loops never reach, for both forms side by side.
 //
-// The loops stop at `offset < total`, so nothing above ever calls either form
-// with the offset sitting exactly at the end, past it, or below zero, and
-// nothing calls either on a stream that is already closed. Those four answers
-// are part of the contract — a caller resuming a short write arrives at
-// `offset == total` on its last turn and must get `ok(0)` rather than a write
-// of nothing or an error — and the two forms must give the same one. A server
-// picks the form from whether its body is a `Bytes` or a `string`, and must
-// not pick different behaviour along with it.
+// Both send forms must return `ok(0)` at the end offset and agree on closed streams and invalid offsets.
 //
 // The last-byte case is the one corner that does reach the send itself: it puts
 // exactly one byte on the wire from the far end of the pair, so the return

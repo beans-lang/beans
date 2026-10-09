@@ -63,8 +63,8 @@ $(BIN): $(SELF_HOST_SRC) $(RUNTIME_COPY)
 	}
 # The released launcher exports its package's BEANS_* paths, so an installed
 # bootstrap would compile THIS tree's sources against LAST release's runtime
-# and stdlib — and the link breaks the first time src needs a runtime symbol
-# the release does not have. The launcher honours preset values, so the
+# and stdlib. The link breaks when src first needs a runtime symbol the release
+# does not have. The launcher honours preset values, so the
 # bootstrap pins every source root to the tree it is building.
 	BEANS_RUNTIME=runtime/beans_rt.c BEANS_STDLIB=stdlib/std \
 	BEANS_ENCODING=runtime/encoding BEANS_NET=runtime/net \
@@ -79,19 +79,13 @@ run: $(BIN)
 install: $(BIN)
 	PREFIX="$(PREFIX)" DESTDIR="$(DESTDIR)" bash ./tools/install.sh
 
-# The whole gate: every behavioural suite, then the fixed point — the compiler
-# rebuilt by itself must be byte-identical to itself. That fixed point is what
-# a self-hosted compiler has instead of a second implementation to diff against.
+# Run every behavioural suite and verify a self-hosted compiler rebuilds byte-identically.
 test: test-core test-self-host test-fixpoint
 
 # What CI runs.
 test-ci: test
 
-# The five-minute developer gate: the checks that catch almost every compiler
-# mistake, cheapest first, so a parity break reports in seconds. This is a
-# feedback loop, not the bar — `make test` stays the full suite. Timings are
-# from build/test_timing on a dev laptop; the whole chain is under five
-# minutes when the compiler is already built.
+# Five-minute gate: run fast checks first; timings come from build/test_timing on a dev laptop with an existing compiler.
 test-quick: $(BIN)
 	BEANSC="./$(BIN)" bash ./test/compiler_discovery.sh self-test
 	bash ./test/issue201.sh
@@ -118,10 +112,7 @@ test-quick: $(BIN)
 	bash ./test/sanitizer_gates.sh
 	$(MAKE) fuzz-differential-smoke
 
-# Focused slices of the full suite for iterating on one area. Together the
-# five slices run exactly the scripts `make test` runs — test/ci_coverage.sh
-# fails if they ever drift apart — so a green run of all five plus nothing
-# else is the same claim as `make test`.
+# Five focused slices cover the `make test` scripts; test/ci_coverage.sh checks they stay aligned.
 test-frontend: $(BIN)
 	BEANSC="./$(BIN)" bash ./test/compiler_discovery.sh self-test
 	bash ./test/issue201.sh
@@ -608,7 +599,7 @@ fuzz-net-soak: $(BIN)
 # builds. Both fuzzers used to need the stage-0 bootstrap to diff against and
 # were skipped wherever it was absent; comparing the compiler's own backends
 # against a separate oracle needs no second compiler, so they now run
-# everywhere. `run` is the configurable session — see the script header.
+# everywhere. `run` is the configurable session; see the script header.
 fuzz-differential: $(BIN)
 	bash ./test/differential_fuzz.sh run
 
@@ -653,8 +644,7 @@ test-self-host-full: $(BIN)
 bench-compiler: $(BIN) build/beansc-next
 	bash ./bench/compiler.sh
 
-# The whole gate inside a Linux container. Correctness only — a container on a
-# non-matching host is emulated, and the script says so.
+# Run the full correctness gate in Linux; test/linux_docker.sh reports when Docker uses emulation.
 test-linux:
 	bash ./test/linux_docker.sh $(DOCKER_ARGS)
 

@@ -1,6 +1,6 @@
 // `x as int < y` did not parse. The parser committed to a type-argument list
 // on the `<` after the cast's type name and then demanded a closing `>`.
-// Only one direction was affected — `x as int > y` was always fine — which is
+// Only one direction was affected, `x as int > y` was always fine, which is
 // what made it look like a string-interpolation quirk rather than a parse
 // one, since a comparison usually gets written inside a string first.
 //

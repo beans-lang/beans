@@ -38,7 +38,7 @@ check_bad string_escapes_bad.b "'{{' is not an escape — it starts an interpola
 check_bad string_escapes_bad.b "empty {} in string"
 check_bad struct_defaults_bad.b "initializer for Mixed is missing field 'required'"
 
-# main() runs on the real process main thread under both compilers — the
+# main() runs on the real process main thread under both compilers, the
 # guarantee AppKit and dispatch-main-queue programs stand on. Probed through
 # a C fixture on the hosts that can answer the question.
 os=$(uname -s)
@@ -96,8 +96,8 @@ fi
 
 # A compiler built in the tree resolves both C sources from the working
 # directory, so every package built from anywhere else fails to find them. That
-# is by design — pairing a tree compiler with another package's runtime is a
-# version skew with no handshake to catch it — but the old message named a
+# is by design, pairing a tree compiler with another package's runtime is a
+# version skew with no handshake to catch it, but the old message named a
 # relative path, which reads as "the runtime is missing" rather than "you are
 # in the wrong directory". The message has to name the path it actually tried.
 root=$PWD

@@ -29,7 +29,7 @@ pub fn through_bound<P implements Producer<int>>(p: P) -> int {
 }
 
 // a generic *class* pins its parameter's bound too, and it is checked where
-// the type is named — not left for the backend to choke on the body that
+// the type is named, not left for the backend to choke on the body that
 // relies on it
 pub class Keeper<P implements Producer<int>> {
     pub item: P

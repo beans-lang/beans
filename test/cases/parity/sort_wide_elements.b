@@ -1,7 +1,7 @@
 // sort_by and sort_by_key over an element wider than one runtime slot.
 //
 // The comparator arrives with the call, so nothing about the element type is
-// needed to run one — and yet `List<Option<int>>` and `List<Result<int,
+// needed to run one, and yet `List<Option<int>>` and `List<Result<int,
 // string>>` were refused while `List<Point>` and `List<Option<string>>` sorted.
 // The line was drawn at the element's spelling (decimal, or a struct
 // declaration) rather than at its width, and every wide inline value is stored

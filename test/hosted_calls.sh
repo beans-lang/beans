@@ -57,7 +57,7 @@ printf 'wait -2\npoller true\n' | diff -u - "$tmp/fiber_readiness.out"
 echo "checking BEANS_CC still reaches the run-time C shim"
 # pow(double, double) is not a runtime entry and is not a shape the word ABI
 # can call, so the interpreter has to build a shim for it. With the driver
-# pointed at nothing that must fail, and must name the driver — otherwise
+# pointed at nothing that must fail, and must name the driver, otherwise
 # every "no compiler was needed" claim further down is vacuous.
 cat >"$tmp/needs_bridge.b" <<'BRIDGE'
 import std.io
@@ -150,7 +150,7 @@ fn main() {
 RESULT
 # A variadic tail on a name whose signature is fixed. The tail is classified
 # at the call site by the target's own variadic rules, which is exactly what
-# a fixed-prototype entry is not — and the arity a call would carry is not
+# a fixed-prototype entry is not, and the arity a call would carry is not
 # even a property of the declaration any more.
 cat >"$tmp/wrong_variadic.b" <<'VARIADIC'
 import std.io
@@ -159,8 +159,8 @@ fn main() {
     unsafe { io.println("tty {beans_term_is_tty(0, 1 as i32)}") }
 }
 VARIADIC
-# A result narrowed to one bit. The invoker could carry it — the word comes
-# back whole — but a native build reads the same call as a C `_Bool`, which
+# A result narrowed to one bit. The invoker could carry it, the word comes
+# back whole, but a native build reads the same call as a C `_Bool`, which
 # Clang takes from the low byte, so a width of 256 or an address ending in a
 # zero byte would be false there and true here. Two backends disagreeing about
 # a wrong answer is worse than one refusing it.
@@ -175,7 +175,7 @@ NARROW
 # assigns any of them, so a name used in a later assignment on the same line
 # is still unset when it is read. Under `set -u` that read happens inside the
 # command substitution's subshell, which dies quietly and leaves the empty
-# string behind — the check kept running, against a file whose name no longer
+# string behind, the check kept running, against a file whose name no longer
 # said which program it came from.
 check_refusal() {
     local program=$1
@@ -211,7 +211,7 @@ echo "checking an interpreter running under an interpreter reaches the same entr
 # implement, and nothing else can exercise that: it only matters when the
 # program doing the asking is the interpreter, interpreted. The inner
 # interpreter looks each hosted name up and then calls through the invoker,
-# which is four words — one past the direct path — so if the invoker were not
+# which is four words, one past the direct path, so if the invoker were not
 # itself hosted this run would need the shim, and BEANS_CC points at nothing.
 # On Linux it would not even be found: an ELF executable exports no names.
 #

@@ -767,7 +767,7 @@ partial class LlvmTextEmitter {
     }
 
     // a Result box is {i64 tag, i64 slot}: the payload pointer
-    // sits at byte 8, which is pointer slot 8/stride — slot 1 on
+    // sits at byte 8, which is pointer slot 8/stride: slot 1 on
     // 64-bit targets but slot 2 when pointers are four bytes.
     // Hardcoding 17 (mask bit 1) hid every 32-bit Result payload
     // from the destructor walker, so they leaked.
@@ -995,7 +995,7 @@ partial class LlvmTextEmitter {
     // whether the value belongs there: it accepts the exact type, and it
     // accepts a subtype, because a class or interface reference widens
     // wherever one is expected. Both sides are then one pointer, and the
-    // widening is the identity — so the emitter asks about representation,
+    // widening is the identity, so the emitter asks about representation,
     // not spelling, and only refuses a shape it genuinely cannot store.
     fn error_payload_fits(operand_type: HirType,
                           error_type: HirType) -> bool {
@@ -1289,8 +1289,8 @@ partial class LlvmTextEmitter {
         }
         if canonical_hir_name(value_type.name) ==
                "decimal" {
-            // the ok slot holds a box only the ok path may dereference —
-            // on err it is an Error pointer — so this shape branches
+            // the ok slot holds a box only the ok path may dereference:
+            // on err it is an Error pointer, so this shape branches
             // where the scalar shapes select
             let llvm: string =
                 self.type_text(value_type)
@@ -1443,8 +1443,8 @@ partial class LlvmTextEmitter {
             let okay_join: int = self.fresh()
             let error_join: int = self.fresh()
             let merge_block: int = self.fresh()
-            // Extracting either arm is safe — extractvalue reads the SSA
-            // aggregate, never memory — so both arms come out up front. But
+            // Extracting either arm is safe: extractvalue reads the SSA
+            // aggregate, never memory, so both arms come out up front. But
             // the tag decides which arm is *compared*: the dead arm of an
             // inline Result is zero-initialised, and a comparison that
             // dereferences a zeroed reference slot (beans_str_eq on a null

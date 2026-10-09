@@ -85,7 +85,7 @@ grep -q "changes ownership mode of argument 1" "$tmp/collection-bad"
 
 # A struct that reaches itself has no finite layout, and that is reported on
 # its own. Checking then carries on, so the move-only question still gets asked
-# about a type whose fields loop — it has to come back with an answer rather
+# about a type whose fields loop, it has to come back with an answer rather
 # than descend the cycle until the stack runs out. Stage 0 is where that walk
 # is C++ recursion, so it is checked too when the bootstrap is present; forks
 # build without the private submodule and skip it.
@@ -146,12 +146,12 @@ diff -u test/cases/ownership_edges_ok.out "$tmp/ownership-native.out"
 # #155: WHERE a move hands the value over, pinned against a recorded answer.
 #
 # test/backend_parity.sh runs the same program, but it compares the two
-# backends against each other and has no golden — so a change that moves both
+# backends against each other and has no golden, so a change that moves both
 # of them together passes it. This lane picked a rule, so that is exactly the
 # hole worth closing: the ordering below is the decision, written down, and a
 # future change to the drop point has to argue with it rather than only with
 # the other backend. The construct/release count parity pins is no help
-# either — the markers balance whichever end of the program releases them,
+# either, the markers balance whichever end of the program releases them,
 # which is why the bug survived both gates for as long as it did.
 #
 # The order this file records is the one spec/SYNTAX.md states: a nested

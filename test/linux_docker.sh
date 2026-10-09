@@ -99,7 +99,7 @@ if [[ ${#args[@]} -eq 0 ]]; then args=(gate); fi
 echo "running ${args[*]} in $tag"
 # Git Bash rewrites arguments that look like absolute paths on the way to a
 # native .exe, so `-v /c/beans:/src:ro` reaches docker.exe as a mangled Windows
-# path and the mount silently does not happen — the container then reports
+# path and the mount silently does not happen, the container then reports
 # "expected the repository bind-mounted read-only at /src". cygpath gives
 # docker.exe the Windows spelling it wants and MSYS_NO_PATHCONV stops the
 # rewrite; on Linux and macOS there is no cygpath and $PWD is used unchanged.

@@ -1,10 +1,10 @@
-// DEFLATE compression — zlib-ng behind a bomb-proof API.
+// DEFLATE compression: zlib-ng behind a bomb-proof API.
 //
 // Three decisions shape the package:
 //
 //   **Decompression limits are mandatory.** Every inflate call names the
 //   most bytes it is prepared to receive, and crossing that bound is an
-//   `err` of kind `limit` — never an allocation racing a hostile ratio. A
+//   `err` of kind `limit`: never an allocation racing a hostile ratio. A
 //   96-byte bomb that claims four gigabytes gets 96 honest bytes of effort.
 //
 //   **Three formats, spelled out.** `zlib` (RFC 1950), `raw` (RFC 1951),
@@ -111,13 +111,13 @@ pub fn gzip_compress(data: Bytes, level: int = 6) -> Result<Bytes> {
     return compress_one_shot(data, level, Format.gzip)
 }
 
-/// Decompresses gzip data — all members of a multi-member file — within
+/// Decompresses gzip data (all members of a multi-member file) within
 /// `limit` bytes of output.
 pub fn gzip_decompress(data: Bytes, limit: int) -> Result<Bytes> {
     return decompress_one_shot(data, limit, Format.gzip)
 }
 
-/// Compresses to a raw DEFLATE stream (RFC 1951) — no header, no checksum.
+/// Compresses to a raw DEFLATE stream (RFC 1951): no header, no checksum.
 /// The framing protocol above owns integrity; this is what WebSocket
 /// permessage-deflate and ZIP entries speak.
 pub fn deflate_raw(data: Bytes, level: int = 6) -> Result<Bytes> {
@@ -212,7 +212,7 @@ fn drive_stream(handle: int,
                 complete = true
                 break
             }
-            // Finishing: keep draining until `done` — unless nothing came
+            // Finishing: keep draining until `done`, unless nothing came
             // out at all, which for deflate means "call again", and for a
             // truncated inflate would spin forever, so stop there.
             if produced == 0 && consumed == 0 {
@@ -265,7 +265,7 @@ pub unique class Deflater implements Send {
         return ok(new Deflater(handle))
     }
 
-    /// Compresses one piece, returning whatever output is ready — possibly
+    /// Compresses one piece, returning whatever output is ready: possibly
     /// nothing, because DEFLATE buffers freely until `finish`.
     pub fn push(data: Bytes) -> Result<Bytes> {
         if !self.live { return err("push: the deflater is finished", "closed") }
@@ -280,7 +280,7 @@ pub unique class Deflater implements Send {
     }
 }
 
-/// A streaming decompressor with one limit across its whole life — the
+/// A streaming decompressor with one limit across its whole life: the
 /// bound holds however many pieces the data arrives in.
 pub unique class Inflater implements Send {
     handle: int = 0
@@ -342,7 +342,7 @@ pub unique class Inflater implements Send {
         return ok(move out)
     }
 
-    /// True once the underlying stream announced its end — after this,
+    /// True once the underlying stream announced its end: after this,
     /// the bytes are complete and further input is an error.
     pub fn finished() -> bool {
         return self.ended

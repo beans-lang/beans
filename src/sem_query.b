@@ -269,7 +269,7 @@ fn semantic_descendant_members(
         if visited.contains_key(current) { continue }
         visited[current] = true
         // The type's own members are the caller's business, not this
-        // walk's — `semantic_members` already covers them.
+        // walk's: `semantic_members` already covers them.
         if current != type_id {
             match snapshot.members.get(current) {
                 some(ids) => {
@@ -298,7 +298,7 @@ fn semantic_descendant_members(
 // Every method that shares one virtual name: the base or interface methods
 // this one implements, everything else that implements those, and so on in
 // both directions. A virtual name belongs to the family, not to any one
-// member of it — renaming one alone leaves an `override` with no parent, or
+// member of it: renaming one alone leaves an `override` with no parent, or
 // an interface method with no implementation.
 fn semantic_override_family(snapshot: SemanticSnapshot,
                             method_id: string) -> List<string> {

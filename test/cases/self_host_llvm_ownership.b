@@ -1,6 +1,6 @@
 // Two ownership traps the stage-2 bootstrap surfaced, kept here so
 // they stay fixed. First: releasing a temporary list on the index
-// that borrows out of it frees the element before its retain —
+// that borrows out of it frees the element before its retain,
 // the release must sink past the borrow's use. Second: a closure
 // capturing a reference-typed parameter stores it in an owning
 // cell, so it must retain going in or every call steals one count

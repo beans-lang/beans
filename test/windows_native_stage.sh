@@ -2,7 +2,7 @@
 # Build the Windows differential bundle on a POSIX host: every example that
 # checks clean for the selected Windows target becomes an .exe, next to the
 # interpreter's expected output and exit code. test/windows_native_run.sh
-# consumes the bundle on a real Windows machine with nothing but bash and cmp —
+# consumes the bundle on a real Windows machine with nothing but bash and cmp,
 # no compiler, no wine. Together they are the two halves of the strongest
 # Windows program gate: binaries execute on genuine Windows and the interpreter
 # remains the referee. A separate hosted gate runs beansc.exe itself.
@@ -60,16 +60,16 @@ fi
 # poller.b carries the RDHUP-behind-data semantic Windows cannot express (see
 # the wine gate's masked check, which still validates the rest of it).
 # processes.b and child_process.b spawn /bin/echo and /bin/sh by absolute
-# path — POSIX content no Windows machine has; the wine gate's parametrized
+# path, POSIX content no Windows machine has; the wine gate's parametrized
 # process differential covers the runtime instead.
 # net.b's doomed connect reports whatever the machine's TCP stack and
-# firewall decide — refused on Linux, timeout on the GitHub Windows runner —
+# firewall decide, refused on Linux, timeout on the GitHub Windows runner,
 # so it cannot cross machines; the hosted gate diffs it on one machine.
 skip_diff="target_info.b cpu_dispatch.b intrinsics.b poller.b processes.b child_process.b signals.b net.b"
 
 # `beansc run` always interprets for the *host*, which is how the two backends
 # stay byte-identical (SYNTAX.md, std.target). So an example that prints a
-# layout fact of the selected target — a pointer's size or alignment — has no
+# layout fact of the selected target, a pointer's size or alignment, has no
 # single right answer across a 64-bit staging host and a 32-bit target: the
 # interpreter says 8/8 and the i686 binary correctly says 4/4.
 #
@@ -88,7 +88,7 @@ mkdir -p "$OUT"
 rm -f "$OUT"/*.exe "$OUT"/*.expected "$OUT"/manifest.tsv
 : > "$OUT/manifest.tsv"
 
-# The fs examples use Dir.temp_path() as a base and never print it — make test
+# The fs examples use Dir.temp_path() as a base and never print it, make test
 # already proves their output identical across machines whose temp paths
 # differ, which is exactly what lets expectations recorded here hold on a
 # Windows machine with a completely different temp directory.
@@ -154,7 +154,7 @@ stage() { # <source> <stem>
 # 0 = this target can build it, 1 = it is refused for a capability this target
 # genuinely lacks, and anything else aborts. A capability refusal is a
 # *language* decision recorded in SYNTAX.md's refusal table, not a toolchain
-# that failed to show up, so it is the one thing allowed to reduce the bundle —
+# that failed to show up, so it is the one thing allowed to reduce the bundle,
 # and the per-target floor below is what stops that from hiding a real break.
 buildable() { # <source>
     local src=$1 out code
@@ -190,8 +190,8 @@ if buildable examples/shop/main.b; then
     stage examples/shop/main.b shop
 fi
 
-# std.encoding. These are not examples — they are the four packages' own
-# goldens — but they are the only programs in the tree that link a vendored
+# std.encoding. These are not examples, they are the four packages' own
+# goldens, but they are the only programs in the tree that link a vendored
 # C/C++ bridge, so they are exactly what a Windows run has to prove. Building
 # them here compiles yyjson, pugixml and simdutf with the Windows toolchain;
 # running them on the real machine is what makes Windows a supported target
@@ -211,7 +211,7 @@ done
 
 # Where a `move` hands its value over (#155). The staging loop above walks
 # examples/, so a rule that lives only under test/cases/ is never executed on
-# Windows at all — and this one is an ownership rule with a recorded order, so
+# Windows at all, and this one is an ownership rule with a recorded order, so
 # a target that released a moved-in parameter at a different point would go
 # unnoticed. It carries its own tracked golden, which is what the MSVC lanes
 # are diffed against below.
@@ -231,7 +231,7 @@ printf 'windows_csrc\t0\n' >> "$OUT/manifest.tsv"
 
 # The classes,packages differential-fuzz corpus (seed 47): class dispatch,
 # super calls, ARC drop order, and multi-package projects. Expectations come
-# from the generator's independent oracle — not from any compiler — so the
+# from the generator's independent oracle, not from any compiler, so the
 # Windows machine executes against the same answers the qemu and wine gates
 # use. Directory cases carry beans.pot; the entry point is always main.b.
 dfuzz_seed=47
@@ -285,9 +285,9 @@ echo "$TRIPLE" > "$OUT/triple"
 
 # Record the pointer width so the run half can hold a 32-bit binary to it. This
 # is the positive replacement for the diff dropped above: the numbers a running
-# i686 binary reports must be the 32-bit ones, and a regression to 8/8 — the
+# i686 binary reports must be the 32-bit ones, and a regression to 8/8, the
 # exact shape of the two bugs that once made deinit silently not run on a
-# 32-bit board — fails the gate rather than passing unnoticed.
+# 32-bit board, fails the gate rather than passing unnoticed.
 case "$TRIPLE" in
     i686-pc-windows-gnu | i686-pc-windows-msvc)
         echo 4 > "$OUT/pointer_size" ;;

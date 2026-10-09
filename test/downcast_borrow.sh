@@ -5,7 +5,7 @@
 # that can outlive its source kept its count.
 #
 # The negatives carry as much weight as the positives here. Eliding one of them
-# is a leak or a use-after-free, and neither shows up in the printed answer —
+# is a leak or a use-after-free, and neither shows up in the printed answer,
 # which is why this file greps the MIR as well as diffing the output.
 set -euo pipefail
 

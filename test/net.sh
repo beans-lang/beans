@@ -54,7 +54,7 @@ EXPECTED
 echo "checking the example never touches the network"
 # Every host the example names, pulled out of the calls that take one. Each must be a
 # loopback literal, "localhost" (which is in every hosts file), the empty string being
-# rejected on purpose, or "a..b" — an empty DNS label, which is not a legal name and so
+# rejected on purpose, or "a..b", an empty DNS label, which is not a legal name and so
 # is refused locally. A reserved name like "x.invalid" would cost a round trip, and a
 # resolver that hijacks unknown names could answer it and change the output.
 hosts=$(grep -oE '\b(bind|bind_with_backlog|connect|connect_timeout|resolve|Address)\("[^"]*"' \
@@ -81,7 +81,7 @@ fi
 echo "checking a socket closes exactly once, even when nobody says so"
 # The reason these are `unique class` with `deinit`: a handle dropped without close
 # must still release its descriptor. 200 listeners in a loop, and the process must not
-# run out — a leaked fd per iteration hits the limit long before 200 on a default
+# run out, a leaked fd per iteration hits the limit long before 200 on a default
 # 256-descriptor macOS shell.
 cat >"$tmp/drop.b" <<'DROP'
 import std.io
@@ -117,7 +117,7 @@ echo "checking partial writes and reads really are partial"
 # Two separate facts, because they break independently.
 #
 # First: one write really can come back short, so write_all's loop is doing work. How
-# much a single write takes is *not* fixed — macOS auto-tunes the loopback buffer and
+# much a single write takes is *not* fixed, macOS auto-tunes the loopback buffer and
 # 327KB..1.9MB was observed across runs, which is why 1 MiB was a flaky threshold and
 # 16 MiB is not. No buffer absorbs 16 MiB in one syscall.
 #
@@ -364,7 +364,7 @@ exchange() {
     fi
     # Bounded, like the wait for the port above. A bare `wait` would hang the whole
     # suite if the server ever failed to exit, and a test that can hang forever is not
-    # a test — it is a way to lose an afternoon.
+    # a test, it is a way to lose an afternoon.
     waited=0
     while kill -0 "$server_pid" 2>/dev/null && [[ "$waited" -lt 200 ]]; do
         sleep 0.05
@@ -494,7 +494,7 @@ echo "checking no memory errors under ASan"
 rm -f build/net_ffi.c
 ./build/beansc build examples/net.b --emit ir >/dev/null
 # std.net stands on the sockx bridge (multicast), so a hand link compiles
-# the bridge source and the generated extern wrappers beside the runtime —
+# the bridge source and the generated extern wrappers beside the runtime,
 # the same set the driver links from its caches.
 extra_sources=(runtime/net/beans_net_sockx.c)
 if [[ -f build/net_ffi.c ]]; then extra_sources+=(build/net_ffi.c); fi
@@ -529,8 +529,8 @@ fi
 # --- write_vectored: two buffers, one send, an offset spanning both ---------
 #
 # The cases that matter are the resumes. Whether the kernel short-writes is
-# not something a golden can assume — macOS loopback splits a megabyte, Linux
-# loopback takes it in one call (seen on Ubuntu 24.04, arm64) — so the resume
+# not something a golden can assume, macOS loopback splits a megabyte, Linux
+# loopback takes it in one call (seen on Ubuntu 24.04, arm64), so the resume
 # offset is driven by hand: `resume from N` starts the pair at every offset a
 # short write could stop at and the peer must receive exactly the tail from
 # there. The large cases run the production loop against whatever the kernel
@@ -547,12 +547,12 @@ fi
 # way and with the resume driven by hand so it does not depend on the kernel.
 # The native backend sends the string where it lives with sendmsg; the tree
 # interpreter, whose bootstrap predates the entry, joins head and body and
-# sends that once — so both must print the same bytes, the same resumed tails,
+# sends that once, so both must print the same bytes, the same resumed tails,
 # and `peer-closed-text: err reset`.
 #
 # The last block is the corners the sending loops never reach, both forms side
 # by side: the offset sitting exactly at the end of the pair (`ok 0`, not a
-# write of nothing and not an error — a resumed short write lands there on its
+# write of nothing and not an error, a resumed short write lands there on its
 # last turn), an empty pair, an offset past the end or below zero (`err
 # invalid`), a stream already closed (`err closed`), and the one-byte-left case,
 # which is the only corner that reaches the send itself and so pins the return
@@ -615,16 +615,16 @@ EXPECTED
 
 # The same corners one layer down. Everything above drives net.TcpStream, which
 # answers the offset and closed-socket corners itself and returns before it ever
-# calls the builtin — so none of it reaches std.sock.send_pair_text's own
+# calls the builtin, so none of it reaches std.sock.send_pair_text's own
 # guards, and breaking every one of them leaves the whole block above green.
 # std.sock is a module a program may import (the handles are written in Beans on
 # top of it), so those guards are a public contract, and an offset that is not
 # checked there is a send that reads past the end of the head or the body.
 #
-# The two backends arrive at these answers by different routes — the native
+# The two backends arrive at these answers by different routes, the native
 # backend lowers the builtin to beans_net_send_pair_text, the tree interpreter
 # joins head and body and sends the join from the same offset through
-# beans_net_send — so this is also where the two are held to the same contract
+# beans_net_send, so this is also where the two are held to the same contract
 # at the layer where they actually differ.
 echo "checking the raw send_pair_text builtin's own corners in both backends"
 ./build/beansc run test/cases/sock_pair_text_corners.b >"$tmp/sockpair-interp"

@@ -5,18 +5,18 @@
 // Two things have to hold and only one of them is visible in the answers.
 // The write has to land in the original and not in a copy, which the printed
 // values show. And a reference the write displaces has to be released exactly
-// once, and the replacement retained exactly once — which only the markers
+// once, and the replacement retained exactly once, which only the markers
 // show. The class-rooted case is the one that carries the cycle-collector
 // publication barrier, so it is the one that owns Loud values.
 //
 // Four roots reach the same store and each one is here, because they are
 // four different addresses and only one of them is a plain stack slot: a
 // local, a local a closure captured (whose slot holds a cell pointer, so
-// indexing the slot writes the record over that pointer — a native-only
+// indexing the slot writes the record over that pointer, a native-only
 // segfault the interpreter never sees), an `inout` parameter aliasing the
 // caller's storage, and a heap object. A fixed-array hop sits in the middle
 // of the local-rooted and the class-rooted chains, because an array step is
-// where the record walk and the element walk share code — and the class one
+// where the record walk and the element walk share code, and the class one
 // carries an owned reference, which the element store's own path still
 // refuses.
 package main

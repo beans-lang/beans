@@ -5,14 +5,14 @@
 // below it malloc'd, so a grow that crosses the line is not a realloc at all:
 // it is a fresh block, a memcpy of the overlap, and a release of the old one.
 // A grow of an already-mapped block is the same three steps. Nothing asserted
-// that the overlap arrives intact — the RSS gate beside this one counts pages,
+// that the overlap arrives intact, the RSS gate beside this one counts pages,
 // not contents, and every other crossing in the suite happens to copy eight
 // bytes of an empty buffer, which would survive almost any mistake in the
 // copy's length or its direction.
 //
 // So each of the growth call sites is driven here with a payload large enough
 // to see: push, reserve and resize on a Bytes, and push, reserve and insert on
-// a List — insert because it also memmoves inside the new block right after
+// a List, insert because it also memmoves inside the new block right after
 // the copy. Each is run twice: once starting below the threshold so the grow
 // crosses it, and once starting above so the grow is map-to-map.
 //
@@ -24,7 +24,7 @@
 // The sizes are chosen against a 256 KB (262144-byte) threshold, and a Bytes
 // or List capacity only ever doubles, so which side of the line a case lands on
 // is a property of the number written here. Move the threshold and these stop
-// crossing — they keep passing, having tested nothing — so test/rss_release.sh
+// crossing, they keep passing, having tested nothing, so test/rss_release.sh
 // pins the threshold's value and fails if it changes, which is the signal to
 // come back and retune every size below.
 

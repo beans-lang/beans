@@ -2,7 +2,7 @@
 // `int`, `byte` and `u8` are one type each, and HIR carries both spellings:
 // an annotation keeps what was written, a MIR local carries the canonical
 // name. Six places in the LLVM emitter asked `render_hir_type(a) ==
-// render_hir_type(b)` — a *diagnostic* rendering — and so read one type as
+// render_hir_type(b)`, a *diagnostic* rendering, and so read one type as
 // two. The checker accepted every program below and the native backend then
 // refused it at build time talking about the emitter, which is the failure
 // shape rule 4 exists to prevent.

@@ -4,13 +4,7 @@
 // symbol at all, so programs keep linking through the plain C driver with no
 // C++ standard library and no Beans-written shim.
 //
-// ABI shape (shared by every encoding bridge): payload buffers cross as
-// direct RawPtr parameters and everything else — lengths, flags, outputs —
-// rides in a RawPtr<u64> request buffer. Interpreter compatibility forces
-// this split: both interpreters give extern "C" calls a real host copy of
-// each RawPtr *argument*, but a pointer value smuggled through an integer
-// word would be a synthetic interpreter address no C code can touch. Handles
-// that C itself returned are opaque and safe to embed.
+// Encoding bridges pass payloads as RawPtr arguments and lengths, flags, and outputs in a RawPtr<u64> request buffer; interpreter pointers cannot be smuggled through integer words.
 //
 // The amalgamated simdutf is included with every feature except base64
 // disabled: the object stays small and the SIMD kernels plus the scalar
@@ -133,7 +127,7 @@ BEANS_ENC_API long long beans_enc_b64_encode(unsigned char* src, unsigned char* 
 // Strict follows RFC 4648 for the chosen encoding: a padded encoding
 // requires exact padding, an unpadded one refuses '=' entirely, the
 // trailing padding bits of a partial final group must be zero, and any
-// byte outside the alphabet — whitespace included — is an error. Forgiving
+// byte outside the alphabet: whitespace included: is an error. Forgiving
 // follows the WHATWG forgiving-base64 shape: ASCII whitespace is skipped, a
 // partial final group is accepted with or without padding, and non-zero
 // trailing padding bits are ignored; bytes outside the alphabet are still

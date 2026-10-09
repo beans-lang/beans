@@ -4,7 +4,7 @@
 # Android is Linux with a different libc, and the ways that matter here are
 # invisible to `file`: an ELF built against glibc looks identical to one built
 # against bionic until it is loaded. What distinguishes them is the **program
-# interpreter** — `/system/bin/linker64` rather than `/lib/ld-linux-*` — and
+# interpreter**, `/system/bin/linker64` rather than `/lib/ld-linux-*`, and
 # that is what this checks.
 #
 # It also runs the program when an emulator or device is attached, because a

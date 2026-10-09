@@ -2,7 +2,7 @@
 // failure. They cannot, structurally, share the answer: the tree interpreter
 // stores a message literal at each failure site, while a native build asks
 // `beans_reflect_error_message()`, which maps the error code to a fixed string
-// in C. Two copies of one table, and one of them was wrong — case 3 was built
+// in C. Two copies of one table, and one of them was wrong, case 3 was built
 // as `str_make("receiver type does not match", 27)` for a 28-byte message, so
 // the native runtime dropped the trailing `h` and the interpreter did not.
 //
@@ -21,7 +21,7 @@
 //
 // The receivers carry arc markers, so this also holds the failing paths to
 // the lifetime rule: a reflective call that refuses still owns the receiver
-// it was handed, and must release it exactly once — including the wrong
+// it was handed, and must release it exactly once, including the wrong
 // receiver in a receiver_type refusal, which is the shape the issue reported.
 // Eighteen objects are boxed into reflect values across the run.
 package main
@@ -201,13 +201,13 @@ fn main() {
 
     // The state where no code was set. The native runtime answered
     // "reflection operation failed" for it and the tree interpreter, whose
-    // stored message starts and is cleared to "", answered nothing — one
+    // stored message starts and is cleared to "", answered nothing, one
     // state, two texts, and both internally consistent so a gate that
     // compared each backend against itself could never see it (#193).
     //
     // Three routes, because every reflection entry clears the code on the
     // way in: before anything reflective has run at all, after a call that
-    // succeeded, and after one that failed — where the code is set and the
+    // succeeded, and after one that failed, where the code is set and the
     // words must be the coded ones, so this cannot pass by answering ""
     // to everything.
     io.println("fresh: {rt.error_code()} | {rt.error_message()} | {rt.error_message().len()}")

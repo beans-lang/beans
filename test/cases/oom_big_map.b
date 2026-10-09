@@ -4,14 +4,14 @@
 // its pages back. Two allocators reach that path and they answer a failed
 // mapping differently, because they know different things at free time:
 //
-//   * A Bytes or List backing has no header — its free is told the byte size
+//   * A Bytes or List backing has no header, its free is told the byte size
 //     the allocation was given, and decides munmap-or-free from that size
 //     alone. So a block at or past the threshold MUST be a mapping; serving one
 //     from the heap instead would hand a malloc'd pointer to munmap. A refused
 //     mapping is therefore a refused allocation, and the caller turns it into
 //     the runtime's documented "out of memory" panic.
 //
-//   * A non-pooled beans_alloc object — which is what a large string is —
+//   * A non-pooled beans_alloc object, which is what a large string is,
 //     carries a 16-byte prefix recording whether it was mapped, so its free
 //     can tell. That one CAN fall back to the heap, and must, since refusing
 //     an allocation that can still be served would be a worse answer.

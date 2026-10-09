@@ -31,7 +31,7 @@ class DbError {
 }
 
 // Case 2: a subtype of the caller's error. The reference widens, no code runs,
-// nothing is lost — the same object read as the wider type. `disk` is built
+// nothing is lost, the same object read as the wider type. `disk` is built
 // once and dropped once, at the far end where the widened error dies.
 interface AppError {
     fn slug() -> string

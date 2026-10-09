@@ -1,8 +1,8 @@
 // a wide Option owns whatever its payload owns: Map.get retains a
 // copy into {i1, T} and List.pop moves one in, so an Option that
 // dies unconsumed must release the payload's references. Drops
-// once skipped the whole aggregate — pointer masks answer 0 for
-// Option, no declaration backs it — and these deinits never ran.
+// once skipped the whole aggregate, pointer masks answer 0 for
+// Option, no declaration backs it, and these deinits never ran.
 import std.io
 
 class Tracer {

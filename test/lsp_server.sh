@@ -253,7 +253,7 @@ PY
 # `--stdio` is not optional politeness: vscode-languageclient appends it for
 # TransportKind.stdio, so VS Code runs `beansc lsp --stdio` and never asks.
 # Refusing it made the server print its usage and exit 2 before reading a
-# byte, which surfaced to the user as "connection got disposed" — a message
+# byte, which surfaced to the user as "connection got disposed", a message
 # about the symptom, four layers away from the cause. Every test here had been
 # spelling `beansc lsp`, which is the one form a real client does not send.
 echo "checking the argv a client really sends"
@@ -287,7 +287,7 @@ done
 
 # Everything else is refused with the exact public usage line. A transport
 # this server does not speak is rejected rather
-# than accepted and quietly ignored, which is what matters — a client waiting
+# than accepted and quietly ignored, which is what matters, a client waiting
 # on a socket nobody opened hangs, and hanging is worse than being told no.
 for bad in --node-ipc --socket=1234 --pipe=/tmp/x --port=9000 --nonsense extra; do
     if "$bin" lsp "$bad" </dev/null >"$work/out" 2>"$work/err"; then

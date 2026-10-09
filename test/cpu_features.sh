@@ -16,7 +16,7 @@ echo "checking the feature path and the generic path give one answer"
 # The whole point of a dispatch is that the result does not depend on which path
 # ran. BEANS_CPU_FEATURES= hides every feature, so the generic path is forced; the
 # unset run takes whichever path this machine supports. Both must agree, in both
-# backends — four runs, one answer.
+# backends, four runs, one answer.
 answer=$(grep '^result ' "$tmp/interp")
 for env_setting in "unset" "empty" "only-one"; do
     case "$env_setting" in
@@ -55,7 +55,7 @@ if [[ "$masked" != "aes false" ]]; then
     echo "an empty mask left a feature visible: $masked" >&2
     exit 1
 fi
-# The interpreter and the native runtime carry separate detection code — the C
+# The interpreter and the native runtime carry separate detection code, the C
 # runtime ships as one self-contained file and cannot share a header with the
 # compiler. So they are checked against each other directly, for every feature the
 # architecture knows.
@@ -63,7 +63,7 @@ fi
 diff -u "$tmp/probe.interp" <(printf '%s\n' "$natural")
 
 echo "checking every known feature agrees between the backends"
-# The check fails on purpose — that error message is where the list comes from — so
+# The check fails on purpose, that error message is where the list comes from, so
 # the non-zero exit is swallowed rather than tripping pipefail. The feature named is on
 # no architecture at all, deliberately: test/cases/cpu_wrong_arch.b names an x86
 # feature, so it only errors on a non-x86 host and this list came back empty there.
@@ -90,7 +90,7 @@ test -n "$features"
 "$tmp/all" >"$tmp/all.native"
 diff -u "$tmp/all.interp" "$tmp/all.native"
 # The architecture's baseline feature is present by definition, so at least one
-# answer has to be true — a detector that always says false would pass everything
+# answer has to be true, a detector that always says false would pass everything
 # above.
 if ! grep -q ' true$' "$tmp/all.interp"; then
     echo "no feature was detected at all; the detector is answering false blindly" >&2
@@ -173,7 +173,7 @@ expect_error "feature applies to functions" test/cases/cpu_feature_on_class.b
 
 echo "checking x86's dotted features can be written at all"
 # `CpuFeature.sse4.2` parses as a field of a field, so the two dotted x86 features are
-# written with an underscore. Without that they were unguardable, and — worse — the
+# written with an underscore. Without that they were unguardable, and, worse, the
 # compiler's own suggestion could not be typed. The guard has to be *recognised* too,
 # not merely accepted: it is recorded under the feature's real name, or the requirement
 # it satisfies would never match it.

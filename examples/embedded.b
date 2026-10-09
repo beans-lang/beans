@@ -1,23 +1,6 @@
-// A program for a microcontroller: 32-bit, no operating system, no libc.
-//
-// This is `examples/freestanding.b` taken one step further down. That one drops the OS;
-// this one also drops the assumption that the machine is 64-bit, which turns out to be a
-// much sharper constraint:
-//
-//   * a pointer is four bytes, so every object header, pointer-slot mask and container
-//     stride is a different size than on the host;
-//   * `int` is still 64 bits, so ordinary division and modulo become calls into the
-//     compiler's runtime helpers rather than one instruction;
-//   * there is no 64-bit atomic instruction, so the reference counts cannot be atomic —
-//     which is fine, because a freestanding build has one thread by construction;
-//   * `decimal` is missing entirely. Clang has no 128-bit integer type on 32-bit ARM or
-//     RV32, so the type is refused at check time, naming the target. That is why this
-//     example exists next to freestanding.b instead of replacing it.
-//
-// Built for `thumbv7em-none-eabi` and `riscv32-unknown-none-elf`, linked against the
-// twelve-symbol host in test/fixtures/embedded_host.c, and run on a QEMU Cortex-M4 and
-// RISC-V board by test/embedded.sh. It also runs on the host under the full runtime,
-// which is the point: the output has to be identical everywhere.
+// 32-bit freestanding example for ARM and RV32; pointers are 32-bit while `int` remains 64-bit.
+// Reference counts are non-atomic because this profile has one thread; `decimal` is unavailable without 128-bit integers.
+// test/embedded.sh links the target builds against test/fixtures/embedded_host.c.
 
 import std.io
 import std.collections
@@ -84,17 +67,7 @@ fn wide_arithmetic() {
     io.println("bit 40 is {one << 40} and back down {(one << 40) >> 40}")
 }
 
-// Floating point with no FPU: thumbv7em-none-eabi is the soft-float ABI, so every one
-// of these goes through the compiler's double-precision helpers.
-//
-// The precision is written out rather than left to `{x}`. A bare interpolation asks for
-// the shortest text that reads back as the same value, and finding it means formatting
-// and reparsing — so the digit count is decided by the host's float hooks. A hosted libc
-// answers with a correctly rounded dtoa and strtod; a board that supplies neither cannot
-// reach the same answer without shipping both, and this file's claim is that all three
-// machines print the same bytes. Asking for ten decimals asks the hooks only for what a
-// board can honestly do, and still runs the division and the formatting through the
-// soft-float helpers, which is what is under test here.
+// The soft-float target uses compiler helpers; fixed precision avoids host-dependent dtoa and parsing.
 fn soft_float() {
     let half: float = 0.5
     let third: float = 1.0 / 3.0
@@ -131,7 +104,7 @@ fn containers() {
 
 // A reference cycle, collected by trial deletion. The collector reads pointer slots
 // through the same target-sized stride the destructor does, so a 32-bit mistake here
-// is a use-after-free rather than a wrong number — which is why it is worth running
+// is a use-after-free rather than a wrong number; this test runs the same path
 // under an emulator instead of only compiling.
 class Node {
     pub name: string
@@ -157,7 +130,7 @@ fn ownership() {
 }
 
 // Virtual dispatch through the class descriptor, which is `{i64 id, [N x ptr]}`: the
-// id is eight bytes on every target, but the method slots after it are pointer sized —
+// id is eight bytes on every target, but the method slots after it are pointer sized,
 // four bytes here. Six implementations is past the point where the compiler emits
 // guarded direct calls, so the loop below goes through the table indirectly, and an
 // index counted in pointer strides instead of bytes reads the high half of the class

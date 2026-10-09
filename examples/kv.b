@@ -1,4 +1,4 @@
-// a tiny append-only key-value store — the proof the database story holds.
+// A small append-only key-value store.
 // Records are [u32 klen][u32 vlen][key][value]; last write wins; compact()
 // rewrites with the durable-commit pattern: temp file, sync, rename over,
 // sync the parent dir.

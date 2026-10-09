@@ -132,7 +132,7 @@ for compiler in "${compilers[@]}"; do
     grep -qx 'added system system-probe' "$tmp/$name.add"
     grep -qx '# beansc:system system-probe begin' "$tmp/project/beans.pot"
     # The headers as well as the libraries. A library whose include paths are
-    # twenty machine-specific directories — GTK4 is the example — cannot be
+    # twenty machine-specific directories, GTK4 is the example, cannot be
     # used from a csrc row at all unless they are written here, and writing
     # them by hand would name one computer.
     # One row carrying every flag pkg-config reported, include directory and

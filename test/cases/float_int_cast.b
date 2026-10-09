@@ -1,5 +1,5 @@
 // A float with no value in the integer type it is cast to saturates at that
-// type's own bounds, and NaN is 0 — every width, from f32 and f64, on both
+// type's own bounds, and NaN is 0, every width, from f32 and f64, on both
 // backends. The native backend used to emit a bare fptosi/fptoui, which LLVM
 // defines as poison for exactly these inputs: the same expression printed a
 // different number on every build, and sometimes an address. The interpreter

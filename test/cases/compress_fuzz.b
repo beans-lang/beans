@@ -1,6 +1,6 @@
 // The inflate mutation fuzzer: seeded corruption and truncation against
 // one-shot and streaming decompression, across all three formats. The
-// invariant is the API's whole promise — every corruption is a clean
+// invariant is the API's whole promise, every corruption is a clean
 // error (`invalid`, `eof`, or `limit`), memory stays bounded by the
 // declared limit, and no mutation may make the decoder produce MORE
 // bytes than the limit allows or crash. Upstream fuzzes the codec; this
@@ -115,7 +115,7 @@ fn main() {
         }
         // One-shot: any documented error, or a clean decode no larger than
         // the limit (a mutation can land in a checksum-covered region and
-        // still decode — gzip trailing garbage is the honest exception the
+        // still decode, gzip trailing garbage is the honest exception the
         // strict decoder reports).
         match open_one_shot(pick, wire, limit) {
             ok(back) => {
@@ -159,7 +159,7 @@ fn main() {
             }
             err(_) => { wrong_kind = true }
         }
-        // And the unmutated wire must still round-trip — the fuzzer's own
+        // And the unmutated wire must still round-trip, the fuzzer's own
         // sanity anchor.
         if mutation == 9 { wrong_bytes = false }
     }

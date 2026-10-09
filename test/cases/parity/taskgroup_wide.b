@@ -1,8 +1,8 @@
 // A TaskGroup whose children answer something wider than one runtime slot.
 //
-// The group itself has always taken wide payloads — brew goes through
+// The group itself has always taken wide payloads, brew goes through
 // beans_taskgroup_brew_typed and wait_all collects through
-// beans_taskgroup_collect_typed — but reading one row back did not. next() and
+// beans_taskgroup_collect_typed, but reading one row back did not. next() and
 // try_next() answer Option<Result<T>>, and for a wide T the Result is the
 // inline {i1, T, Error} aggregate and the Option is an aggregate in turn, so
 // neither the nullable-pointer Option nor the boxed Result the emitter built
@@ -11,8 +11,8 @@
 //
 // Delivery is in completion order, which is not a promise about which row
 // arrives first, so every row below is folded into an order-independent answer.
-// The err arm is here too — a panicking child is how a wide-payload row becomes
-// a failure — because it is the other half of the aggregate this builds.
+// The err arm is here too, a panicking child is how a wide-payload row becomes
+// a failure, because it is the other half of the aggregate this builds.
 package main
 
 import std.io

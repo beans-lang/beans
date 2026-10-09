@@ -1,5 +1,5 @@
 // The calls. Every one of these binds a type parameter the *class* declared,
-// on a receiver named through a package — plain, aliased, and with the type
+// on a receiver named through a package, plain, aliased, and with the type
 // arguments written out. `T` is bound to a builtin and to a class declared in
 // this package, which the declaring package has never seen.
 package main

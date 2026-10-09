@@ -1,4 +1,4 @@
-// bun churn.js — mirror of churn.b / churn.go
+// Bun mirror of churn.b and churn.go.
 const keep = [];
 const n = Number(process.argv[2] ?? 5_000_000);
 const seed = Number(process.argv[3] ?? 1);

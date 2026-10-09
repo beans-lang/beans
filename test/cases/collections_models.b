@@ -4,7 +4,7 @@
 // compared to the answer the model computes by brute force. A single wrong
 // rotation, a lost tie-break or an off-by-one in a range scan turns the error
 // count non-zero, which changes the printed line and fails the golden on both
-// backends. n is in the thousands on purpose — a rotation case or a two-child
+// backends. n is in the thousands on purpose, a rotation case or a two-child
 // delete never shows up at n=1.
 
 import std.io
@@ -288,8 +288,8 @@ fn check_set_algebra() -> int {
     // Partial overlap at n in the thousands with the sides different sizes, so
     // this one call takes both the walk-smaller and the clone-larger branch.
     errors += check_ranges(0, 2000, 1200, 3000)
-    // Disjoint, identical, and a proper subset — each a shape the churn above
-    // never lands on — with the sides different sizes where that is possible.
+    // Disjoint, identical, and a proper subset, each a shape the churn above
+    // never lands on, with the sides different sizes where that is possible.
     errors += check_ranges(0, 1000, 3000, 3800)
     errors += check_ranges(0, 1000, 0, 1000)
     errors += check_ranges(0, 1200, 300, 800)
@@ -401,7 +401,7 @@ fn check_set() -> int {
 
     // The algebra again, at scale and across the empty/identical/disjoint/self
     // shapes. This touches neither `set` nor `members`, so a correct run leaves
-    // the printed line — errors, length and checksum — exactly as the golden
+    // the printed line, errors, length and checksum, exactly as the golden
     // pins it.
     errors += check_set_algebra()
 
@@ -468,7 +468,7 @@ fn check_deque() -> int {
 }
 
 // The random walk in check_deque stays a few hundred elements deep, so with a
-// 512-slot block it never leaves the head block — no crossover, no inner-block
+// 512-slot block it never leaves the head block, no crossover, no inner-block
 // get. This case drives the deque past several full blocks on BOTH sides so the
 // block map, both crossovers (multi-block and the lone-block split), the spare
 // and every region of get() are exercised. It is checked against the same
@@ -502,7 +502,7 @@ fn check_deque_blocks() -> int {
     }
     if deque.len() != model.len() { errors += 1 }
     // get in every region: head partial block, inner front blocks, inner back
-    // blocks, tail partial block — a coprime stride visits them all.
+    // blocks, tail partial block, a coprime stride visits them all.
     var probe: int = 0
     for probe < model.len() {
         if deque.get(probe).or(-777) != model.get(probe).or(0) { errors += 1 }
@@ -538,7 +538,7 @@ fn check_deque_blocks() -> int {
     // Pure FIFO across many blocks (push_back N, pop_front N): the multi-block
     // crossover that moves the head half of a full back side to the front, over
     // and over. Values are deterministic, so each pop is checked, not only
-    // folded into the checksum — a lost block reverse must raise errors here,
+    // folded into the checksum, a lost block reverse must raise errors here,
     // not merely change the golden.
     i = 0
     for i < 4000 { deque.push_back(i * 3 + 1); i += 1 }

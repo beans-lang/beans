@@ -1,4 +1,4 @@
-// The event-loop semantics suite — the corners pollers actually fail in,
+// The event-loop semantics suite, the corners pollers actually fail in,
 // ported in spirit from libuv's and mio's regression tests: a modify that
 // must be visible to the very next wait, removal between batches, wakes from
 // another thread in both loop states, hangup with buffered data, timeout
@@ -45,7 +45,7 @@ fn connected_pair(keep: List<net.TcpStream>) -> Result<bool> {
     let accepted: net.TcpStream = listener.accept()?
     keep.push(move accepted)
     // The visitor thread owns its end and exits on EOF when ours closes;
-    // its Thread handle is dropped here, which detaches nothing — join
+    // its Thread handle is dropped here, which detaches nothing, join
     // happens implicitly at process end. The test never blocks on it.
     return ok(true)
 }
@@ -97,7 +97,7 @@ fn check_modify_visibility() {
             }
             io.println("unready socket stays quiet {quiet}")
             // Modify to write interest: a UDP socket always has room, so the
-            // very next wait must report it — no re-registration, no delay.
+            // very next wait must report it, no re-registration, no delay.
             let changed: Result<bool> = poller.modify(fd, 9, poll.Interest.write_only())
             match poller.wait(8, 1000) {
                 ok(events) => {
@@ -147,7 +147,7 @@ fn check_remove_between_batches() {
             let added_b: Result<bool> = poller.add(fds[1], 200, poll.Interest.read_only())
             // First batch sees at least one of them; then remove B and prove
             // the next batches never carry token 200 even though B still has
-            // its datagram buffered — level-triggered or not, removed is
+            // its datagram buffered, level-triggered or not, removed is
             // removed.
             var saw_first: bool = false
             match poller.wait(8, 2000) {
@@ -246,7 +246,7 @@ fn check_hangup_delivery() {
                 }
             }
             // The peer wrote "zz" and fully closed. The poller must report
-            // the socket — readable, hung up, or both — and the buffered
+            // the socket, readable, hung up, or both, and the buffered
             // bytes must still be readable before EOF shows.
             let fd: int = keep[0].poll_handle()
             let added: Result<bool> = poller.add(fd, 5, poll.Interest.read_only())
@@ -300,8 +300,8 @@ fn check_timeout_bounds() {
 
 // ---- 6. the fd-reuse ABA -------------------------------------------------------
 //
-// Close a registered descriptor without removing it first — the documented
-// discipline violation — then open a new socket that takes the same number.
+// Close a registered descriptor without removing it first, the documented
+// discipline violation, then open a new socket that takes the same number.
 // Two things must hold: the late `remove` is *caught* (an error, because the
 // kernel dropped the registration at close), and after registering the new
 // socket under a new token, no event ever carries the old one.
@@ -340,7 +340,7 @@ fn check_fd_reuse_aba() {
             }
             // The kernel dropped the registration at close, and the runtime
             // treats removing an already-gone descriptor as the state the
-            // caller wanted — a late remove is idempotent, never a crash and
+            // caller wanted, a late remove is idempotent, never a crash and
             // never a stray operation on the reused number.
             var tolerated: bool = false
             match poller.remove(old_fd) {
@@ -476,7 +476,7 @@ fn check_scale_fairness() {
 
 // wait_into fills a caller-kept list in place: the count is authoritative,
 // the list only grows, and entries past the count keep stale data from an
-// earlier batch — the contract that makes a steady loop allocation-free.
+// earlier batch, the contract that makes a steady loop allocation-free.
 fn check_wait_into() {
     match poll.Poller.open() {
         ok(poller) => {
@@ -516,7 +516,7 @@ fn check_wait_into() {
                 }
             }
             // Loopback datagram delivery is asynchronous, and an undrained
-            // ready socket makes every wait return at once — so pace the
+            // ready socket makes every wait return at once, so pace the
             // attempts with a sleep instead of spinning, until one batch
             // carries both sockets.
             var both: bool = false

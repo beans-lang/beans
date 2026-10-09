@@ -47,7 +47,7 @@ fn main() {
     expect(2, "pictograph plus vs16", "❤️")
     expect(1, "wide emoji plus vs15", "❤︎")
     expect(4, "unassigned cjk block", from_bytes([227, 144, 128, 227, 144, 129]))
-    // A byte a terminal cannot read draws one replacement, one column —
+    // A byte a terminal cannot read draws one replacement, one column,
     // including a stray continuation byte, whose value alone would read as a
     // zero-width C1 control.
     expect(3, "stray continuation", from_bytes([65, 128, 66]))

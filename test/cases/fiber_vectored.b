@@ -6,8 +6,8 @@
 // is made nonblocking at the first wait, a full send buffer comes back EAGAIN,
 // and the engine has to park the fiber in its worker's netpoller and resume it
 // on POLLOUT (runtime/beans_rt.c, beans_net_send_pair_wait's net_wait branch).
-// That is the turn a server takes — espresso sends a body of 16 KB or more
-// beside its head from the handler's fiber — and it was covered by nothing.
+// That is the turn a server takes, espresso sends a body of 16 KB or more
+// beside its head from the handler's fiber, and it was covered by nothing.
 //
 // Both ends are fibers of ONE worker, as in fiber_net.b. That is what gives
 // this case teeth: a send that failed to park would hold the only thread the
@@ -16,7 +16,7 @@
 //
 // The payload is eight mebibytes, which is more than any loopback socket
 // buffer holds unread on any kernel here, so the sender must fill the buffer,
-// take EAGAIN, park, and resume once the reader has drained — many times over,
+// take EAGAIN, park, and resume once the reader has drained, many times over,
 // not once. A smaller payload would fit inside Linux's autotuned buffers and
 // the park would never happen, which is the n=1 version of this test.
 //

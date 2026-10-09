@@ -1,4 +1,4 @@
-// Beans-written std.reader.Reader — buffered lines over a File. It reads at its
+// std.reader.Reader provides buffered lines over a File. It reads at its
 // own offset (pread), so the file's cursor never moves; buffered data keeps
 // serving after close, and the closed error surfaces on the next refill.
 import std.io

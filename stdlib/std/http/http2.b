@@ -3,7 +3,7 @@
 // The version is a property of a connection, not a different API: a request
 // carried over HTTP/2 arrives as the same `Request` an HTTP/1.1 connection
 // produces, with the same `Headers`, and a response is written the same way.
-// What changes is the connection object, because multiplexing is real —
+// What changes is the connection object, because multiplexing is real:
 // several exchanges share one socket, and a caller has to name which stream
 // it is answering.
 //
@@ -12,7 +12,7 @@
 //   **No h2c upgrade dance.** There is no HTTP/1.1 `Upgrade: h2c` path;
 //   that mechanism is deprecated and browsers never shipped it. A
 //   connection speaks HTTP/2 because TLS ALPN said so, or because both
-//   sides already knew (prior knowledge) — which is how service meshes and
+//   sides already knew (prior knowledge), which is how service meshes and
 //   gRPC run, and how a conformance suite connects.
 //
 //   **Pseudo-headers are headers.** `:method`, `:path`, `:scheme` and
@@ -102,7 +102,7 @@ pub class Stream {
 pub enum Http2Event {
     /// One exchange's headers and body are complete.
     message(stream: Stream)
-    /// A stream ended — normally, or with an error code.
+    /// A stream ended: normally, or with an error code.
     stream_closed(id: int, error_code: int)
     /// The peer is winding the connection down.
     goaway(last_stream: int, error_code: int)
@@ -133,7 +133,7 @@ pub fn adopt_http2<T implements net.ByteStream>(
 ///
 /// Move-only: it owns the socket. `run` drives one round of IO and returns
 /// whatever completed; `respond` and `request` submit messages. Both sides
-/// of the protocol use the same class — `server` decides which role the
+/// of the protocol use the same class: `server` decides which role the
 /// session plays.
 pub unique class Http2Transport<T implements net.ByteStream> implements Send {
     handle: int = 0
@@ -174,15 +174,15 @@ pub unique class Http2Transport<T implements net.ByteStream> implements Send {
         }
     }
 
-    /// Takes over a socket that already speaks HTTP/2 — because TLS ALPN
+    /// Takes over a socket that already speaks HTTP/2, because TLS ALPN
     /// agreed on `h2`, or because both sides knew in advance. The connection
     /// preface goes out on the first `run`.
     pub static fn adopt(move stream: T, server: bool) -> Result<Http2Transport<T>> {
         return adopt_http2(move stream, server)
     }
 
-    // Closing the socket happens on several paths — a connection error, a
-    // GOAWAY, the caller's close — and exactly one of them should do it.
+    // Closing the socket happens on several paths: a connection error, a
+    // GOAWAY, the caller's close, and exactly one of them should do it.
     // This is that one.
     fn shut() -> Result<bool> {
         if self.socket_closed { return ok(true) }
@@ -247,7 +247,7 @@ pub unique class Http2Transport<T implements net.ByteStream> implements Send {
             // nghttp2 answers a connection error by queueing GOAWAY with the
             // right code. Sending it before reporting the failure is the
             // difference between telling the peer what it did wrong and
-            // hanging up on it — and a conformance suite measures exactly
+            // hanging up on it, and a conformance suite measures exactly
             // that difference.
             let told: Result<bool> = self.flush()
             self.live = false
@@ -639,7 +639,7 @@ pub unique class Http2Transport<T implements net.ByteStream> implements Send {
 
     /// Drives one round of IO: flushes what is queued, reads what arrived,
     /// and returns whatever completed. An empty list means the peer sent
-    /// bytes that finished nothing yet — call again.
+    /// bytes that finished nothing yet: call again.
     pub fn run() -> Result<List<Http2Event>> {
         if !self.live { return err("the HTTP/2 connection is closed", "closed") }
         self.flush()?
@@ -653,7 +653,7 @@ pub unique class Http2Transport<T implements net.ByteStream> implements Send {
             self.flush()?
         }
         // nghttp2 answers some connection errors by queueing GOAWAY and
-        // reporting success — the session is finished rather than broken.
+        // reporting success: the session is finished rather than broken.
         // "Wants neither read nor write" is the signal, and RFC 9113 wants
         // the TCP connection closed behind that frame, so the connection
         // stops being open here and the caller's close() ends it.
@@ -936,7 +936,7 @@ pub unique class Http2Transport<T implements net.ByteStream> implements Send {
         return self.live
     }
 
-    /// The underlying descriptor, **borrowed** — for registering with a
+    /// The underlying descriptor, **borrowed**: for registering with a
     /// poller so one thread can drive many connections. Never ownership:
     /// closing this number behind the connection's back is exactly the bug
     /// `unique` exists to prevent.

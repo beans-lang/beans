@@ -3,7 +3,7 @@
 // A spawned thread is not a fiber, and containment has never reached one: a
 // panic at a thread's entry ends the process, because Thread<T>.join() answers
 // T and has no join-shaped place to put a failure (spec/CONCURRENCY.md). A
-// `contained` call changes that where it stands, and only there — the boundary
+// `contained` call changes that where it stands, and only there, the boundary
 // is the call, so it does not need a join to deliver to. The first entry on a
 // thread promotes it to a worker so the count has a fiber to live on, which is
 // what makes this work at all.

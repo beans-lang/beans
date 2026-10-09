@@ -1,13 +1,13 @@
 // Malformed-input stress for std.encoding.{json,xml,base64}.
 //
-// Two halves. First, fixed corpora of hand-picked malformed inputs — the
+// Two halves. First, fixed corpora of hand-picked malformed inputs, the
 // shapes real parsers get wrong: truncation at every byte, unbalanced
 // nesting, bad UTF-8, lone surrogates, oversized numbers, entity and
 // alphabet violations. Second, a deterministic mutation loop that walks a
 // seeded LCG over valid documents flipping, deleting and inserting bytes.
 //
-// The contract under test is not "these inputs are rejected" — some
-// mutations stay valid — but "every input produces a Result, never a crash,
+// The contract under test is not "these inputs are rejected", some
+// mutations stay valid, but "every input produces a Result, never a crash,
 // never a hang, and never a read past the buffer". The suite runs this
 // binary under ASan/UBSan, so a bridge that walks off the end fails there;
 // the printed summary is what keeps the three backends honest with each

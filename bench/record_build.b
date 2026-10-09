@@ -3,7 +3,7 @@
 //
 // The shape is the espresso benchmark's /records row (bench/json_encode_records.b
 // encodes the same struct): five scalars, three strings and a three-element tag
-// list per record. Nothing here is arithmetic — a record is four or five heap
+// list per record. Records use four or five heap
 // blocks and the same number of frees, each recycled block memset on the way
 // out. Issue #150 measured the thousand-record build at 167 microseconds
 // against Bun's 89 on the same document, with the encoder excluded.

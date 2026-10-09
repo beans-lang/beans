@@ -5,8 +5,8 @@ package main
 //
 // Every Beans string is allocated one byte longer than its length, because the
 // runtime hands the pointer straight to C: beans_file_open, lstat and open all
-// take a Beans string as a `char*`. Nothing in the language reads that byte —
-// a string's length lives in its allocation header — so no amount of decoding,
+// take a Beans string as a `char*`. Nothing in the language reads that byte,
+// a string's length lives in its allocation header, so no amount of decoding,
 // printing, comparing or re-encoding can tell a terminated string from an
 // unterminated one. The only observer is C.
 //
@@ -26,7 +26,7 @@ package main
 // zeroing allocator and the stale byte is 0, so this case can only fail in the
 // pooled mode - that is expected, and the gate runs both.
 //
-// argv: <primer-document> <path-document> — two files holding JSON. The primer
+// argv: <primer-document> <path-document>, two files holding JSON. The primer
 // holds a string long enough to reach past the path's length within one size
 // class; the path document holds the path of a file the gate created. The
 // decoded path is then handed to fs.read, which is the C boundary.

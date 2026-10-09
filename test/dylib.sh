@@ -22,7 +22,7 @@ done
 EXPECTED
 
 echo "building a library to load"
-# Deliberately small, and every function takes and returns machine words — which is the
+# Deliberately small, and every function takes and returns machine words, which is the
 # whole calling contract. `plug_zero` exists because a symbol at a zero *return* value
 # must not be confused with a symbol that failed to resolve.
 cat >"$tmp/plug.c" <<'PLUG'
@@ -129,7 +129,7 @@ expect_error() {
 for arity in 0 1 2 3; do
     expect_error "dl.call$arity requires unsafe { }" "test/cases/dl_call${arity}_safe.b"
 done
-# Resolving is *not* gated — holding an address is harmless, and requiring unsafe for it
+# Resolving is *not* gated, holding an address is harmless, and requiring unsafe for it
 # would train callers to wrap the safe part too.
 ./build/beansc check test/cases/dl_resolve_safe.b >/dev/null
 # Move-only, so a library cannot be closed twice.
@@ -150,11 +150,11 @@ fi
 
 echo "checking symbols do not leak into the global namespace"
 # RTLD_LOCAL is not a detail. RTLD_GLOBAL would publish the library's symbols where an
-# extern "C" fn resolves them — through dlsym in the interpreter, through the linker in a
-# native build — so the same program would link in one backend and not the other.
+# extern "C" fn resolves them, through dlsym in the interpreter, through the linker in a
+# native build, so the same program would link in one backend and not the other.
 grep -q 'RTLD_NOW | RTLD_LOCAL' runtime/beans_rt.c
 # Comment lines are skipped, because both files explain at length why RTLD_GLOBAL is
-# wrong — a grep that matched the explanation would fail on the documentation.
+# wrong, a grep that matched the explanation would fail on the documentation.
 if grep -nE 'RTLD_GLOBAL' runtime/beans_rt.c \
         | grep -vE ':[[:space:]]*(//|\*)'; then
     echo "RTLD_GLOBAL would make extern \"C\" resolution differ between backends" >&2

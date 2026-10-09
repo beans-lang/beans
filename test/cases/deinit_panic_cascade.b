@@ -5,7 +5,7 @@
 // tearing something down. The native backend used to stop there: the elements
 // a `clear` had not reached yet were never destroyed and never freed, and the
 // container already reported itself empty, so nothing in the program could
-// reach them either — O(n) lost per caught panic. The tree interpreter, whose
+// reach them either, O(n) lost per caught panic. The tree interpreter, whose
 // panic is a poison flag rather than a stack unwind, destroyed all of them.
 // One checked program, two answers, and a leak on the native side.
 //
@@ -104,7 +104,7 @@ fn report(label: string, outcome: string, count: int) {
 
 
 // std.collections is four containers built on List and Map, so the rule has
-// to reach them too — and reverting the container-clear guards shows it does:
+// to reach them too, and reverting the container-clear guards shows it does:
 // PriorityQueue (a List of entries) and Set (a Map) drop to five destroyed of
 // twelve, while Deque (fixed blocks) and SortedMap (a node tree) hand their
 // storage to the cascade guard instead and stay at twelve. Counts and the

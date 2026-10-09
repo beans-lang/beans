@@ -1,5 +1,5 @@
 // target[k] = v and target.f = v evaluate left to right on both backends:
-// receiver, then key, then value — the order the source reads and MIR
+// receiver, then key, then value, the order the source reads and MIR
 // lowers. The interpreter once evaluated the value first, so a
 // side-effecting key and value observably swapped between the legs (native
 // printed "key, val" while the interpreter printed "val, key"). Reverting
@@ -56,7 +56,7 @@ fn main() {
     io.println("array {a[0]} {a[1]}")
     // compound element assignment: the index runs once, before the
     // right-hand side (the interpreter once ran the value first and the
-    // index twice — once reading, once storing)
+    // index twice, once reading, once storing)
     a[traced_idx("compound", 1)] += traced_val("compound", 10)
     io.println("compound {a[0]} {a[1]}")
     // a field target: the receiver runs before the right-hand side, and

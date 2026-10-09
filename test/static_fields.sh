@@ -31,8 +31,8 @@ grep -Fq "static fields are supported only on classes" "$tmp/modifier"
 # Statics and singletons live for the whole process: nothing tears them down
 # at exit, so a static that owns a value with a deinit prints the same bytes
 # on both backends (issue #74, spec/SYNTAX.md). The case also covers the three
-# deaths that DO happen while the program runs — a local leaving scope, a
-# value taken out of a static container, a static overwritten — so a change
+# deaths that DO happen while the program runs, a local leaving scope, a
+# value taken out of a static container, a static overwritten, so a change
 # that simply stopped running deinits fails here too.
 ./build/beansc run test/cases/static_teardown.b >"$tmp/teardown.interp"
 ./build/beansc build test/cases/static_teardown.b -o "$tmp/teardown" \
@@ -59,8 +59,8 @@ diff -u test/cases/static_dispatch_split.out "$tmp/split.native"
 
 split_ir=build/static_dispatch_split.ll
 
-# Four methods in that file dispatch — Shape.area, Shape.describe,
-# Ledger.stamp and SubLedger.both — and the seven statics beside them are
+# Four methods in that file dispatch, Shape.area, Shape.describe,
+# Ledger.stamp and SubLedger.both, and the seven statics beside them are
 # not among them, so every descriptor carries exactly four rows. Restoring a
 # slot to statics widens every one of these.
 test "$(grep -c '@\.next\.class[0-9]* = ' "$split_ir")" -eq 6
@@ -113,8 +113,8 @@ grep -E '@\.next\.class[0-9]* = ' "$split_ir" | grep -Fq "ptr $square_area"
 # backends matched that class's entry by name alone: a `static fn` wearing the
 # name of an inherited instance method was substituted and then invoked with
 # the receiver. The checker refuses that pair wherever a call could name it,
-# and `priv` — exempt there because a private method shares no dispatch slot
-# — is the shape that reached it. A backend-to-backend diff would have missed
+# and `priv`, exempt there because a private method shares no dispatch slot
+# This is the shape that reached it. A backend-to-backend diff would have missed
 # this: both were wrong the same way, so the golden is the claim.
 ./build/beansc run test/cases/static_reflect_receiver.b \
     >"$tmp/reflect.interp"

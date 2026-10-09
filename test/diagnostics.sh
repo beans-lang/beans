@@ -18,7 +18,7 @@ grep -Fq ":4:22: error: unknown name 'missing_first'" \
     "$tmp/diagnostics_interpolation_bad"
 # A piece that is one unresolvable name reads far more often as a brace
 # somebody meant literally than as a typo, so the hint replaces the bare
-# "unknown name" rather than following it — at the same column, which is
+# "unknown name" rather than following it, at the same column, which is
 # what this file is here to hold: three errors for three names, each on the
 # bytes the user wrote.
 grep -Fq ":5:18: error: '{missing_piece}' in a string is an interpolation" \
@@ -28,7 +28,7 @@ grep -Fq ":6:21: error: unknown name 'missing_last'" \
     "$tmp/diagnostics_interpolation_bad"
 
 # #123: `as?` cannot name a generic instantiation, and the refusal has to say
-# why rather than deny a relation that holds — `Sub<int>` really is a child of
+# why rather than deny a relation that holds, `Sub<int>` really is a child of
 # `Base<int>`. A downcast is decided at run time from the object's class, and
 # the interpreter carries no type arguments on an object, so relaxing this makes
 # the two backends disagree: the interpreter answers yes for a `G<string>` held
@@ -77,7 +77,7 @@ check_bad diagnostics_unterminated_string_bad
 test "$(grep -c ': error:' "$tmp/diagnostics_unterminated_string_bad")" -eq 1
 
 # `while` is not a keyword, so it used to parse as a name and fail at the
-# condition — then the recovery ate the block's closing brace and put two more
+# condition, then the recovery ate the block's closing brace and put two more
 # errors on correct lines. One error, naming the loop keyword that exists.
 check_bad diagnostics_while_bad
 grep -Fq "there is no 'while' — beans has one loop keyword: write 'for condition { … }'" \
@@ -106,7 +106,7 @@ grep -Fq "'{{' is not an escape" "$tmp/diagnostics_brace_piece_bad"
 test "$(grep -c ': error:' "$tmp/diagnostics_brace_piece_bad")" -eq 1
 
 # #46: `?` may only cross an error boundary when the callee's error reaches the
-# caller's — same type, a subtype, or a `to_error` hook. Every other shape is
+# caller's, same type, a subtype, or a `to_error` hook. Every other shape is
 # refused here, at the `?`, with a message about the program: one error each,
 # naming both types and what is missing. It used to be accepted for a bare
 # `f()?` and left to a backend the interpreter got wrong and native could not
@@ -140,7 +140,7 @@ grep -Fq "can't erase move-only ownership by converting main.Pinned to main.AppE
 test "$(grep -c ': error:' "$tmp/diagnostics_try_convert_unique_bad")" -eq 1
 
 # `_` binds nothing, so naming it has to say so. Four paths reach a name in
-# the checker — read, move, lend, assign — and a suggestion list for a name
+# the checker, read, move, lend, assign, and a suggestion list for a name
 # the author declined to make is the answer none of them should give. The
 # duplicate at the end is the control: a real name that repeats is still a
 # duplicate, which is the half a "just allow `_` twice" change would break.
@@ -188,8 +188,8 @@ test "$(grep -c ': error:' "$tmp/diagnostics_record_place_bad")" -eq 6
 # with no rule saying so (#87). Every spelling is refused at the declaration
 # and names the enum and the type it reached for, including the shapes a rule
 # written only for the reported case would have missed: two interfaces at
-# once, payload variants, `enum(u8)` — whose value is a bare one-byte tag
-# with no room for a descriptor at all — a generic enum, and a base class.
+# once, payload variants, `enum(u8)`, whose value is a bare one-byte tag
+# with no room for a descriptor at all, a generic enum, and a base class.
 check_bad diagnostics_enum_relation_bad
 grep -Fq "enum 'Colour' cannot implement 'main.Shows' — an interface value is an object with a descriptor and an enum value is a tag, so only a class can implement one" \
     "$tmp/diagnostics_enum_relation_bad"
@@ -205,8 +205,8 @@ grep -Fq "enum 'Cell' cannot implement 'main.Shows'" \
     "$tmp/diagnostics_enum_relation_bad"
 grep -Fq "enum 'Rooted' cannot extend 'main.Holder' — enums have no base type" \
     "$tmp/diagnostics_enum_relation_bad"
-# one per relation named, and nothing else: the uses further down the file —
-# an interface parameter, a List element, a Map value, an interpolation — are
+# one per relation named, and nothing else: the uses further down the file,
+# an interface parameter, a List element, a Map value, an interpolation, are
 # the shapes that used to reach a backend, and the declaration is where they
 # are stopped
 test "$(grep -c ': error:' "$tmp/diagnostics_enum_relation_bad")" -eq 7
@@ -237,7 +237,7 @@ grep -Fq ":45:12: error: 'label' is declared static here, but Base declares it a
 # checking returned early for a static, so nothing was ever replaced
 grep -Fq ":53:21: error: 'label' is declared static here, but Base declares it as an instance method" \
     "$tmp/diagnostics_static_slot_bad"
-# the mirror — a static in the base, an instance method below it — which
+# the mirror, a static in the base, an instance method below it, which
 # left `Stamped.stamp()` and `restamped.stamp()` naming different code
 grep -Fq ":68:5: error: 'stamp' is declared as an instance method here, but Stamped declares it static — a name is either a static or an instance method throughout a class family, and a static has no receiver to be dispatched on" \
     "$tmp/diagnostics_static_slot_bad"
@@ -271,8 +271,8 @@ if [ -e "$tmp/static_slot" ]; then
 fi
 
 # "poison" is the checker's own word for a value it already refused. It used
-# to reach six messages — "poison cannot be indexed", "poison is not
-# iterable", "unary '-' needs a number, got poison" — each a second line
+# to reach six messages, "poison cannot be indexed", "poison is not
+# iterable", "unary '-' needs a number, got poison", each a second line
 # about a value whose real problem was already reported, naming a type nobody
 # wrote. A rule that reads a type stops when the type is poison.
 #

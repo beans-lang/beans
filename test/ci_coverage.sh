@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The map between the full suite and its focused slices, held to by force:
 # the five slice targets (frontend, semantics, runtime, ffi, platform) must
-# together run exactly the scripts `make test` runs — nothing lost, nothing
-# double-assigned — every script must exist, the CI matrices must keep every
+# together run exactly the scripts `make test` runs, nothing lost, nothing
+# double-assigned, every script must exist, the CI matrices must keep every
 # required architecture, and the fuzz shards must keep disjoint seeds.
 set -euo pipefail
 cd "$(dirname "$0")/.."

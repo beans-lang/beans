@@ -1,4 +1,4 @@
-// a long acyclic chain dropped at once — the release cascade must be
+// Dropping a long acyclic chain must use an iterative release cascade.
 // iterative in both backends, or 400k nodes smash the stack. The cycle
 // collector covers rings (examples/cycles.b); this covers straight chains.
 import std.io

@@ -1,6 +1,6 @@
 // The second asking package (#164). The module root and this package
-// compose different wrong names from the same simple name — the root would
-// say `interp164.Widget`, this package `interp164.probe.Widget` — so one
+// compose different wrong names from the same simple name, the root would
+// say `interp164.Widget`, this package `interp164.probe.Widget`, so one
 // asker cannot prove the rule; both do.
 package probe
 import std.reflect
@@ -26,7 +26,7 @@ pub class LocalChild extends Local {
 }
 
 // `Self` and a type parameter are file-local names, so the second asker
-// answers them from its own package — and must say `interp164.probe.Local`
+// answers them from its own package, and must say `interp164.probe.Local`
 // where the module root says `interp164.Local`.
 pub class Crate<T> {
     item: T

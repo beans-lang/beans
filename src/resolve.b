@@ -2,7 +2,7 @@ package main
 
 // An array type whose length names a constant, and the name node that
 // says which one. A length is substituted once every constant is folded,
-// which is later than this — and walking the whole AST again to find these
+// which is later than this, and walking the whole AST again to find these
 // would touch every node in the program to reach a handful. The resolver is
 // already standing on each of them, so it writes them down.
 class ArrayLengthSite {
@@ -76,8 +76,8 @@ fn legal_annotation_name(name: string) -> bool {
 }
 
 // The one answer to "does the language own this unqualified type name?".
-// Everything here is pre-bound somewhere by resolution — the type grammar,
-// the expression checker, the bounds checks, or qualified lookup — so a user
+// Everything here is pre-bound somewhere by resolution: the type grammar,
+// the expression checker, the bounds checks, or qualified lookup, so a user
 // type by one of these names could never be referred to coherently, and
 // declaration registration refuses it. The SIMD families are decided by the
 // same closed parse the checker uses, never by prefix: SimdDescription and
@@ -124,7 +124,7 @@ fn copy_names(source: Map<string, bool>) -> Map<string, bool> {
 // against that file, so the parts are held side by side here rather than
 // spliced into one syntax tree.
 //
-// `nodes[0]` is the primary — the part carrying the class header, or the
+// `nodes[0]` is the primary: the part carrying the class header, or the
 // first part in load order when no part carries one. Every other part
 // contributes members only.
 class PartialType {
@@ -142,7 +142,7 @@ class PartialType {
     }
 }
 
-// True when the declaration says nothing but `partial class Name` — no
+// True when the declaration says nothing but `partial class Name`: no
 // modifiers, no generic parameters, no extends and no implements. Only a
 // part like this may be a continuation; the header belongs to exactly one
 // part so there is never a question which one a reader should trust.
@@ -393,7 +393,7 @@ class Resolver {
     }
 
     // The selected names of one file: binding -> target package and the
-    // original symbol name, encoded "path\nname" — neither half can hold
+    // original symbol name, encoded "path\nname": neither half can hold
     // a newline.
     fn selected_for(file: ParsedModuleFile) -> Map<string, string> {
         var selected: Map<string, string> = {}
@@ -508,7 +508,7 @@ class Resolver {
         } else {
             resolved = self.package_qualified(package, name)
             if !self.symbols.contains_key(resolved) {
-                // Not declared here — a name selected with
+                // Not declared here: a name selected with
                 // `import {…} from path` resolves onto its target.
                 // check_selected_imports refused any collision, so the
                 // two lookups can never both succeed.
@@ -555,15 +555,15 @@ class Resolver {
     // it is folded before any type is laid out and has no storage, which is
     // exactly what a local, a field, a parameter and a C global do not have
     // at that point. The lookups are the ones a constant use makes anywhere
-    // else — this package, an `import {…} from` binding, or a package
-    // alias — so a length reaches the same constant a body would.
+    // else: this package, an `import {…} from` binding, or a package
+    // alias, so a length reaches the same constant a body would.
     fn resolve_const_name(name: string, package: LoadedPackage,
                           file: ParsedModuleFile,
                           aliases: Map<string, string>,
                           selected: Map<string, string>,
                           generics: Map<string, bool>,
                           node: AstNode) -> string {
-        // A type parameter is in scope here and reads like it should work —
+        // A type parameter is in scope here and reads like it should work:
         // it is the shape someone reaching for a const generic writes. It
         // stands for a type, and a length is a number, so say that rather
         // than reporting the name as one nothing declares.

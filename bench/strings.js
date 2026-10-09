@@ -1,4 +1,4 @@
-// bun strings.js — mirror of strings.b / strings.go (string build + scan)
+// Bun mirror of strings.b and strings.go (string build and scan).
 const n = Number(process.argv[2] ?? 2000000);
 const seed = Number(process.argv[3] ?? 1);
 

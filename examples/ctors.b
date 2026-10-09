@@ -1,4 +1,4 @@
-// ctors.b — init and deinit, the whole contract (spec/SYNTAX.md "init and deinit").
+// Init and deinit behavior from spec/SYNTAX.md.
 // Every deinit print pins down destruction order, so this file is the
 // regression for the rule that both backends must die in the same order:
 // frames newest-first, containers back-to-front, cascades node-then-fields.
@@ -39,7 +39,7 @@ class Port {
     }
 }
 
-// deinit chains: subclass first, then parent — no override, ever
+// Deinit runs from subclass to parent; it is not overridden.
 class Parent {
     a: Res = new Res("parent-field")
     fn deinit() { io.println("parent down") }
@@ -60,7 +60,7 @@ class OwnedBox<T> {
     fn deinit() { io.println("box down") }
 }
 
-// a cycle never reaches zero by itself, so the collector is what reclaims it —
+// The collector reclaims cycles that never reach a zero reference count.
 // and it runs each member's deinit before the shells go. Which member goes
 // first is the collector's discovery order, so the line carries no name: the
 // two backends walk different graphs to reach the same cycle.
@@ -112,7 +112,7 @@ fn generics() {
 }
 
 // super.init: own fields first, then the parent's constructor, then anything.
-// Animal's init calls a method the child overrides — safe, because the
+// Animal's init calls a method the child overrides safely because the
 // child's fields are already assigned when super.init runs (the whole reason
 // for the order).
 class Animal {
@@ -129,7 +129,7 @@ class Dog extends Animal {
     breed: string
     fn init(breed: string, name: string) {
         self.breed = breed            // own field, before super.init
-        super.init(name)              // parent's turn — exactly once
+        super.init(name)              // Initialize the parent once.
         io.println("dog built: {self.name} the {self.breed}")
     }
     override fn loud() -> string { return "{self.breed}!" }
@@ -147,7 +147,7 @@ fn supers() {
     io.println(d.loud())
     let p: Pup = new Pup("lab", "sam")    // new Pup(args) runs Dog's init
     io.println("pup {p.name} gets {p.treats}")
-}                                     // deinits chain: dog down, animal down — twice
+}                                     // Deinit runs for Dog, then Animal.
 
 fn threads() {
     io.println("-- threads --")

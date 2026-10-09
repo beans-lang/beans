@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# espresso_ledger.sh — the ruler for the espresso HTTP benchmark.
+# Measure HTTP benchmark results against the host's throughput floor.
 #
 # Runs a set of servers over a set of routes with identical wrk settings, and
 # reports for each one the number that actually explains it: CPU per request,
 # split into user and kernel, taken from the server's own rusage at exit
 # rather than from a mid-run `ps` sample.
 #
-# Every run includes bench/http_floor.c — the smallest server this kernel
-# allows — on the same route in the same session. A req/s figure without its
+# Every run includes bench/http_floor.c, the smallest server this kernel
+# allows, on the same route in the same session. A req/s figure without its
 # floor cannot be read: it is impossible to tell a server that is 30% off the
 # machine from one that is 3% off. So the floor is not optional here, and the
 # printed table carries it on every row.
@@ -45,12 +45,12 @@
 # a separate measurement and does not belong in this table.
 #
 # CPU comes from bench/rusage_wrap.c rather than `/usr/bin/time -l`, which
-# prints nothing but `real` when its child is killed by a signal — and a server
+# prints nothing but `real` when its child is killed by a signal, and a server
 # under test is always killed by a signal.
 #
 # Linux arm (written, NOT run here). The 5 September benchmark this rules is a
 # macOS one, and this box has no Linux with Bun/Go/wrk parity, so the Linux
-# path below has not been run end to end — only http_floor and rusage_wrap were
+# path below has not been run end to end; only http_floor and rusage_wrap were
 # built and smoke-tested in a container. Two things are Linux-only:
 #   * CPU pinning. With taskset the server runs on one set of cores and wrk on
 #     another, so the rusage the ledger reads is the server's own and the load
@@ -60,7 +60,7 @@
 #   * --reuse-port-compare adds a second espresso row that binds with
 #     SO_REUSEPORT (BENCH_REUSE_PORT=1) instead of the acceptor handoff
 #     serve_workers uses, to see whether Linux's balancing SO_REUSEPORT beats
-#     the acceptor (on Darwin it does not balance — espresso's README explains
+#     the acceptor (on Darwin it does not balance; espresso's README explains
 #     why the acceptor exists). This needs espresso to honor BENCH_REUSE_PORT,
 #     which it does not yet (lane D owns espresso); until it does, the row runs
 #     the same acceptor server twice and says so. Do not read it as a result.
@@ -122,8 +122,8 @@ fi
 BENCH3="$(cd -- "$BENCH3" && pwd)"
 ESPRESSO_BIN="${ESPRESSO_BIN:-$BENCH3/bench-beans}"
 
-# CPU-pinning plan. On Linux split the cores — the server on one set, wrk on the
-# other — so neither steals the other's cycles and the rusage the ledger reads
+# CPU-pinning plan. On Linux split the cores: the server on one set, wrk on the
+# other, so neither steals the other's cycles and the rusage the ledger reads
 # is the server's own. On macOS there is no taskset and both prefixes stay
 # empty, so the command lines are exactly what they were. (Guarded array
 # expansion below, because macOS bash 3.2 under `set -u` errors on "${a[@]}"
@@ -156,7 +156,7 @@ if [ "$REUSE_PORT_COMPARE" = "1" ]; then
 fi
 
 # A dry run: everything above (option parsing, kernel detection, the taskset and
-# reuse-port planning — the branches that run under `set -u`) has executed. Print
+# reuse-port planning, including branches that run under `set -u`, has executed. Print
 # the resolved plan and stop, before any clang or wrk. This is what a smoke test
 # drives to prove the Linux planning branch reaches its note instead of dying.
 if [ "$PLAN_ONLY" = "1" ]; then
@@ -236,7 +236,7 @@ server_cmd() { # <server> <route>  -> prints the argv, one word per line
     # accept loop hands connections to the workers), the reuseport row is 1
     # (each worker binds the port with SO_REUSEPORT and the kernel balances).
     # espresso does not honor BENCH_REUSE_PORT yet (lane D), so today both run
-    # the acceptor and the two rows should read the same — see the header.
+    # the acceptor and the two rows should read the same; see the header.
     espresso-acceptor)  printf '%s\n' env "BENCH_PORT=$PORT_ESPRESSO" "BENCH_WORKERS=${RP_WORKERS:-1}" BENCH_REUSE_PORT=0 "$ESPRESSO_BIN" ;;
     espresso-reuseport) printf '%s\n' env "BENCH_PORT=$PORT_ESPRESSO_RP" "BENCH_WORKERS=${RP_WORKERS:-1}" BENCH_REUSE_PORT=1 "$ESPRESSO_BIN" ;;
     go)       printf '%s\n' env "BENCH_PORT=$PORT_GO" BENCH_WORKERS=1 "$BENCH3/bench-go" ;;
@@ -263,14 +263,14 @@ MY_PGID=$(ps -o pgid= -p $$ | tr -d ' ')
 # and waits for it, rather than racing and writing down a number that is wrong
 # with no sign that it is.
 #
-# The lock is a directory — mkdir is atomic on every filesystem this runs on,
-# where a test-then-create is not — holding the owner's pid so a lock left by a
+# The lock is a directory; mkdir is atomic on every filesystem this runs on,
+# unlike test-then-create. Store the owner's pid so a lock left by a
 # killed run is detected and cleared instead of blocking the machine forever.
 #
 # A ledger from a checkout that predates this lock takes no lock at all, so the
 # wait also watches for any other espresso_ledger.sh process. That check is a
 # count, deliberately: `ps | grep -q` under `set -o pipefail` reports failure
-# when grep matches, because grep exits early and ps dies of SIGPIPE — which
+# when grep matches, because grep exits early and ps dies of SIGPIPE, which
 # inverts the answer exactly when the box is busy.
 LOCKDIR="${BEANS_LEDGER_LOCK:-${TMPDIR:-/tmp}/beans-espresso-ledger.lock}"
 LOCK_HELD=0
@@ -325,13 +325,13 @@ take_lock
 # %cpu,pgid,comm -r` is the per-process list; the load average lies on macOS.
 #
 # What counts as "this benchmark" is the process group, not the program name.
-# Exempting by name — bun, wrk, http_floor, bench-beans — exempts ANOTHER
+# Exempting by name (bun, wrk, http_floor, bench-beans) exempts ANOTHER
 # ledger's load too, and two ledgers running at once is not hypothetical: this
 # repo's benchmark work is done by several worktrees on one machine. When it
 # happened the guard saw a quiet box while a second lane's wrk held four
 # threads, and every row was written down at roughly half its real rate with no
-# warning printed. Every process this run starts — the server, its rusage
-# wrapper, wrk — inherits this script's process group, so `pgid == $$` is the
+# warning printed. Every process this run starts (server, rusage wrapper, wrk)
+# inherits this script's process group, so `pgid == $$` is the
 # exact test, and it cannot be spoofed by a name.
 noise_guard() {
   local label="$1" try worst snap

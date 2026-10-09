@@ -1,7 +1,7 @@
 // There is no `+` for strings (spec/SYNTAX.md, "Strings"). The checker took
 // it anyway and the tree interpreter joined the two, so every line below
 // passed `beansc check`, printed an answer under `beansc run`, and only met
-// the rule at `beansc build` — as a message about the LLVM emitter rather
+// the rule at `beansc build`, as a message about the LLVM emitter rather
 // than about the program (issue #133).
 //
 // One shape proves nothing here: the accepting branch sat in check_binary
@@ -12,7 +12,7 @@
 import std.io
 
 class Holder {
-    // a static field initializer — an expression checked outside any
+    // a static field initializer, an expression checked outside any
     // function body
     static tag: string = "a" + "b"
     s: string

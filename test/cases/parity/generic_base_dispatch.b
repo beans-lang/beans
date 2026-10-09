@@ -7,12 +7,12 @@
 // `Tag<int>` is only the static type; the runtime class is any non-generic
 // subclass, and a subclass that overrides the method replaces the body. The
 // direct call then ran the base body while the interpreter dispatched through
-// the object — a silent wrong answer, only on the native side. `self.label()`
+// the object, a silent wrong answer, only on the native side. `self.label()`
 // inside a base body has the same generic-base receiver, so it was wrong too.
 //
 // The call goes direct only when nothing can replace the body: no subclass
 // overrides it (so every object runs the base body), or the method holds no
-// descriptor row at all — a private method, whose slot only its declaring type
+// descriptor row at all, a private method, whose slot only its declaring type
 // can hold, or a method with its own type parameters, which the checker
 // forbids overriding. A base with a non-overriding subclass keeps its direct
 // call; only a real override reads the descriptor.
@@ -78,7 +78,7 @@ fn main() {
     // written at each object's own type
     io.println("direct {named.label()} {plain.label()} {base.label()}")
 
-    // written at the generic base — the shape that ran the wrong method
+    // written at the generic base, the shape that ran the wrong method
     io.println("vlabel {via_label(named)} {via_label(plain)} {via_label(base)}")
 
     // self.label() inside the base body dispatches through the object

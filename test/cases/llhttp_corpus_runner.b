@@ -2,8 +2,8 @@
 //
 // Each corpus case is an input (the ```http fence) and the exact event
 // trace upstream's fixture prints for it (the ```log fence). This runner
-// reproduces that trace from the bridge's event stream — same offsets,
-// same span merging, same error lines — so the upstream expectations become
+// reproduces that trace from the bridge's event stream, same offsets,
+// same span merging, same error lines, so the upstream expectations become
 // this repo's expectations, unmodified. Every case runs over the whole
 // buffer and again split in two at every byte (unless its meta says
 // noScan), which is the chunking-invariance property stated as a test.
@@ -96,7 +96,7 @@ fn parse_meta(case_out: Case, line: string) -> bool {
 }
 
 // md-test.ts builds the input as a JavaScript string and encodes it UTF-8,
-// so an escape above 0x7f becomes a two-byte sequence — mirrored here or
+// so an escape above 0x7f becomes a two-byte sequence, mirrored here or
 // the byte counts drift by one per high escape.
 fn push_code_point(out: Bytes, value: int) {
     if value < 128 {

@@ -19,7 +19,7 @@ partial class LlvmTextEmitter {
             // wrote it still declares the method, and asking "does a link of
             // this chain override the base's method?" is the same question
             // whether that link is generic or not. Recorded here rather than
-            // in the symbol loop below, which skips generic families — so a
+            // in the symbol loop below, which skips generic families, so a
             // generic class overriding a generic base's method looked to
             // generic_base_dispatch_symbol like a class that overrides
             // nothing, and the call was compiled direct to the base body
@@ -82,8 +82,8 @@ partial class LlvmTextEmitter {
         // deinit's slot is what @beans_deinit_sel publishes.
         for function: MirFunction in
             self.program.functions {
-            // Generic-family members keep their template name here — no
-            // symbol exists yet — but their dispatch identities are real:
+            // Generic-family members keep their template name here: no
+            // symbol exists yet, but their dispatch identities are real:
             // a generic class instance dispatches deinit (and any interface
             // method) through the same descriptor slots, so templates must
             // still register selectors or the instance's table has no row
@@ -117,7 +117,7 @@ partial class LlvmTextEmitter {
     // The custom kind is only a kind when the two symbols that make it one
     // can be built. map_key_eq and map_key_hash answer "" for a shape they
     // have no comparator for, and every caller interpolates that answer
-    // straight into the runtime call — `ptr , ptr )`, output clang rejects,
+    // straight into the runtime call: `ptr , ptr )`, output clang rejects,
     // with the failure arriving at build time talking about a .ll file.
     // Answering -1 here instead puts the refusal where every map emitter
     // already looks for it, in the program's own terms.
@@ -240,7 +240,7 @@ partial class LlvmTextEmitter {
     // A fresh list starts with room for four, so a literal of four or fewer is
     // the plain constructor it has always been. A longer one asks for exactly
     // what it is about to hold: without that it doubles its way up from four
-    // while the count was on the page the whole time — a six-element literal
+    // while the count was on the page the whole time: a six-element literal
     // allocated a buffer, filled four slots, allocated a second, and freed the
     // first. Asking once also lets a literal up to the inline threshold keep
     // its elements behind its own header, which the doubling path cannot do
@@ -650,7 +650,7 @@ partial class LlvmTextEmitter {
         // is the same read-modify-write, so both land here before the
         // plain-only guard below (which stands for List/Map, whose
         // compound the checker already refuses). The checker holds the
-        // element to the raw-pointee set, so it is always POD — no ARC.
+        // element to the raw-pointee set, so it is always POD: no ARC.
         if canonical_hir_name(map_type.name) ==
                "Slice" &&
            map_type.args.len() == 1 {
@@ -737,7 +737,7 @@ partial class LlvmTextEmitter {
             return ""
         }
         // the runtime's order kinds: 0 signed, 1 double, 2 string,
-        // 5 unsigned, 6 float, 7 enum-tag-through-pointer — the same table
+        // 5 unsigned, 6 float, 7 enum-tag-through-pointer: the same table
         // emit_list_sort uses.
         // The old catch-all 4 landed on slot_cmp's comparator row with
         // no comparator, which answers 0 for every pair, so min and
@@ -759,7 +759,7 @@ partial class LlvmTextEmitter {
             kind = 2
         }
         // min and max order the same way sort does: a payload-free enum by
-        // its declaration-order tag — enum(u8) reads the slot tag (kind 5),
+        // its declaration-order tag: enum(u8) reads the slot tag (kind 5),
         // a plain enum loads it through the pointer (kind 7). The runtime
         // hands back the winning slot, so the Option carries the right enum.
         if kind < 0 {
@@ -1477,7 +1477,7 @@ partial class LlvmTextEmitter {
         let receiver_name: string =
             canonical_hir_name(receiver_type.name)
         // `is_empty` is `len() == 0` and nothing more; it read as a gap
-        // only because the length path answered to one name. Lists only —
+        // only because the length path answered to one name. Lists only:
         // string carries its own handler.
         let empty_check: bool =
             instruction.text == "is_empty" &&
@@ -1502,7 +1502,7 @@ partial class LlvmTextEmitter {
             values[instruction.result] = result
             return "{length.setup}  {result} = icmp eq i64 {length.value}, 0\n"
         }
-        // The length is already an SSA value — naming it again would only
+        // The length is already an SSA value: naming it again would only
         // add a copy for the optimizer to fold back out.
         values[instruction.result] = length.value
         return length.setup
@@ -1569,7 +1569,7 @@ partial class LlvmTextEmitter {
         if kind < 0 {
             if self.wide_inline_value(element_type) {
                 // One eight-byte slot does not hold a wide value, so the
-                // element reaches the driver by its address instead — the
+                // element reaches the driver by its address instead: the
                 // same way an interpolation of the list renders it. Without
                 // this, `{xs}` printed a List<Point> and xs.join(", ") on the
                 // very same list was refused by the emitter.
@@ -1648,7 +1648,7 @@ partial class LlvmTextEmitter {
     //
     // The element type is the gate. A list whose elements own references
     // needs the collector's write barrier on every push, a retain per
-    // element, and a release per element when the list dies — and a frame
+    // element, and a release per element when the list dies, and a frame
     // that unwinds mid-loop would run that release against a length still
     // sitting in a register. Ref-free elements have none of those: the
     // buffer is freed whole, the collector never walks it, and a length the
@@ -1723,7 +1723,7 @@ partial class LlvmTextEmitter {
     }
 
     // Publish what the cache owns: the length and the change word. `data`
-    // and `cap` are never written here — only the runtime moves them, and
+    // and `cap` are never written here: only the runtime moves them, and
     // emit_list_header_load reads all five back behind every such call.
     fn emit_list_header_store(
         cache: LlvmListHeader,
@@ -1805,7 +1805,7 @@ partial class LlvmTextEmitter {
     // loop compares: the count there and the operation that wrote it at 44
     // (runtime/beans_rt.c pins both offsets and both codes with a
     // _Static_assert). Off the cache it is two narrow stores after one
-    // narrow load, deliberately — folding the halves into one integer costs
+    // narrow load, deliberately: folding the halves into one integer costs
     // a read-modify-write, and this is inlined into every drain loop a
     // program writes. On the cache the count is a register the loop carries
     // and the operation a constant store LLVM sinks out of the loop, which
@@ -2092,7 +2092,7 @@ partial class LlvmTextEmitter {
         let merge_block: int = self.fresh()
         let result: string = "%v{instruction.result}"
         if self.list_element_inline(element) {
-            // popping moves the record out — the list forgets it, so
+            // popping moves the record out: the list forgets it, so
             // its reference fields keep their count with no retain
             let llvm: string = self.type_text(element)
             let option: string =
@@ -2264,7 +2264,7 @@ partial class LlvmTextEmitter {
             return ""
         }
         // the runtime's order kinds: 0 signed, 1 double, 2 string,
-        // 5 unsigned, 6 float, 7 enum-tag-through-pointer — same table as
+        // 5 unsigned, 6 float, 7 enum-tag-through-pointer: same table as
         // production's order_kind
         let element: HirType = list_type.args[0]
         let element_name: string =
@@ -2288,7 +2288,7 @@ partial class LlvmTextEmitter {
         // stores that tag in the slot (unsigned, kind 5); a plain enum
         // stores a pointer at the tag word, so the runtime loads it (kind
         // 7). Only payload-free enums satisfy Order, so a payload enum never
-        // reaches sort — enum_is_fieldless leaves kind -1 and it is refused.
+        // reaches sort: enum_is_fieldless leaves kind -1 and it is refused.
         if kind < 0 {
             match self.declaration_for(element) {
                 some(declaration) => {
@@ -2358,7 +2358,7 @@ partial class LlvmTextEmitter {
             canonical_hir_name(element.name) ==
                 "decimal"
         // An inline record is wider than a slot, so it takes the same
-        // by-address path decimal takes — the runtime moves whole elements
+        // by-address path decimal takes: the runtime moves whole elements
         // by the list's own stride and hands the thunk two addresses.
         let is_record: bool =
             !is_decimal &&
@@ -2505,7 +2505,7 @@ partial class LlvmTextEmitter {
         return "{converted.setup}  %index.raw{id} = call i64 @beans_list_index(ptr {list}, i64 {converted.value}, i64 {kind}, ptr {ok_slot}, ptr {thunk})\n  %index.okv{id} = load i64, ptr {ok_slot}\n  %index.has{id} = icmp ne i64 %index.okv{id}, 0\n  %index.payload{id} = insertvalue \{ i1, i64 \} poison, i64 %index.raw{id}, 1\n  {result} = insertvalue \{ i1, i64 \} %index.payload{id}, i1 %index.has{id}, 0\n"
     }
 
-    // clear, reverse, values, clone: one runtime call each — the
+    // clear, reverse, values, and clone each use one runtime call. The
     // runtime walks its own storage, so no payload crosses a slot
     fn emit_container_void(
         function: MirFunction,
@@ -3021,7 +3021,7 @@ partial class LlvmTextEmitter {
     }
 
     // writing an array element goes through the storage the array was
-    // read out of — a store into the borrowed SSA copy would be
+    // read out of: a store into the borrowed SSA copy would be
     // discarded. The place chain walks locals, struct fields, class
     // fields, and outer array elements back to that storage. The gep
     // register borrows the field-assign naming so compound operators
@@ -3240,14 +3240,14 @@ partial class LlvmTextEmitter {
 
     // A Slice<T> element write is the address arithmetic emit_slice_index
     // does for a read, followed by a store. The bounds check is never
-    // elided here — the elision pass only touches `op == "index"` reads —
+    // elided here; the elision pass only touches `op == "index"` reads:
     // so the store always checks, exactly as the tree interpreter's slice
     // store does. align 1 matches the read: a slice may describe unaligned
     // foreign memory. A compound reuses emit_field_compound on the same
     // element pointer, the read-modify-write a fixed array's compound store
     // already routes through, so both backends fold the value the same way.
     // The checker holds a slice element to the raw-pointee set, so it is
-    // always POD — no owned reference, no ARC on the old or new value.
+    // always POD: no owned reference, no ARC on the old or new value.
     fn emit_slice_assignment(
         function: MirFunction,
         instruction: MirInstruction,

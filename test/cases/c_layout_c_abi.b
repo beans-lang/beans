@@ -44,7 +44,7 @@ extern "C" struct Frame {
 // Beans does not implement those rules and should not: the generated bridge
 // declares a real C struct and calls the function with it by value, so the C
 // compiler applies the ABI. What that makes worth testing is the bridge's
-// struct — it has to be layout-compatible with the C one, member for member
+// struct, it has to be layout-compatible with the C one, member for member
 // and type for type, or clang lowers a different shape than the callee
 // expects and the arguments arrive as garbage in exactly the cases that are
 // hardest to notice.
@@ -174,7 +174,7 @@ fn main() {
         let five_scaled: V5d = beans_test_v5d_scale(five, 2.0)
         io.println("C indirect f64x5 {beans_test_v5d_sum(five)} {five_scaled.a} {five_scaled.e}")
 
-        // Not homogeneous, so the general registers — the control.
+        // Not homogeneous, so the general registers, the control.
         io.println("C mixed pair {beans_test_mixed_pair(MixedPair { x: 1.5, n: 3 })}")
 
         // Eight doubles fill v0 to v7, so the struct after them has to go on

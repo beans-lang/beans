@@ -3,7 +3,7 @@
 // beans_thread_spawn let a double come back in the wrong register
 // class, and join printed 1.578648823e-313 where the interpreter
 // said 3.5. Every spawn now goes through a thunk that widens the
-// result into the slot — bitcast for floats, sign-aware extends
+// result into the slot, bitcast for floats, sign-aware extends
 // for narrow ints, the address itself for references.
 import std.io
 import std.thread

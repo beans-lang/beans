@@ -2,7 +2,7 @@
 // run on a referenced-but-not-yet-checked declaration was written twice, in
 // the checker and again in the interpreter. Both then ran every default
 // twice. The printed field values were identical either way, so comparing
-// answers between the backends saw nothing at all — the only trace was an
+// answers between the backends saw nothing at all, the only trace was an
 // extra construct and an extra release per field.
 //
 // So the markers are the test. `+tag` on construct, `-tag` on release, and

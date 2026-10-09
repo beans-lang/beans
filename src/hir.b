@@ -231,7 +231,7 @@ fn hir_callable_mentions_generic(
 //     can name. Choosing one because the program happens to hold a single
 //     instantiation would make the answer depend on unrelated code;
 //   - its receiver carries no class descriptor. Only `class` and `interface`
-//     receivers do — a struct, union or enum arrives as bare bytes, so
+//     receivers do: a struct, union or enum arrives as bare bytes, so
 //     `Point<int>` and `Point<Wide>` are indistinguishable there and nothing
 //     says which instantiation's body to run.
 //
@@ -268,7 +268,7 @@ fn hir_callable_reflection_erased(
 //     id that says which instantiation it came from.
 //   - a declared type that reaches a type parameter is reported as written, so
 //     the row for `Slot<T>.item` says `T`. No value carries `T` as its type,
-//     which makes the slot undescribable rather than merely unimplemented —
+//     which makes the slot undescribable rather than merely unimplemented:
 //     and reading it anyway would hand `Slot<int>`'s bits to a caller under a
 //     name that admits `Slot<string>`'s.
 //
@@ -424,7 +424,7 @@ class HirFunction {
     //   - a free function, which has no owner;
     //   - `init`, which runs on storage that has no descriptor yet, and
     //     `deinit`, whose row is the one @beans_deinit_sel publishes;
-    //   - a `static fn`, which declares no `self` at all — its row named a
+    //   - a `static fn`, which declares no `self` at all: its row named a
     //     receiverless function and every dynamic call through the slot
     //     handed it one anyway (#88);
     //   - a method that declares type parameters of its own, which is a
@@ -687,7 +687,7 @@ fn type_child(node: AstNode) -> Option<AstNode> {
 // literal, a negated numeric literal, or `none`. A module constant is not
 // one. Constants are folded at the end of signature checking, which is
 // where an array length reads them (issue #59), and a default is read
-// while the signature holding it is lowered — before that. Admitting one
+// while the signature holding it is lowered: before that. Admitting one
 // means carrying the default's name the way a pending array length is
 // carried and materializing it at every call site once the fold is done,
 // which is a change to how defaults are lowered, not to the fold.
@@ -748,8 +748,8 @@ class SignatureChecker {
     generic_arity: Map<string, int>
     refused_capabilities: Map<string, bool>
     // Array types whose length names a constant, and the constants by
-    // qualified name. Signatures are lowered before constants are folded —
-    // a constant's own initializer is checked against them — so a length
+    // qualified name. Signatures are lowered before constants are folded:
+    // a constant's own initializer is checked against them, so a length
     // that names one is carried here and filled in once the fold is done.
     pending_array_lengths: List<PendingArrayLength>
     const_index: Map<string, HirConst>
@@ -859,7 +859,7 @@ class SignatureChecker {
         // in the runtime. The filesystem tier rides on the CRT plus a Win32
         // shim; sockets and polling ride Winsock, dynamic libraries ride
         // LoadLibrary, processes ride CreateProcess with the MSVCRT
-        // quoting rules. Signals are present as refusing stubs — the
+        // quoting rules. Signals are present as refusing stubs: the
         // compiler's own interpreter imports std.sig, so the symbols must
         // exist; every operation reports the gap in a sentence at runtime.
         if self.hir.target.os == "windows" { return true }
@@ -983,7 +983,7 @@ class SignatureChecker {
                     // lowered before any constant is folded. Whatever the
                     // node holds now is at best an answer a previous check
                     // of the same syntax wrote, so the type waits for this
-                    // one — see resolve_array_lengths.
+                    // one: see resolve_array_lengths.
                     result.array_length = -1
                     self.pending_array_lengths.push(
                         new PendingArrayLength(result, node))
@@ -1039,7 +1039,7 @@ class SignatureChecker {
             }
             none => {
                 // A digit after Simd is almost always a typo for a real
-                // vector shape — but only when the name belongs to no
+                // vector shape, but only when the name belongs to no
                 // registered user declaration; a class by a non-vector
                 // name is an ordinary type.
                 if !self.generic_arity.contains_key(name) &&
@@ -1646,8 +1646,8 @@ class SignatureChecker {
                                 } else if !constant_default(value) {
                                     // A name is the mistake worth naming:
                                     // a module constant reads like it
-                                    // should work here — it sizes an array
-                                    // two lines up — and the reason it does
+                                    // should work here: it sizes an array
+                                    // two lines up, and the reason it does
                                     // not is an ordering the message has to
                                     // state.
                                     if value.kind == "name" {
@@ -1762,7 +1762,7 @@ class SignatureChecker {
     // owner's type parameters: `Holder.wrap(3)` has no `Holder<int>` value for
     // `T` to be read off, and there is no receiver position to write one in.
     // The owner parameters the static's own signature names are therefore type
-    // parameters *of the static* — a static is a free function that happens to
+    // parameters *of the static*: a static is a free function that happens to
     // be filed under a type, and `T` in its signature is a free type variable
     // like any other. Promoting them here is what makes them bind: the call
     // site infers them from the arguments and the expected result through the
@@ -1772,7 +1772,7 @@ class SignatureChecker {
     // the declaration was accepted and every call that needed `T` was refused,
     // so the member could not be reached at all.
     //
-    // They are prepended, so the explicit spelling reads in source order — the
+    // They are prepended, so the explicit spelling reads in source order: the
     // class's parameters, then the method's own. Only the ones the signature
     // names are promoted: `static fn tag() -> string` on a generic class works
     // today with `T` irrelevant, and must not start demanding one. An owner
@@ -2705,8 +2705,8 @@ class SignatureChecker {
     // language's own typing decides what each operator means. That needs
     // every signature lowered, which is why the fold runs here, at the end
     // of signature checking, and not earlier: a constant that is not a
-    // compile-time value has to be told what it is instead — a call, a
-    // field read, an enum variant — and none of those can be named before
+    // compile-time value has to be told what it is instead: a call, a
+    // field read, an enum variant, and none of those can be named before
     // the program's declarations exist.
     //
     // An array length is read while types are laid out, which is later than
@@ -2714,7 +2714,7 @@ class SignatureChecker {
     // here, and its answer is written back in two places: into the array
     // types already lowered (they hold the length a signature reads), and
     // onto the `array_type` node itself, which is what every type lowered
-    // after this point — every annotation in a body — reads its length
+    // after this point (every annotation in a body) reads its length
     // from. One fold, one value, one place each reader looks.
     fn fold_constants() {
         let expressions: ExpressionChecker =

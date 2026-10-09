@@ -2,7 +2,7 @@
 // else can be one: a length is read while types are laid out, which is after
 // constants are folded and before any function runs. Every name that is not
 // a constant, and every constant that cannot supply a length, reaches this
-// file — and each is told which of those it is, once, at the name.
+// file, and each is told which of those it is, once, at the name.
 const SIZE: int = 4
 const ZERO: int = 0
 const HUGE: int = 5000

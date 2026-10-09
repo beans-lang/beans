@@ -1,6 +1,6 @@
 // range patterns must compare with the subject's signedness: the
-// emitter once pinned every range to sge/sle, so 150u8 — whose
-// sign bit reads as -106 — landed outside 100..=200. Unsigned
+// emitter once pinned every range to sge/sle, so 150u8, whose
+// sign bit reads as -106, landed outside 100..=200. Unsigned
 // subjects take uge/ule/ult; signed subjects keep the s-forms.
 import std.io
 

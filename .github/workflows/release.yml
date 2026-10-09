@@ -4,8 +4,7 @@ name: Release
 # publish. Matrix jobs never touch the GitHub Release: they upload workflow
 # artifacts, and one final job assembles the release from all of them. That is
 # what makes "do not publish a partial release" enforceable rather than hoped
-# for — if any target fails to build or fails its install test, `publish` never
-# starts.
+# for. If any target fails to build or install, `publish` never starts.
 
 on:
   push:
@@ -722,7 +721,7 @@ jobs:
           chmod +x assets/beans-install.sh
           # The SBOM action opens its output file directly and does not create
           # the directory on the way, so an absent sbom/ is an ENOENT after the
-          # scan has already run — every release so far died right here.
+          # scan has already run. Every release so far failed here.
           mkdir -p sbom
 
       # Built before the checksum list so the SBOM is itself covered by it. It is
@@ -735,7 +734,7 @@ jobs:
           format: spdx-json
           output-file: sbom/beans-v${{ env.VERSION }}.spdx.json
           # The action attaches its own copy to any release that already
-          # exists for this tag, under its own name and outside assets/ — so
+          # exists for this tag under its own name and outside assets/, so
           # it is not in the checksum list and not in the manifest. A first
           # run never sees one, because the release is created further down;
           # a re-run of this job does, because the previous attempt left the

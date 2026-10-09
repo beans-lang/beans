@@ -1,17 +1,17 @@
 // A map key wider than one runtime slot.
 //
-// map_key_kind answers 4 — "custom structural" — for every wide inline value,
+// map_key_kind answers 4, "custom structural", for every wide inline value,
 // and the runtime then needs two symbols with it: an equality thunk and a hash
 // thunk. request_wide_eq and request_wide_hash had no shape for a Result, so
 // both answered the empty string, and every caller interpolated that answer
 // straight into the runtime call. The module carried `ptr , ptr )` and the
-// build failed talking about a .ll file — not a refusal, malformed output.
+// build failed talking about a .ll file, not a refusal, malformed output.
 //
 // Every map operation reaches those two symbols, so every one of them is here:
 // the literal, a set through `m[k] = v`, insert, get through `m[k]`, get()
 // answering an Option, contains_key, remove, len, and keys()/values(). The ok
 // and err arms both key rows, and both arms carry a wide payload in one of the
-// maps, because the comparator only ever reads the arm the tag selects — the
+// maps, because the comparator only ever reads the arm the tag selects, the
 // dead arm of an inline Result is zeroed, and reading it would dereference
 // null.
 //

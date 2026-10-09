@@ -479,7 +479,7 @@ partial class LlvmTextEmitter {
 
     // one glue body per callback type: C hands (env, result, args)
     // and this unpacks the argument array and calls the closure box
-    // through my own convention — box first, code pointer at slot 0
+    // through my own convention: box first, code pointer at slot 0
     fn callback_dispatch(
         instruction: MirInstruction,
         type: HirType) -> string {
@@ -823,9 +823,9 @@ partial class LlvmTextEmitter {
                 "*({c_type}*)args[{index}]")
         }
         // The `...` goes into the C prototype the wrapper declares, so
-        // Clang classifies the tail by the target's variadic rules —
+        // Clang classifies the tail by the target's variadic rules:
         // stack-only on Apple arm64, the same register banks as fixed
-        // arguments under SysV x86-64 and generic AAPCS64 — and applies
+        // arguments under SysV x86-64 and generic AAPCS64, and applies
         // C's default argument promotions to every one of them.
         if variadic_from >= 0 {
             declarations.push("...")
@@ -858,7 +858,7 @@ partial class LlvmTextEmitter {
             }
             // The module-level declaration names the signature the symbol
             // *has*, and a variadic symbol's is the fixed head plus
-            // `...` — the tail belongs to the call, not to the callee.
+            // `...`: the tail belongs to the call, not to the callee.
             if variadic_from >= 0 && index >= variadic_from {
                 continue
             }

@@ -4,9 +4,9 @@
 // The shape is deliberately mechanical: `Server.bind` wraps a listener,
 // `accept()` yields a `ServerConn`, `read_request()` yields one buffered
 // request at a time (keep-alive and pipelining included), `respond` frames
-// one response. Concurrency is the caller's decision — accept on one
+// one response. Concurrency is the caller's decision: accept on one
 // thread and spawn per connection, run independent SO_REUSEPORT accept loops,
-// or run single-threaded in a test — and
+// or run single-threaded in a test: and
 // a caller who needs streaming bodies uses `RequestParser` on a raw stream
 // instead of this convenience layer.
 package http
@@ -58,9 +58,9 @@ fn check_response_frame(status: int,
 }
 
 // The chunked gate. A status that forbids a body forbids a streamed one too,
-// and there is no zero-length streamed response to fall back to — the head
+// and there is no zero-length streamed response to fall back to: the head
 // would announce `Transfer-Encoding: chunked` on a message that may not have
-// a body at all — so this refuses outright where the length-delimited form
+// a body at all, so this refuses outright where the length-delimited form
 // merely refuses a non-zero length.
 fn check_chunked_frame(status: int,
                        reason: string,
@@ -122,7 +122,7 @@ fn write_chunked_head(target: Bytes,
     write_header_block(target, headers, keep_alive)
 }
 
-// RFC 9112 section 7.1 defines the chunk-size as `1*HEXDIG` — "a string of hex
+// RFC 9112 section 7.1 defines the chunk-size as `1*HEXDIG`: "a string of hex
 // digits indicating the size of the chunk-data in octets". That is the whole of
 // the requirement. The grammar admits leading zeros, and ABNF makes its letters
 // case-insensitive, so it admits either case as well.
@@ -156,15 +156,15 @@ fn append_chunk_size(target: Bytes, value: int) {
 // 6.5.1 requires is an allowlist: "A sender MUST NOT generate a trailer field
 // unless the sender knows the corresponding header field name's definition
 // permits the field to be sent in trailers." It names no fields at all. It
-// offers categories, and only as examples — fields "that describe message
+// offers categories, and only as examples: fields "that describe message
 // framing, routing, authentication, request modifiers, response controls, or
 // content format".
 //
 // A denylist of well-known names is the weaker of the two rules: a field absent
 // from this list passes here, where the RFC would still refuse it unless its
 // definition permits trailers. Passing this check is therefore not a proof of
-// conformance. It is what std.http can actually enforce — the package cannot
-// know the definition of every field a caller might invent — and it catches the
+// conformance. It is what std.http can actually enforce: the package cannot
+// know the definition of every field a caller might invent, and it catches the
 // names whose meaning is load-bearing, which are the ones that corrupt a
 // message. The group labels below are this package's, mapped onto the RFC's
 // example categories; which names sit in each group is this package's choice.
@@ -172,7 +172,7 @@ fn append_chunk_size(target: Bytes, value: int) {
 // Why it matters at all: the RFC says that in most cases trailers are "simply
 // discarded", so a message whose framing, routing, caching, authentication or
 // content handling depends on a trailer means two different things to two
-// recipients — the same disagreement response splitting exploits, arriving
+// recipients: the same disagreement response splitting exploits, arriving
 // after the head.
 fn trailer_field_is_forbidden(name: string) -> bool {
     let forbidden: bool =
@@ -219,8 +219,8 @@ fn trailer_field_is_forbidden(name: string) -> bool {
 }
 
 // The trailer section is a header block on the wire, so it is checked by the
-// same `check_headers` the head is — one implementation of the splitting
-// refusal — and then by the rule that is only true of trailers.
+// same `check_headers` the head is: one implementation of the splitting
+// refusal, and then by the rule that is only true of trailers.
 fn check_trailers(trailers: Headers) -> Result<bool> {
     check_headers(trailers)?
     for index: int in 0..trailers.count() {
@@ -261,7 +261,7 @@ pub fn encode_response_into(target: Bytes,
 }
 
 /// Like `encode_response_into`, appending after whatever `target` already
-/// holds — the form for a server that frames each response straight into
+/// holds: the form for a server that frames each response straight into
 /// its connection's output queue instead of staging it in a side buffer.
 /// Validation failures leave `target` untouched.
 pub fn encode_response_append(target: Bytes,
@@ -283,7 +283,7 @@ pub fn encode_response_append(target: Bytes,
 /// This is the form for a server that means to write the head and the body in
 /// one vectored send instead of joining them: the body never enters `target`,
 /// so a large one is never copied. `body_len` is what the `Content-Length`
-/// will say, and validation is identical to `encode_response_append` — a
+/// will say, and validation is identical to `encode_response_append`: a
 /// status that forbids a body still refuses a non-zero length here.
 ///
 /// `ok(true)` means the status forbids a body and the caller must send the
@@ -302,8 +302,8 @@ pub fn encode_response_head_append(target: Bytes,
     return ok(body_forbidden)
 }
 
-/// Encodes the head of a **chunked** response — the framing for a body whose
-/// length is not known when the head has to go out — appending after whatever
+/// Encodes the head of a **chunked** response: the framing for a body whose
+/// length is not known when the head has to go out: appending after whatever
 /// `target` already holds.
 ///
 /// Validation is the one `encode_response_append` runs: the status range, the
@@ -314,7 +314,7 @@ pub fn encode_response_head_append(target: Bytes,
 /// outright, because it cannot be streamed at all.
 ///
 /// This writes the head and nothing else. A caller that also wants its chunks
-/// framed — which is nearly every caller — wants `ChunkedResponseWriter`, which
+/// framed (which is nearly every caller) wants `ChunkedResponseWriter`, which
 /// writes this head and then refuses the sequencing mistakes a bare head
 /// encoder cannot see: a chunk before the head, a chunk after the terminator,
 /// and the zero-length chunk that silently *is* the terminator. This form is
@@ -337,9 +337,9 @@ pub fn encode_chunked_head_append(target: Bytes,
 /// corrupt a streamed response are sequencing mistakes no single function can
 /// see. Each one is refused here, at the call that makes it:
 ///
-///   - a chunk written before the head — the bytes would arrive as a response
+///   - a chunk written before the head: the bytes would arrive as a response
 ///     body nobody announced;
-///   - a chunk written after the terminator — the peer already read the
+///   - a chunk written after the terminator: the peer already read the
 ///     message as complete and reads these as the start of the next one;
 ///   - a **zero-length chunk**, which is not an empty write but the
 ///     terminator: writing one mid-body ends the response there and everything
@@ -359,7 +359,7 @@ pub fn encode_chunked_head_append(target: Bytes,
 /// lets `chunk_prefix_append` frame a chunk whose payload never enters `target`
 /// at all: prefix and payload go out as one vectored write, so a megabyte
 /// chunk is a megabyte read straight out of the caller's own buffer. The bytes
-/// on the wire are identical either way — `chunk_append` is `chunk_prefix_append`
+/// on the wire are identical either way: `chunk_append` is `chunk_prefix_append`
 /// followed by the payload, and nothing else.
 pub class ChunkedResponseWriter {
     started: bool = false
@@ -390,7 +390,7 @@ pub class ChunkedResponseWriter {
     /// Frames a chunk of `length` bytes without taking the bytes: writes the
     /// CRLF owed by the previous chunk and this one's size line, and stops.
     /// The caller must send exactly `length` payload bytes immediately after
-    /// what this appended — that is the vectored form, and the writer counts
+    /// what this appended: that is the vectored form, and the writer counts
     /// the chunk as sent the moment it frames it.
     pub fn chunk_prefix_append(target: Bytes, length: int) -> Result<bool> {
         if !self.started {
@@ -414,7 +414,7 @@ pub class ChunkedResponseWriter {
         return ok(true)
     }
 
-    /// Frames one chunk and appends its payload — the copying form, for a
+    /// Frames one chunk and appends its payload: the copying form, for a
     /// caller staging the whole response in one buffer.
     pub fn chunk_append(target: Bytes, data: Bytes) -> Result<bool> {
         self.chunk_prefix_append(target, data.len())?
@@ -427,7 +427,7 @@ pub class ChunkedResponseWriter {
     /// `ok(true)` means this call wrote it; `ok(false)` means the response was
     /// already finished and nothing was appended. Ending an already-ended
     /// response is how a connection layer covers a handler that returned
-    /// without finishing, so it is not an error — writing a *chunk* after the
+    /// without finishing, so it is not an error: writing a *chunk* after the
     /// terminator still is.
     pub fn finish_append(target: Bytes) -> Result<bool> {
         return self.finish_trailers_append(target, new Headers())
@@ -437,12 +437,12 @@ pub class ChunkedResponseWriter {
     /// `finish_append` writes.
     ///
     /// Trailer values are held to the same CR/LF/NUL rule as the head, by the
-    /// same check — a trailer section is a header block, and splitting it
+    /// same check: a trailer section is a header block, and splitting it
     /// splits the message just as well. On top of that, the field names this
     /// package refuses in a trailer section are refused here by name: a
     /// recipient may drop the section, so a message that carries meaning there
     /// means two different things to two readers. That denylist is this
-    /// package's policy — RFC 9110 section 6.5.1 states the rule as an
+    /// package's policy: RFC 9110 section 6.5.1 states the rule as an
     /// allowlist and names no fields.
     pub fn finish_trailers_append(target: Bytes,
                                   trailers: Headers) -> Result<bool> {
@@ -489,7 +489,7 @@ pub unique class Server implements Send {
     }
 
     /// Binds. Port 0 asks the system for a free port; read it back with
-    /// `port()` — that is how tests bind without racing for a number.
+    /// `port()`: that is how tests bind without racing for a number.
     pub static fn bind(host: string, port: int) -> Result<Server> {
         let listener: net.TcpListener = net.TcpListener.bind(host, port)?
         return ok(new Server(move listener))
@@ -563,7 +563,7 @@ pub unique class ServerConn implements Send {
 
     /// Caps the buffered request body size; a client exceeding it gets the
     /// error (kind `too_large`) from `read_request`, and the connection is
-    /// done — the remaining body bytes have nowhere honest to go.
+    /// done: the remaining body bytes have nowhere honest to go.
     pub fn set_max_body(limit: int) {
         if limit > 0 { self.max_body = limit }
     }
@@ -724,13 +724,13 @@ pub unique class ServerConn implements Send {
     ///
     /// A caller that closes without finishing leaves the body unterminated,
     /// which is the honest report of a handler that failed after its status
-    /// was already on the wire — the peer sees a truncated message rather than
+    /// was already on the wire: the peer sees a truncated message rather than
     /// a complete one that lost part of its content.
     ///
     /// This frames a response that will carry a body. A response to a HEAD
     /// request carries none, so it is answered with `respond`, not begun here:
-    /// a streamed HEAD response would either never be finished — leaving this
-    /// connection owned by a response that has ended — or be finished with a
+    /// a streamed HEAD response would either never be finished: leaving this
+    /// connection owned by a response that has ended, or be finished with a
     /// terminating chunk, which is a body.
     pub fn begin_chunked(status: int,
                          reason: string,

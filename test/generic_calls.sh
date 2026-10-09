@@ -61,7 +61,7 @@ check_bad test/cases/generic_calls_pkg_bad/main.b \
 # A method that declares type parameters of its own binds them at the call
 # site, so it is a template with one function per instantiation and holds no
 # dispatch row. The receiver's static type decides which body runs, and that
-# body may be one a base declares — read only under the receiver's own
+# body may be one a base declares, read only under the receiver's own
 # declaration, an inherited one had no template to raise, so the call fell
 # through to dispatch and read a row that was never going to be filled (#89).
 #
@@ -77,13 +77,13 @@ check_bad test/cases/generic_calls_pkg_bad/main.b \
 # Sub may each declare `mark<T>`, and that is the only way one family can
 # hold two generic methods under one name. `shows` dispatches and so runs
 # Base's body on a Sub receiver; the `mark<T>` that body calls does not
-# dispatch, so it stays Base's — matching by name would have answered Sub's.
+# dispatch, so it stays Base's, matching by name would have answered Sub's.
 run_all_ways test/cases/generic_method_inherit.b \
     test/cases/generic_method_inherit.out
 
 # A type parameter inside a function-typed parameter, on every receiver form.
-# `fn(T)` and `fn(T) -> unit` are one type — the result is optional in the
-# syntax, not in the type — but only the spelled form carries the result in
+# `fn(T)` and `fn(T) -> unit` are one type, the result is optional in the
+# syntax, not in the type, but only the spelled form carries the result in
 # the type's argument list, and a closure literal always carries it. Matching
 # the two by that list rather than by (parameters, result) made a free
 # function or a static refuse the call at build time, in the emitter's own
@@ -99,7 +99,7 @@ run_all_ways test/cases/issue161_fn_typed_parameter.b \
     test/cases/issue161_fn_typed_parameter.out
 
 # #162: a static method has no receiver, so nothing at the call site used to
-# bind its owner's type parameters — the declaration was accepted and every
+# bind its owner's type parameters, the declaration was accepted and every
 # call that needed `T` was refused, which left the member reachable from
 # nowhere. The owner parameters a static's own signature names are its own type
 # parameters now: inferred from the arguments, inferred from the expected
@@ -117,7 +117,7 @@ run_all_ways test/cases/issue162_static_generics_ok.b \
 # The same rule with the class named through a package. A static call whose
 # receiver is `box.Holder` reaches the checker by a different route than the
 # bare `Holder` of a single file, and the declaration it lands on was lowered
-# while another file was being checked — plain, aliased, with the type
+# while another file was being checked, plain, aliased, with the type
 # arguments written out, with `T` bound to a class the declaring package has
 # never seen, and with the owner's `implements Order` measured across the
 # boundary.
@@ -125,7 +125,7 @@ run_all_ways test/cases/issue162_static_generics_pkg/main.b \
     test/cases/issue162_static_generics_pkg/main.out
 
 # The other half. An owner parameter only the *body* names cannot be bound by
-# anything, so it is refused where it is written — that shape checked clean,
+# anything, so it is refused where it is written, that shape checked clean,
 # ran in the interpreter (printing the literal "T" for `type_of(T)`) and died
 # in a native build with "cannot form class layout 'main.Holder<T>'". The rest
 # are what a promoted parameter inherits from the generic machinery it now goes
@@ -150,7 +150,7 @@ check_bad test/cases/issue162_static_generics_bad.b \
     "generic T was string, then int"
 # Five statics name T only in their bodies and five are refused: once at each
 # declaration, with nothing cascading onto the calls. The five are the five
-# routes a body has to the name — a `let`'s declared type, a closure's type, a
+# routes a body has to the name, a `let`'s declared type, a closure's type, a
 # reflection type argument, a loop binding's annotation, and an explicit type
 # argument handed to another call. (`var`, and an `as?` cast, land on the same
 # two nodes as the first and second.)
@@ -167,7 +167,7 @@ fi
 # And every form that exists only to be reached through a row is refused at
 # the declaration. Each of these checked clean before: the interface and
 # abstract ones jumped through a null row natively while the interpreter
-# answered, and a replaced body split the backends the other way — native
+# answered, and a replaced body split the backends the other way, native
 # bound whichever template the receiver's static type named while the
 # interpreter dispatched on the runtime class, from a program the checker had
 # just asked to mark `override`.
@@ -195,9 +195,9 @@ if ./build/beansc build test/cases/diagnostics_generic_dispatch_bad.b \
     exit 1
 fi
 
-# Seeded differential: programs that lean on the `<` ambiguity — chained
+# Seeded differential: programs that lean on the `<` ambiguity, chained
 # comparisons beside generic calls, nested argument lists, both operand
-# orders — with the expected output computed by the generator. The
+# orders, with the expected output computed by the generator. The
 # interpreter, a debug build and a release build must all print it.
 seeds=${GENERIC_CALL_FUZZ_SEEDS:-6}
 for ((seed = 1; seed <= seeds; seed++)); do

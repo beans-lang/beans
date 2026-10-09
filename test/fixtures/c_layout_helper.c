@@ -155,8 +155,8 @@ double beans_test_mixed_float(float first, double second, float third,
  * memory.
  *
  * So these are three separate code paths in a backend, and until this block
- * existed every extern "C" struct in the test corpus was a mixed one — the
- * vector-register path had no test at all. It is not a hypothetical path:
+ * existed every extern "C" struct in the test corpus was a mixed one; the
+ * vector-register path had no test at all. It is a real ABI path:
  * raylib's Vector4, Rectangle and Color are exactly this shape.
  */
 typedef struct { double x, y; } BeansTestV2d;          /* 2 doubles: HFA     */
@@ -186,9 +186,9 @@ BeansTestV4d beans_test_v4d_scale(BeansTestV4d v, double by) {
     return out;
 }
 
-/* Five members is one too many to be an HFA, so this one is passed and
- * returned through memory. The arithmetic is the same; the calling convention
- * is not, which is the point of having it here beside the four-member one. */
+/* Five-member aggregates are passed and returned through memory, unlike four-member HFAs. */
+
+
 double beans_test_v5d_sum(BeansTestV5d v) {
     return v.a + v.b + v.c + v.d + v.e;
 }
@@ -201,10 +201,10 @@ BeansTestV5d beans_test_v5d_scale(BeansTestV5d v, double by) {
 
 double beans_test_mixed_pair(BeansTestMixed m) { return m.x + (double)m.n; }
 
-/* An HFA arriving after the vector registers are already spoken for. Eight
- * doubles fill v0 to v7, so this struct has to go on the stack — a different
- * path again, and the one a wrapper that counted registers wrongly would get
- * right for the first argument and wrong for the last. */
+/* After eight doubles fill v0-v7, an HFA argument must use the stack. */
+
+
+
 double beans_test_v2d_after_eight(double a, double b, double c, double d,
                                   double e, double f, double g, double h,
                                   BeansTestV2d v) {

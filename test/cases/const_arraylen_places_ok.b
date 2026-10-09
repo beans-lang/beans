@@ -1,5 +1,5 @@
 // The positions a fixed array can be written in that are not a plain local,
-// field, parameter or result — every one of them lowers its type through a
+// field, parameter or result, every one of them lowers its type through a
 // different path, and every one has to read the same folded constant. The
 // generic-argument and C-layout rows matter most: those types are laid out
 // while signatures are checked, which is the stage the fold now runs at the

@@ -136,7 +136,7 @@ fn integer_literal_fits(text: string,
 // is, however its digits look: `0xFE` and `0xBEEF` hold an `e` that is a
 // hex digit, not an exponent. The checker classifies a match pattern with
 // this rule and the tree interpreter compares one with it, so it lives in
-// one place — when the interpreter sniffed for `.`/`e`/`E` on its own,
+// one place, when the interpreter sniffed for `.`/`e`/`E` on its own,
 // every hex arm holding an `e` was compared as a float and matched nothing
 // while the native backend matched it.
 fn literal_is_float_syntax(text: string) -> bool {
@@ -185,7 +185,7 @@ fn number_literal_syntax(node: AstNode) -> bool {
            number_literal_syntax(node.children[0])
 }
 
-// The types a number literal can be written in directly — the real-number
+// The types a number literal can be written in directly: the real-number
 // types, where the literal is read into the type rather than converted into
 // it. Integer targets are deliberately absent: an integer cast keeps the low
 // target-width bits, and `300 as i8` has to stay 44.
@@ -211,7 +211,7 @@ fn literal_has_base_prefix(text: string) -> bool {
 // The plain decimal digits of a base-prefixed integer literal, for the float,
 // f32 and decimal parsers, which read decimal digits and nothing else. The
 // checker holds such a literal to int's range before this runs, and that range
-// includes -0x8000000000000000, whose magnitude 2^63 is one past int.max — so
+// includes -0x8000000000000000, whose magnitude 2^63 is one past int.max: so
 // the accumulator is a u64 and a sign is prepended as text, never applied as
 // arithmetic. Accumulating in an int wrapped that magnitude to int.min and the
 // negation wrapped it back, which handed the value over with its sign flipped

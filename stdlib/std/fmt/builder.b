@@ -66,7 +66,7 @@ pub class StringBuilder {
         }
     }
 
-    /// Append one raw byte — the low eight bits of `value`. Keeping the result
+    /// Append one raw byte: the low eight bits of `value`. Keeping the result
     /// valid UTF-8 is the caller's job, the same as it is for `Bytes.push`.
     pub fn push_byte(value: int) {
         self.buffer.push(value)
@@ -102,7 +102,7 @@ pub class StringBuilder {
         return self.buffer.to_string()
     }
 
-    /// Every byte written so far, as an independent `Bytes` copy — the form a
+    /// Every byte written so far, as an independent `Bytes` copy: the form a
     /// socket or a file wants.
     pub fn to_bytes() -> Bytes {
         return self.buffer.slice(0, self.buffer.len())

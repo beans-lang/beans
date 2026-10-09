@@ -1,4 +1,4 @@
-// Cryptographic hashing — from the platform, minimal by design.
+// Cryptographic hashing: from the platform, minimal by design.
 //
 // SHA-1 and SHA-256, taken from the OS crypto library (CommonCrypto on
 // macOS, CNG on Windows, libcrypto at runtime on Linux/BSD), behind a small
@@ -134,7 +134,7 @@ pub fn sha256(data: Bytes) -> Result<Bytes> {
     return hasher.finish()
 }
 
-/// HMAC over `data` with `key`, using the given algorithm — the standard
+/// HMAC over `data` with `key`, using the given algorithm: the standard
 /// keyed-hash construction (RFC 2104), built on the platform digest.
 pub fn hmac(algorithm: Algorithm, key: Bytes, data: Bytes) -> Result<Bytes> {
     let block: int = block_size(algorithm)

@@ -334,7 +334,7 @@ pub class Node {
         }
     }
 
-    /// The raw qualified name — for `<soap:Body>` this is "soap:Body".
+    /// The raw qualified name, such as `soap:Body` for `<soap:Body>`.
     pub fn name() -> string {
         return node_name(self.handle)
     }
@@ -360,13 +360,13 @@ pub class Node {
     }
 
     /// The node's own value: text and CDATA content, a comment's body, a
-    /// processing instruction's payload. Elements report "" — their text
+    /// processing instruction's payload. Elements report "": their text
     /// lives in child nodes; see `text()`.
     pub fn value() -> string {
         return node_value(self.handle)
     }
 
-    /// Direct text and CDATA children concatenated in order — the usual
+    /// Direct text and CDATA children concatenated in order: the usual
     /// "what does this element say" accessor for mixed content.
     pub fn text() -> string {
         var pieces: List<string> = []
@@ -381,7 +381,7 @@ pub class Node {
         return pieces.join("")
     }
 
-    /// Every child in document order — mixed content included.
+    /// Every child in document order: mixed content included.
     pub fn children() -> List<Node> {
         var count: int = 0
         unsafe {

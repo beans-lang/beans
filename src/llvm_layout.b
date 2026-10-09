@@ -53,13 +53,7 @@ class LlvmReferenceTree {
     }
 }
 
-// The stack slots a loop holds one list's header in. `data` and `cap` are
-// read-only mirrors — only the runtime's grow path writes them, and the
-// cache reloads all five behind it — so leaving the loop writes back `len`
-// and the change word and nothing else. Every slot is an entry alloca whose
-// address never leaves the frame, which is the whole point: the element
-// store cannot alias it, so LLVM keeps the header in registers across the
-// loop instead of reloading it from the heap object every turn.
+// Cache all five list-header fields in entry allocas; runtime growth updates data/cap, so only len and the mutation count are written back after the loop.
 class LlvmListHeader {
     data: string
     len: string
@@ -108,12 +102,7 @@ class LlvmPlaceStep {
 // a local's slot (root_local), below a class object (root_register), or
 // below a module-lifetime global (root_static, the static field's symbol).
 //
-// The three are different in more than spelling. A local's slot may hold a
-// cell pointer rather than the value, so it goes through
-// local_value_address. A class object is also the cycle collector's owner
-// for anything stored beneath it. A static has no owner to name, and takes
-// the collector's static form instead — the same one a whole-static store
-// emits.
+// Resolve stores by root kind: locals may hold cells, class objects own nested references, and globals use static collector roots.
 class LlvmBorrowedPlace {
     root_local: int
     root_register: string
@@ -143,9 +132,7 @@ class LlvmClassLayout {
     // The key this class's bodies are raised and filed under: the rendered
     // instance for a generic class, the qualified name for a plain one.
     instance: string
-    // The same class as a type, arguments and all. `instance` is its rendered
-    // form and cannot be read back — a chain walk needs the arguments, so the
-    // type is kept rather than re-parsed out of the string.
+    // Keep the instantiated type alongside its rendered key because chain walks need its generic arguments.
     instance_type: HirType
 
     fn init(declaration: HirDeclaration, id: int) {
@@ -193,16 +180,7 @@ class LlvmRecordLayout {
     }
 }
 
-// A reflective field thunk whose body waits for the whole layout set.
-//
-// A generic class's field is not at one offset: `class Slot<T> { item: T;
-// tail: int }` puts `tail` at 16 in `Slot<int>` and at 32 in `Slot<Wide>`,
-// because the field before it is as wide as the argument. So the thunk reads
-// the receiver's own class id out of its descriptor and picks the offset that
-// class was laid out with — and which classes exist is only settled once every
-// generic instance body has been raised, which is after the registration that
-// names this symbol has already been written into main. The symbol is minted
-// where it is named; the body is written when the answer is complete.
+// Defer generic field-thunk bodies until layouts are complete; offsets depend on the receiver's class id, while symbol registrations are emitted earlier.
 class LlvmReflectFieldAction {
     symbol: string
     declaration: HirDeclaration

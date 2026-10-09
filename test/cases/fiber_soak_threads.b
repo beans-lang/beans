@@ -1,7 +1,7 @@
 // The cross-thread flank of the panic storm (spec/CONCURRENCY.md, F3):
 // four threads, each promoted to a worker by its first brew, each running
 // its own 300-fiber fleet with a third of the children panicking. Fibers
-// stay pinned — nothing migrates — so each thread's counts are its own
+// stay pinned, nothing migrates, so each thread's counts are its own
 // deterministic story, and main joins the threads in spawn order to print
 // one aggregated line both engines must agree on.
 import std.io

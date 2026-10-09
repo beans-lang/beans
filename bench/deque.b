@@ -12,7 +12,7 @@
 // chain: it hid under Beans' slower loop and stood fully exposed under C++'s
 // faster one, which put a floor of about 0.83x under the row that no deque
 // implementation, however slow, could sink below. A plain xor against the
-// weight is cheaper still but too weak to be a checksum — with values that
+// weight is cheaper still but too weak to be a checksum. With values that
 // differ in one bit the xor difference stays in that bit, and a phase-3
 // mutation that pops from the wrong end (every value off by one) came back
 // with a byte-identical answer. The multiply spreads a one-bit difference

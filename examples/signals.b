@@ -1,20 +1,6 @@
-// Signals, as data.
-//
-// **There is no signal handler here. There is no signal handler at all.** A watched
-// signal is *blocked*, and the fact that it arrived is read from a descriptor like any
-// other input.
-//
-// That is the whole design, and it is not for tidiness. Inside a real handler almost
-// nothing is legal: no allocation, no locks, no reentrancy — and in this language no
-// reference counting and no cycle collection, which rules out running Beans code at all.
-// Deferring the signal to a descriptor means none of those rules apply, because none of
-// that code is running at the moment the signal lands.
-//
-// The payoff is in `signals_and_sockets_together` below: because a signal is a readable
-// descriptor, the poller waits on Ctrl-C and a socket in the same call.
-//
-// `Signal.send_to_self` sends a signal to this process, so all of this is testable without
-// a second process and the output is identical every run.
+// Watched signals are blocked and read from a descriptor, avoiding unsafe signal handlers.
+// The poller can wait on a signal descriptor and a socket together.
+// `send_to_self` keeps this example self-contained and deterministic.
 
 import std.io
 import std.net
@@ -28,8 +14,7 @@ fn arrive_as_data() -> Result<int> {
 
     io.println("nothing has arrived yet {watch.drain()?.len() == 0}")
 
-    // Without the watch above, this would terminate the process — user1's default
-    // action is death. Blocked, it becomes a fact to read.
+    // Without the watch above, the default action for SIGUSR1 would terminate the process.
     signal.Signal.send_to_self(want)?
 
     let got: List<int> = watch.drain()?
@@ -37,9 +22,7 @@ fn arrive_as_data() -> Result<int> {
     io.println("and it was the one asked for {got.first().or(0) == want}")
     io.println("its name is {signal.Signal.name(want)?}")
 
-    // Reading consumes it, so the next look is empty. This is the part that differs
-    // underneath — a signalfd read consumes, a kqueue event only notifies — and the
-    // difference is hidden so both platforms answer the same way.
+    // The runtime makes signalfd consumption and kqueue notifications behave consistently.
     io.println("reading consumed it {watch.drain()?.len() == 0}")
     return ok(1)
 }
@@ -59,9 +42,7 @@ fn several_at_once() -> Result<int> {
     io.println("terminate among them {got.contains(term)}")
     io.println("user2 stayed quiet {!got.contains(two)}")
 
-    // Repeated delivery of the same signal collapses to one report. That is what the
-    // kernel promises on Linux — pending signals are a bitmask — so it is the promise
-    // made here rather than a count one platform could keep and the other could not.
+    // Pending standard signals collapse repeated deliveries into one report.
     signal.Signal.send_to_self(two)?
     signal.Signal.send_to_self(two)?
     signal.Signal.send_to_self(two)?
@@ -119,9 +100,7 @@ fn stopping_is_clean() -> Result<int> {
     let watch: signal.Signals = signal.Signals.watch_signal(want)?
     // Arrives, and is deliberately never read.
     signal.Signal.send_to_self(want)?
-    // Closing unblocks — and *discards* what was never read. Delivering it instead would
-    // kill the process here, from a signal the program had chosen to handle. Discarding
-    // is the lesser surprise, and it is what makes this line safe to write.
+    // Closing discards unread watched signals instead of delivering them to the process.
     io.println("closed cleanly {watch.close().or(false)}")
     match watch.drain() {
         ok(more) => io.println("unexpectedly read from a closed source"),

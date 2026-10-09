@@ -6,7 +6,7 @@ package main
 // emitter writes LLVM's debug metadata beside the instructions it already
 // writes: one compile unit, one file per source, one subprogram per emitted
 // function and one location per distinct source position. Clang turns that
-// into a DWARF line table — CodeView when the target is MSVC — and `lldb`,
+// into a DWARF line table (CodeView when the target is MSVC) and `lldb`,
 // `gdb` and the editors that drive them can then stop on `main.b:12`, walk a
 // stack that names Beans functions, and step a line at a time.
 //
@@ -32,8 +32,8 @@ package main
 
 partial class LlvmTextEmitter {
     // One metadata node, shared by every reference with the same text. The
-    // line table is mostly repetition — one location per statement, reused by
-    // every instruction the statement lowered to — so interning is what keeps
+    // line table is mostly repetition: one location per statement, reused by
+    // every instruction the statement lowered to, so interning is what keeps
     // the metadata block a fraction of the module rather than a copy of it.
     fn debug_node(text: string) -> int {
         match self.debug_meta_ids.get(text) {
@@ -79,7 +79,7 @@ partial class LlvmTextEmitter {
         // code of its own, and an unknown one leaves both debuggers guessing;
         // C99 selects a plugin that reads this line table, these frames and
         // these locals correctly. The one visible consequence is that `p`
-        // parses expressions as C — `frame variable` is unaffected.
+        // parses expressions as C: `frame variable` is unaffected.
         self.debug_unit = self.debug_distinct_node(
             "distinct !DICompileUnit(language: DW_LANG_C99, file: !{file}, producer: \"beansc {compiler_version()}\", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, splitDebugInlining: false)")
         // Every Beans signature prints as one unspecified-parameter type.
@@ -95,7 +95,7 @@ partial class LlvmTextEmitter {
     // The filename is recorded exactly as the command line gave it and the
     // directory is the build's own, which is what Clang does: a debugger
     // joins the two, so a relative build stays resolvable and an absolute one
-    // is already resolved. Editors need this — a breakpoint set in VS Code or
+    // is already resolved. Editors need this: a breakpoint set in VS Code or
     // Zed carries an absolute path and has to match what the binary says.
     fn debug_file(file: string) -> int {
         var key: string = file
@@ -114,10 +114,7 @@ partial class LlvmTextEmitter {
     // The subprogram for one emitted function, or -1 for a function the
     // debugger is not told about.
     //
-    // A function with no source position gets -1 and, with it, no `!dbg` on
-    // any of its lines. That is the whole rule for compiler-made bodies —
-    // reflection thunks, ffi wrappers, show and sort helpers — and it keeps
-    // them consistent with rule 2 above without naming any of them here.
+    // Compiler-generated functions have no source position and therefore no `!dbg`.
     fn debug_subprogram(function: MirFunction) -> int {
         if !self.debug_info { return -1 }
         if function.file == "" { return -1 }
@@ -188,7 +185,7 @@ partial class LlvmTextEmitter {
     // The function's declaration line, for the prologue and epilogue the
     // emitter writes around the body. Those lines belong to no MIR
     // instruction, and `main`'s prologue alone calls `beans_os_init` and
-    // every initializer — all of them calls, all of them covered by rule 2.
+    // every initializer: all of them calls, all of them covered by rule 2.
     fn debug_function_location() -> string {
         return self.debug_location(
             self.debug_scope_file, self.debug_scope_line, 1)
@@ -200,11 +197,11 @@ partial class LlvmTextEmitter {
     // `-fno-omit-frame-pointer` reaches Clang, and Clang applies it to the C
     // it compiles. A function that arrives as IR carries its own attributes
     // or none, so before this the Beans half of a `--debug` binary omitted
-    // the frame pointer while the runtime kept it — visible as
+    // the frame pointer while the runtime kept it: visible as
     // DW_AT_APPLE_omit_frame_ptr on Beans frames alone, and as a stack a
     // frame-pointer walker loses at the first Beans call.
     // A `define` reads attributes, then the personality, then metadata, in
-    // that order — so the two halves are separate: an unwinding function has
+    // that order, so the two halves are separate: an unwinding function has
     // `personality` sitting between them.
     fn debug_function_attributes(subprogram: int) -> string {
         return "{self.debug_function_attribute()}{self.debug_function_metadata(subprogram)}"
@@ -319,8 +316,8 @@ partial class LlvmTextEmitter {
                 "!DIBasicType(name: \"float\", size: 64, encoding: DW_ATE_float)")
         }
         if name == "string" {
-            // A Beans string is the bytes themselves — the length lives in
-            // the allocation header behind the pointer — and beans_alloc
+            // A Beans string is the bytes themselves: the length lives in
+            // the allocation header behind the pointer, and beans_alloc
             // hands back zeroed memory, so the byte after the last one is
             // always NUL. Describing it as `char *` is therefore true, and
             // it is what makes a debugger print the text instead of an
@@ -336,7 +333,7 @@ partial class LlvmTextEmitter {
         if name == "Option" && type.args.len() == 1 &&
            self.type_is_reference(type.args[0]) {
             // `Option<C>` for a reference C is C's own pointer, with null
-            // standing for none — there is no tag beside it. Describing it
+            // standing for none: there is no tag beside it. Describing it
             // as C is therefore true, and it is what lets a debugger walk a
             // linked structure instead of stopping at the first link.
             let inner: int = self.debug_type(type.args[0])
@@ -347,7 +344,7 @@ partial class LlvmTextEmitter {
         }
         if llvm == "ptr" {
             // A class value is the address of its own layout, and the
-            // emitter already knows that layout exactly — it is the one it
+            // emitter already knows that layout exactly: it is the one it
             // allocates and indexes against. Describing it is what lets a
             // debugger print an object's fields instead of its address.
             //
@@ -385,7 +382,7 @@ partial class LlvmTextEmitter {
     // The structure type for one class, made once per instantiation.
     //
     // The slot is reserved before the members are built. A class with a
-    // field of its own type — a linked list, a tree, a parent pointer —
+    // field of its own type, such as a linked-list or tree link:
     // would otherwise ask for this node while it is still being made and
     // never stop asking; with the id already reserved, the field's own
     // lookup finds it and the recursion ends there.
@@ -462,7 +459,7 @@ partial class LlvmTextEmitter {
     }
 
     // One field of a composite. -1 for a field whose type the debugger is
-    // not told about, and the composite then simply does not mention it —
+    // not told about, and the composite then simply does not mention it:
     // a partly described object still prints the fields it knows.
     fn debug_member(field: HirField, type: HirType,
                     offset: int, owner: int,
@@ -484,8 +481,8 @@ partial class LlvmTextEmitter {
 
     // The Beans spelling of a type, over whatever it lowers to.
     //
-    // A pointer's own `name:` field is not what a debugger prints — it prints
-    // the pointee — so the Beans name is carried by a typedef instead. That
+    // A pointer's own `name:` field is not what a debugger prints; it prints
+    // the pointee, so the Beans name is carried by a typedef instead. That
     // is what makes a variables pane read `List<string>` rather than `void *`,
     // and it still resolves through to `char *` for a string's text.
     fn debug_named(name: string, base: int) -> int {
@@ -498,8 +495,8 @@ partial class LlvmTextEmitter {
     //
     // Every local is a slot at -O0, so there is nothing to reconstruct: the
     // alloca is the variable's address and the debugger reads it directly. A
-    // captured local is one indirection further out — its slot holds the
-    // pointer to a heap cell — and DW_OP_deref is exactly that step.
+    // captured local is one indirection further out: its slot holds the
+    // pointer to a heap cell, and DW_OP_deref is exactly that step.
     //
     // Compiler temporaries are left out. They have no binding and their names
     // start with '$'; naming them would fill a Variables pane with the
@@ -560,8 +557,8 @@ partial class LlvmTextEmitter {
 // at module level are left exactly as they were.
 //
 // The bracket depth is what makes it safe. `switch` is the one instruction
-// this emitter spreads over several lines — an enum match writes its cases
-// one per line — and its metadata belongs after the `]` that closes it, not
+// this emitter spreads over several lines: an enum match writes its cases
+// one per line, and its metadata belongs after the `]` that closes it, not
 // after each case. Counting `[` and `]` puts it there and leaves a balanced
 // `[4 x i64]` alone.
 fn llvm_attach_dbg(text: string, suffix: string) -> string {
@@ -601,8 +598,8 @@ fn llvm_bracket_delta(line: string) -> int {
 
 // Whether a line is an instruction, and so can carry a location.
 //
-// Everything rejected here either cannot take metadata — a label, a comment,
-// a brace — or is module level and belongs to no function. The emitter never
+// Everything rejected here either cannot take metadata: a label, a comment,
+// a brace, or is module level and belongs to no function. The emitter never
 // puts a global or a nested `define` inside an instruction's own text, so the
 // module-level tests are a guard rather than a working part of the pass.
 fn llvm_line_takes_dbg(line: string) -> bool {
@@ -624,7 +621,7 @@ fn llvm_line_takes_dbg(line: string) -> bool {
         end -= 1
     }
     if end <= start { return false }
-    // a block label — the only line that ends in ':'
+    // a block label, the only line that ends in ':'
     if line.byte_at(end - 1) == 58 { return false }
     let body: string = line.slice(start, end)
     if body.starts_with("define ") ||
@@ -639,8 +636,8 @@ fn llvm_line_takes_dbg(line: string) -> bool {
 
 // One metadata string, escaped the way LLVM reads it back.
 //
-// A path can hold a quote or a backslash — a Windows one holds backslashes by
-// nature — and either would end the string early. `\XX` is LLVM's escape and
+// A path can hold a quote or a backslash: a Windows one holds backslashes by
+// nature, and either would end the string early. `\XX` is LLVM's escape and
 // the only one it accepts inside a metadata string.
 fn llvm_metadata_text(value: string) -> string {
     var out: List<string> = []

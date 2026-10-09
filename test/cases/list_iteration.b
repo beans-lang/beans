@@ -148,7 +148,7 @@ fn nested_reads(n: int) {
 // slice() answers a copy, so the loop walks the copy: writing the original
 // does not reach it. (The compiler may skip materializing that copy and walk
 // the original's storage, but only when it can prove the original does not
-// change — which this body does, so the copy is real here.)
+// change, which this body does, so the copy is real here.)
 fn slice_loop(n: int) {
     var xs: List<int> = build(n)
     var seen: List<int> = []

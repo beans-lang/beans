@@ -102,7 +102,7 @@ fn main() {
 
     // --- arithmetic at the ends of the calendar -----------------------------
     // Every `plus_*` decomposes into whole days plus a sub-day remainder, and
-    // `floor_div` makes that remainder non-negative — so a negative operand
+    // `floor_div` makes that remainder non-negative, so a negative operand
     // borrows a day. The range has to be measured on the moment the caller
     // asked for, not on the borrowed intermediate: subtracting an hour from
     // midday on the first day of year 1 lands at 11:00 the same day, which is

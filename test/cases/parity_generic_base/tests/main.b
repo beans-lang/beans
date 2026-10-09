@@ -4,7 +4,7 @@ import std.io
 import parity_generic_base.shapes
 
 // overrides the public `mark`, and declares its own package-private `hidden`
-// with the same name as shapes' — a separate method that must not shadow it
+// with the same name as shapes', a separate method that must not shadow it
 class Named extends shapes.Shelf<int> {
     fn init() { super.init(1, 1) }
 

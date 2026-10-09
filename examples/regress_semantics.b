@@ -1,4 +1,4 @@
-// regress_semantics.b — pins the bugs found by the semantic differential
+// Regression cases found by the semantic differential
 // fuzzer (tools/differential_fuzz.py). Every line here either diverged
 // between the two compilers, between an interpreter and its native
 // backend, or between debug and release builds before the fix. Kept in
@@ -86,8 +86,8 @@ fn main() {
     }
     io.println("{stopped} {skipped}")
 
-    // a struct literal inside an if condition — behind parentheses and
-    // as a call argument — used to fail to parse in the self-hosted
+    // A struct literal in an if condition or call argument used to fail
+    // when parenthesized in the self-hosted compiler.
     // compiler because initializers stayed disabled inside the condition
     if (pick(Pair { a: 40, b: (7 as u16) }) > 46) {
         io.println("literal in condition")
@@ -97,7 +97,7 @@ fn main() {
     }
 
     // an object with an inheritance chain drops its deinit bodies child
-    // first, then releases fields — own class first, reverse declaration
+    // first, then releases fields, own class first and reverse declaration order
     // order within each class. The self-hosted interpreter used to
     // release parent fields before the child's own.
     if true {

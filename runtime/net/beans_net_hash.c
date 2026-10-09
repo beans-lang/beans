@@ -1,9 +1,9 @@
-// Cryptographic hashes for std.crypto — from the platform, never shipped.
+// Cryptographic hashes for std.crypto: from the platform, never shipped.
 //
 // SHA-1 for the WebSocket handshake, SHA-256 for everything that comes
 // after. Each platform's own crypto library provides them: CommonCrypto on
 // macOS, CNG on Windows, and OpenSSL's libcrypto loaded at runtime on
-// Linux/BSD. No hash implementation is vendored — a hash is exactly the
+// Linux/BSD. No hash implementation is vendored: a hash is exactly the
 // kind of thing you take from the OS rather than carry.
 //
 // The API is a small streaming digest: new, update, finish. HMAC rides the
@@ -194,7 +194,7 @@ BEANS_NET_API long long beans_hash_free(long long handle) {
 #include <dlfcn.h>
 
 // EVP is OpenSSL's stable digest interface. Loaded once, lazily, from
-// whichever libcrypto the system ships — never linked, so a build needs no
+// whichever libcrypto the system ships: never linked, so a build needs no
 // OpenSSL headers and the binary runs wherever libcrypto.so.3 (or .1.1)
 // lives. BEANS_LIBCRYPTO overrides the search for testing on hosts where
 // libcrypto lives off the default path (e.g. Homebrew).

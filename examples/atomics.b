@@ -1,13 +1,4 @@
-/// Typed atomics with explicit memory orders.
-///
-/// `Atomic<T>` is a shared cell holding one integer or bool that several threads
-/// may touch at once. Every operation names the order it needs, because the order
-/// is the whole point: it says what else the processor and compiler may move
-/// across this access.
-///
-/// The order is written at the call site and cannot be a variable. LLVM puts the
-/// ordering inside the instruction, so one call site is one instruction — and that
-/// is also what lets the compiler reject a combination that makes no sense.
+/// Typed atomic cells require an explicit, compile-time memory order at each call.
 
 import std.io
 import std.thread
@@ -88,11 +79,7 @@ fn main() {
     Atomic.fence(MemoryOrder.seq_cst)
     io.println("fenced")
 
-    // wait blocks while the cell still holds the value you pass; notify wakes
-    // waiters on it. A wakeup is a hint, never a promise — the value may have
-    // moved and moved back, or the wakeup may be one meant for another cell — so
-    // the check goes in a loop. That is what makes this cheaper than a spin: the
-    // waiter is parked by the OS instead of burning a core.
+    // wait blocks while the cell holds the expected value; notify wakes waiters. A wakeup is only a hint, so check in a loop instead of spinning.
     let gate: Atomic<i32> = new Atomic<i32>(0)
     let worker: Thread<int> = thread.spawn(fn() -> int {
         for gate.load(MemoryOrder.acquire) == 0 {

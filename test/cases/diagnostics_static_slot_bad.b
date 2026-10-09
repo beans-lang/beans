@@ -27,7 +27,7 @@ class Base {
     fn label() -> string { return "Base.label" }
 }
 
-// 1. the reported shape — a static beside the instance method it inherits
+// 1. the reported shape, a static beside the instance method it inherits
 class Sub extends Base {
     fn init() { super.init() }
 
@@ -53,7 +53,7 @@ class Marked extends Base {
     override static fn label() -> string { return "Marked.label" }
 }
 
-// 4. the mirror — a static in the base, an instance method below it. The
+// 4. the mirror, a static in the base, an instance method below it. The
 // base's row named the static and a base-typed receiver reached it, while
 // the same call on a subclass reached the instance method.
 class Stamped {

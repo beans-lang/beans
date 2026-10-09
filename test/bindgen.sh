@@ -207,8 +207,8 @@ grep -F 'child: RawPtr<NestedChild>' \
     "$tmp/nested_callbacks.b" >"$tmp/match"
 
 # A variadic *import* binds: the declaration carries `...` and each call site
-# writes its own tail. A variadic *callback* still cannot — `fn(...)` would
-# have to name a tail that only a call site knows — so it is refused wherever a
+# writes its own tail. A variadic *callback* still cannot, `fn(...)` would
+# have to name a tail that only a call site knows, so it is refused wherever a
 # function pointer is stored, passed or returned.
 cat >"$tmp/variadic.h" <<'C'
 int logline(const char*, ...);
@@ -241,7 +241,7 @@ grep -F 'skipped:' "$tmp/allowed.b" >"$tmp/match"
 
 # Bindings are generated to be dropped into a real project, and every file in a
 # package declares that package. Without --package the output has no clause at
-# all, which loads only as a lone file — so a generated file beside a main.b was
+# all, which loads only as a lone file, so a generated file beside a main.b was
 # refused by the loader and nothing here noticed, because this file only ever
 # checked the bindings on their own.
 project="$tmp/project"
@@ -266,7 +266,7 @@ head -3 "$project/bindings.b" | grep -Fx 'package main' >"$tmp/match"
 "$beansc" check "$project/main.b" >"$tmp/pkg.check"
 
 # The same generation without --package is still a valid lone file, and it is
-# still refused inside the package — that refusal is the whole reason the option
+# still refused inside the package, that refusal is the whole reason the option
 # exists, so it is checked rather than assumed.
 "$beansc" bindgen "$tmp/access.h" -o "$project/bindings.b" >"$tmp/nopkg.out"
 if "$beansc" check "$project/main.b" >"$tmp/nopkg.check" 2>&1; then
@@ -504,7 +504,7 @@ struct Outer { struct { int x; int y; }; };
 void use_outer(struct Outer value);
 C
 refuse "$tmp/anon.h" "anonymous record" "an anonymous record"
-# stdcall only exists on 32-bit x86 — Clang drops it elsewhere, so the target
+# stdcall only exists on 32-bit x86, Clang drops it elsewhere, so the target
 # has to be one where the convention is real.
 cat >"$tmp/conv.h" <<'C'
 int __attribute__((stdcall)) conv(int value);

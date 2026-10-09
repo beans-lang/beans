@@ -1,4 +1,4 @@
-// bun loops.js — mirror of loops.b / loops.go
+// Bun mirror of loops.b and loops.go.
 let sum = 0;
 const n = Number(process.argv[2] ?? 200_000_000);
 const seed = Number(process.argv[3] ?? 1);

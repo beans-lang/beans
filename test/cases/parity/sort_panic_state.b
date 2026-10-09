@@ -1,5 +1,5 @@
 // A collection operation interrupted by a panicking callback leaves the
-// collection exactly as it was before the call — same contents, same order —
+// collection exactly as it was before the call, same contents, same order,
 // and both backends print the byte-identical result (issue #73,
 // spec/CONCURRENCY.md). And with no panic at all, both backends run the same
 // bottom-up stable merge, so a predicate that is not a strict weak ordering
@@ -188,7 +188,7 @@ fn set_ints(n: int) {
 
 // A comparator that reads the list it is sorting, through a captured
 // reference, sees the same intermediate states on both backends: each
-// merged block is committed when it completes — on the list's own slots,
+// merged block is committed when it completes, on the list's own slots,
 // and mirrored block for block when the sort runs over a widened copy
 // (List<f32>, the one slot-sorted element with 4-byte storage).
 fn view_ints() -> string {
@@ -297,7 +297,7 @@ fn main() {
     io.println("observed floats panic after: {view_floats()}")
     // A callback structurally changing the list it is sorting is refused
     // as the program's own panic, on both engines, at the first callback
-    // return after the change — the sort would otherwise permute stale
+    // return after the change, the sort would otherwise permute stale
     // storage (a use-after-free on growth, reads past the end on shrink).
     // The list stays as the mutation left it; there is nothing coherent
     // to restore.

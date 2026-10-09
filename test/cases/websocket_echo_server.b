@@ -1,18 +1,18 @@
-// The echo server Autobahn's fuzzing client points at.
-//
-// It is deliberately the dumbest correct server there is: accept, upgrade,
-// echo every message back with the same opcode, mirror the close. Every
-// interesting decision — fragmentation, masking, control-frame rules,
-// UTF-8 validity, close-code validity, length boundaries, and the
-// permessage-deflate negotiation and transform — belongs to std.websocket
-// underneath, which is the whole point of pointing a conformance suite
-// at it.
-//
+// Minimal echo server for Autobahn: accept, upgrade, echo messages, and mirror
+// close frames. std.websocket owns framing, validation, and compression.
+
+
+
+
+
+
+
+
 // Usage: websocket_echo_server <port> [max-connections]
-// Prints "listening <port>" to stderr once bound, so a harness can wait on
-// that line rather than sleeping. Stderr because it is unbuffered: a
-// buffered stdout would hold the line until the process exited, which for a
-// server is never.
+// Prints the listening port to stderr after binding so the harness can start.
+
+
+
 package main
 
 import std.http

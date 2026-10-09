@@ -1,4 +1,4 @@
-// Static fields initialise eagerly, before main, in declaration order — which
+// Static fields initialise eagerly, before main, in declaration order, which
 // follows file order within a package. A constant table built this way costs
 // nothing at the point of use, and that is worth holding: it is what lets a
 // ramp of generated methods collapse into a table.

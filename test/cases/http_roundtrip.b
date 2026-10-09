@@ -1,6 +1,6 @@
 // Client and server talking real HTTP/1.1 over loopback: keep-alive reuse,
 // bodies both ways, chunked request bodies, pipelined requests, connection
-// close semantics, and the buffered-body limit — the exchange-level facts
+// close semantics, and the buffered-body limit, the exchange-level facts
 // the parser suites cannot see. The client runs on its own thread and owns
 // its sockets whole; only the port number crosses the spawn.
 package main

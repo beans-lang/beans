@@ -272,7 +272,7 @@ class SemanticSnapshot {
                     if reference.line != line { continue }
                     // Half-open: a name owns [col, col + length). The column
                     // one past its last byte belongs to whatever is written
-                    // there — clicking the `(` of `draw(` is not clicking
+                    // there: clicking the `(` of `draw(` is not clicking
                     // `draw`.
                     if col < reference.col { continue }
                     if col >= reference.col + reference.length {

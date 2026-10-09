@@ -5,8 +5,8 @@
 # classified by different rules from the fixed head on a supported target.
 # Apple's arm64 ABI passes the whole tail on the stack at each argument's
 # natural size while the head stays in registers, so a caller that declares a
-# variadic callee with a fixed signature — the obvious workaround before this
-# landed — passes the values in the wrong place and gets silence, not an
+# variadic callee with a fixed signature, the obvious workaround before this
+# landed, passes the values in the wrong place and gets silence, not an
 # error. test/fixtures/c_variadic_helper.c reads every tail through va_arg, so
 # it is the target's own rules that decide whether these numbers come out.
 set -euo pipefail

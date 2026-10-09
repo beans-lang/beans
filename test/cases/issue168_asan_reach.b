@@ -1,22 +1,22 @@
 /*
-Does AddressSanitizer reach the code the compiler emitted? (issue #168)
+AddressSanitizer must catch generated-code memory errors and allocator double frees.
 
-`BEANS_SANITIZE` used to reach only the clang command line, and an LLVM
-sanitizer pass looks inside a function only when that function carries its
-attribute. So a sanitized build instrumented beans_rt.c and the bridges and
-walked straight past every line beansc generated: reading far off the end of a
-heap block was silent, and `make test-sanitize` said "ok".
 
-Every shape below is a load or a store the emitter wrote. ASan can only see
-them if the definition around them says `sanitize_address`, so a run of this
-program is a direct answer to "is the generated code instrumented", not to "is
-the sanitizer runtime linked". `doublefree` is the other question, and the
-opposite one: ASan's allocator catches that with nothing instrumented at all,
-so it says the runtime is present even when nothing else is.
 
-One process reports one error — ASan stops at the first — so the shape is a
-command-line argument and test/sanitize.sh builds this once and runs it six
-times.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 */
 
 package main
@@ -47,7 +47,7 @@ fn main() {
         var freed: bool = false
         if mode == "read" {
             // One element past the end. The issue was filed with a read 32
-            // KiB past the block, and that is the same instrumented load —
+            // KiB past the block, and that is the same instrumented load,
             // but where an address that far away lands is the allocator's
             // business, and inside another live block ASan would say nothing.
             // One element past is a redzone on every host, so the gate asks

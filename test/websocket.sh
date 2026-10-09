@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # std.websocket: the RFC 6455 handshake vectors, a client and server talking
 # over loopback (text, a 70 KB binary message, automatic pong, the close
-# handshake), the garbage-frame fuzz, and — when Docker is available — the
+# handshake), the garbage-frame fuzz, and, when Docker is available, the
 # Autobahn TestSuite, which is the reason this package wraps wslay instead
 # of being written in a weekend.
 #
@@ -151,7 +151,7 @@ wss_pid=""
 
 # permessage-deflate over TLS. `websocket_tls.accept` is the one server entry
 # point whose whole body is a forward, and a forward that drops its last
-# argument still compiles — so the preference has to be watched arriving over
+# argument still compiles, so the preference has to be watched arriving over
 # a real wss handshake, on both backends, rather than inferred from the plain
 # TCP legs above. The listener and the client are both in the one program, so
 # there is no second process and no port to guess: it binds on 0.
@@ -190,7 +190,7 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
 fi
 # The suite is published for amd64 only. An ARM Mac still runs it, because
 # Docker Desktop emulates amd64; an ARM Linux runner without qemu-user
-# registered cannot, and only finds that out inside the container — the
+# registered cannot, and only finds that out inside the container, the
 # release gate saw "exec /opt/pypy/bin/wstest: exec format error" there. Ask
 # the image to run one trivial binary instead of reading uname, so the answer
 # comes from this host rather than from its architecture.

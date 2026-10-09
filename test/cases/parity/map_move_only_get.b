@@ -1,6 +1,6 @@
 // B3: a Map whose value is move-only reads back through get(key), which
-// answers Option<V>. The index forms stay refused — they would have to copy
-// the value — and the read does not consume the entry.
+// answers Option<V>. The index forms stay refused, they would have to copy
+// the value, and the read does not consume the entry.
 package main
 
 import std.io

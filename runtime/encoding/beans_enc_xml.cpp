@@ -5,8 +5,8 @@
 // through the plain C driver with no C++ standard library.
 //
 // ABI shape (shared by every encoding bridge): payload buffers cross as
-// direct RawPtr parameters and everything else — lengths, flags, handles,
-// outputs — rides in a RawPtr<u64> request buffer. Interpreter compatibility
+// direct RawPtr parameters and everything else: lengths, flags, handles,
+// outputs: rides in a RawPtr<u64> request buffer. Interpreter compatibility
 // forces the split: both interpreters hand extern "C" calls a real host copy
 // of each RawPtr *argument*, but a pointer smuggled through an integer word
 // would be a synthetic interpreter address no C code can dereference.
@@ -978,9 +978,9 @@ BEANS_ENC_API long long beans_enc_xml_parse(unsigned char* src, uint64_t* req) {
         }
     }
     // A well-formed XML document has exactly one root element. pugixml
-    // already refuses zero with status_no_document_element (16) — that
+    // already refuses zero with status_no_document_element (16): that
     // covers empty, whitespace-only, declaration-only, comment-only,
-    // processing-instruction-only and DOCTYPE-only inputs — but it accepts
+    // processing-instruction-only and DOCTYPE-only inputs, but it accepts
     // fragments with several top-level elements, so the upper bound is
     // enforced here. 17 extends the vendored status enum and is rendered by
     // xml.b. The count is asserted in both directions rather than assumed.

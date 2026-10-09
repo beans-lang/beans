@@ -122,7 +122,7 @@ expect_error() {
 expect_error "err(message, kind) takes two strings" test/cases/err_kind_not_string.b
 expect_error "err takes a message, or a message and a kind" test/cases/err_kind_arity.b
 # A custom error type carries its own fields, so the two-string form has no meaning
-# there — it must not silently build the wrong error type.
+# there, it must not silently build the wrong error type.
 expect_error "err(message, kind) builds an Error" test/cases/err_kind_custom_type.b
 expect_error "ok takes 1 argument" test/cases/ok_two_args.b
 

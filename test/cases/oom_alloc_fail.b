@@ -1,7 +1,7 @@
 // Drives every runtime allocation site that #108 fixed: the map insert path
 // (untyped and typed grows, the deadbits grow a removed key leaves behind, the
 // index rebuild a growing map triggers, and reserve), plus the two other
-// container-storage grows that had the same unchecked-realloc omission — an
+// container-storage grows that had the same unchecked-realloc omission, an
 // untyped List insert and a Bytes append. The managed-key and managed-value
 // maps also make a refused grow run its owned-reference release before it
 // panics, so that path is exercised under the sanitizers.

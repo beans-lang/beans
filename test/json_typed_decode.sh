@@ -1,43 +1,5 @@
 #!/usr/bin/env bash
-# Typed JSON decoding — `json.decode<T>`, `decode_bytes`, `decode_bytes_in_place`
-# and `decode_with_options` — has one engine: the document is parsed by the
-# vendored yyjson reader and the resulting tree is walked straight into the
-# target structs. There is no second implementation to diff it against, so this
-# gate stands in for one three ways:
-#
-#  1. An external answer sheet. The JSONTestSuite parsing corpus
-#     (github.com/nst/JSONTestSuite, MIT), vendored under
-#     test/corpus/jsontestsuite, classifies every file by its name: `y_` must be
-#     accepted by any conforming parser, `n_` must be rejected, `i_` is left to
-#     the implementation. The runner asserts that answer sheet in the only terms
-#     a typed decoder can honour it — a `y_` file may be refused for its SHAPE
-#     but never for its SYNTAX, and an `n_` file must be refused for its syntax
-#     — and records every verdict, error code and byte offset in a golden.
-#  2. Properties the decoder must have on its own: a round-tripped value decodes
-#     back to the same bytes, an accepted document's encoding is a fixed point,
-#     and every proper prefix of a valid document is refused.
-#  3. Goldens. The exact error code and byte offset of every refusal, per corpus
-#     file and per fuzz seed, is checked in — so a change in behaviour is loud
-#     even where no property is violated.
-#
-# Everything runs under ASan/UBSan as well, in both allocator modes (pooled and
-# BEANS_NO_POOL=1), because the decode path writes decoded payloads into
-# allocator blocks that are deliberately not pre-zeroed (beans_alloc_bytes) and
-# rewrites the caller's buffer in place for decode_bytes_in_place.
-#
-# Those blocks come from the pool of whichever thread is decoding, so one leg
-# decodes from four threads at once; single-threaded coverage cannot tell a
-# per-thread pool from a shared one.
-#
-# Typed decoding used to be native only — the tree interpreter had no
-# typed-decode entry and json.decode<T> answered the stdlib body's own
-# `err(..., "unsupported")`, so a program branching on the result took a
-# different branch under `beansc run` than in its own binary, silently. It
-# decodes for itself now, over the same parse tree (json.parse is an extern "C"
-# call into this same vendored yyjson on both backends), so step 6 below runs
-# the corpus and the fuzz through BOTH and diffs them. The probe words are
-# native-only diagnostics and are masked out of that diff; everything the
-# program can see — the verdict and the decoded value — is not.
+# Compare typed JSON decoding across backends, corpus classifications, round-trip and prefix properties, refusal offsets, pooled/unpooled ASan/UBSan, concurrency, verdicts, and decoded values.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-json-typed.XXXXXX")
@@ -121,7 +83,7 @@ done
 #     that there is only one decoder's worth of behaviour. It carries verdicts
 #     only, because the per-refusal error code and byte offset travel through
 #     beans_json_decode_probe, which is a native diagnostic and answers zeros
-#     under the interpreter — the runner above pins those, this one pins that
+#     under the interpreter, the runner above pins those, this one pins that
 #     both backends accept and reject the same documents in all three shapes.
 echo "checking both backends decode the corpus alike"
 "$beansc" build test/cases/json_typed_corpus_parity.b \
@@ -159,7 +121,7 @@ fi
 #     This is the value half: each round's transcript carries the decoded
 #     record re-encoded, so a mapping that differs by one field, one integer
 #     bound or one float spelling shows up here. Both legs must also report
-#     violations=0 — the invariants are checked inside the program, so a leg
+#     violations=0, the invariants are checked inside the program, so a leg
 #     that agreed with the other on wrong answers still fails.
 echo "checking both backends decode the fuzz alike"
 for seed in "${fuzz_seeds[@]}"; do
@@ -184,7 +146,7 @@ done
 # 4. A decoded string must still be a C string.
 #
 #    Every Beans string is allocated one byte longer than its length because
-#    the runtime hands the pointer straight to C — beans_file_open, lstat and
+#    the runtime hands the pointer straight to C, beans_file_open, lstat and
 #    open all take one as a `char*`. Nothing inside the language reads that
 #    byte, since a string's length lives in its allocation header, so no
 #    amount of decoding, printing or re-encoding above can tell a terminated
@@ -197,8 +159,8 @@ done
 #    not already zero, so the case decodes a LONGER string of the same size
 #    class first and lets it drop: the pool recycles that block without
 #    zeroing it, leaving the long string's characters where the short string's
-#    terminator belongs. That also means BEANS_NO_POOL=1 cannot see this — its
-#    blocks all come from a zeroing allocator — which is why this runs pooled
+#    terminator belongs. That also means BEANS_NO_POOL=1 cannot see this, its
+#    blocks all come from a zeroing allocator, which is why this runs pooled
 #    and why the golden records the size class each path exercised. The path
 #    lengths below span three classes.
 echo "checking a decoded string is still a C string"
@@ -216,7 +178,7 @@ for stem_len in 1 6 10 17 27; do
     target="$probe_dir/$(repeat_char "$stem_len" f).t"
     length=${#target}
     # A path whose length is 15 mod 16 fills its class exactly, so no longer
-    # string of the same class exists to prime the block with — the case would
+    # string of the same class exists to prime the block with, the case would
     # pass whatever the decoder did. Refuse rather than pretend to test.
     if [[ $(( length % 16 )) -eq 15 ]]; then
         echo "path $target (length $length) fills its size class; no primer" \
@@ -245,7 +207,7 @@ rm -rf "$probe_dir"
 
 # 4b. The allocator arm a decoded string takes, and the free that has to match
 #     it. beans_alloc_bytes pools blocks under 1024 bytes total and takes a
-#     non-pooled arm above that, but one release path frees both — through
+#     non-pooled arm above that, but one release path frees both, through
 #     rt_obj_free, which frees the 16-byte origin prefix rt_obj_alloc writes.
 #     An arm that allocated without the prefix freed a pointer no allocator
 #     returned; a decoded string of 992 bytes is enough to reach it. Run in

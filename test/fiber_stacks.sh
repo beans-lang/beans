@@ -12,28 +12,28 @@ set -euo pipefail
 # What one parked fiber costs, and why the numbers below are derived rather
 # than observed. A fiber's stack is one mmap of BEANS_FIBER_DEFAULT_STACK
 # (512 KiB) with MAP_NORESERVE and a guard page, and its pages commit only as
-# the fiber touches them — that is the whole point of the reservation. A fiber
+# the fiber touches them, that is the whole point of the reservation. A fiber
 # that has run its entry and parked has touched its frame, and a touched byte
 # commits a whole page, so `fibers × PAGE_SIZE` is a floor on what the storm
 # put resident, and the join giving the stacks back means about that much
 # leaves again. That is the only platform fact in this gate, and it is read
 # from the platform (getconf PAGE_SIZE) rather than guessed: 4 KiB pages make
 # it 40 MB for a 10k storm, 16 KiB pages make it 160 MB. Measured, the native
-# leg returns 99% of exactly that figure and no more — 158992K of 160000K on
-# macOS/arm64, 39740K of 40000K on Linux — which is what says the number is
+# leg returns 99% of exactly that figure and no more, 158992K of 160000K on
+# macOS/arm64, 39740K of 40000K on Linux, which is what says the number is
 # the right one. The interpreter returns far more (5.5 GB on Linux), because
 # it also hands back what it allocated per fiber; the floor is a floor.
 #
 # The gate previously asserted `grew > 80000` KiB and `after-join < 70% of
-# high-water`. The first was 16 KiB pages × 10k fibers ÷ 2 — a macOS number,
+# high-water`. The first was 16 KiB pages × 10k fibers ÷ 2, a macOS number,
 # and Linux failed it at a perfectly healthy 55.5 MB. The second was weaker
 # than it looked in the other direction: it measured the fall against the
 # absolute high-water, which carries the baseline, so it got easier as the
 # baseline shrank, and a run that pooled half the stacks passed it.
 #
 # Both backends run real fibers, so both must return the stacks. Resident does
-# not fall all the way to baseline — a burst leaves the small-object pool grown
-# (the interpreter, which boxes every value, keeps much more) — but that is the
+# not fall all the way to baseline, a burst leaves the small-object pool grown
+# (the interpreter, which boxes every value, keeps much more), but that is the
 # object pool, not the fiber stacks this gate is about, so the fall is measured
 # against the stacks the fibers must have cost, not against the high-water.
 

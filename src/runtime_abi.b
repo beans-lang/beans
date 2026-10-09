@@ -1,5 +1,5 @@
 // The native backend's view of the builtin registry: one row per builtin it
-// can call — parameter kinds, the return shape, the C runtime symbol, and
+// can call: parameter kinds, the return shape, the C runtime symbol, and
 // whether the C side takes a trailing (line, col) pair because it may panic.
 // The interpreter in interpreter.b and the C runtime are the other two readers
 // of the same contract; if the registry changes, this table must change with

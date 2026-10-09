@@ -1,6 +1,6 @@
 // `panic` counts as a return only where control cannot get past it. A panic in
 // one arm of an `if` with no `else`, or in a loop body that may run zero
-// times, still leaves a path to the end of the body — and both must stay
+// times, still leaves a path to the end of the body, and both must stay
 // refused, or the fix would accept programs that fall off the end.
 package main
 

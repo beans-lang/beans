@@ -202,7 +202,7 @@ fn main() {
         err(error) => { io.println("opened kind={error.kind}") }
     }
 
-    // the statement form: an anonymous child, joined by the scope exit —
+    // the statement form: an anonymous child, joined by the scope exit,
     // it runs after main's last statement, at the synthesized join
     brew side(9)
     io.println("end of main")

@@ -1,7 +1,7 @@
 // gap: LLVM emitter does not support binary '==' for List<Map<string, int>> yet
 //
-// Two lists of maps. The interpreter answers — a map is equal to no map, so
-// two one-entry lists are unequal and two empty lists are equal by length —
+// Two lists of maps. The interpreter answers, a map is equal to no map, so
+// two one-entry lists are unequal and two empty lists are equal by length,
 // and the native build refuses the comparison outright.
 //
 // This probe replaces the List<List<int>> one, whose gap is closed: a nested

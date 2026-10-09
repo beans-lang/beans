@@ -1,6 +1,6 @@
 // `Option<T>` compared by value, where T is a reference.
 //
-// A niche-encoded Option — one whose payload is a reference — is stored as a
+// A niche-encoded Option, one whose payload is a reference, is stored as a
 // bare pointer, so the emitter's "is this a reference?" test answered true for
 // the Option itself and compared two payloads by address. `Option<string>`
 // then reported false for equal strings living at different addresses, and so

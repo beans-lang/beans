@@ -1,7 +1,7 @@
 // binary-trees: build and drop many short-lived trees, checking each.
 // The classic allocation+reclamation bench. beans is ARC with a pool
 // allocator, so this measures the release cascade and the freelists, not
-// just loop speed — the one dimension churn.b only touches shallowly.
+// just loop speed, the dimension churn.b only touches shallowly.
 import std.io
 import std.os
 

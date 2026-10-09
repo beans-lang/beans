@@ -100,7 +100,7 @@ fn sized_string(size: int) -> string {
     return bytes.to_string()
 }
 
-// Every byte 0x01..0x1F plus DEL — the \u00XX and short-escape paths.
+// Every byte 0x01..0x1F plus DEL, the \u00XX and short-escape paths.
 fn control_string() -> string {
     let bytes: Bytes = new Bytes(0)
     for value: int in 1..32 {
@@ -237,7 +237,7 @@ fn show(tag: string, encoded: Result<string>) {
 
 // encode_into is checked against encode on every seeded value: it must append
 // exactly encode's bytes after the target's existing content, return that
-// count, leave the prefix untouched, and — when encode refuses — refuse with
+// count, leave the prefix untouched, and, when encode refuses, refuse with
 // the same kind and message while leaving the target unchanged. A mismatch is
 // printed (so direct-vs-dom cmp and the interpreter run both see it) and
 // counted, and the run asserts the count is zero and the checks ran.
@@ -430,8 +430,8 @@ fn main() {
     let rng: Rng = new Rng(seed)
     let tally: Tally = new Tally()
     // Every broken-UTF-8 shape, deterministically, ahead of the seeded
-    // rounds. The seeded builder reaches one only by chance — one string in
-    // twenty-four, then one shape in ten — so a validation rule dropped on
+    // rounds. The seeded builder reaches one only by chance, one string in
+    // twenty-four, then one shape in ten, so a validation rule dropped on
     // one side could hide behind a seed that never picks its shape. Walking
     // them here puts all ten through the four comparisons this suite makes:
     // direct writer against DOM, native against interpreter, encode against

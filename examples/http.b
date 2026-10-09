@@ -1,18 +1,6 @@
-// HTTP/1.1 in one process: a server on a system-chosen loopback port, a
-// client on its own thread, three exchanges over one keep-alive connection.
-//
-// The shapes to notice:
-//
-//   The server never picks a port. `bind("127.0.0.1", 0)` asks the system,
-//   `port()` reads the answer, and only the number crosses the thread
-//   boundary — sockets stay where they were made.
-//
-//   Requests arrive whole. `read_request()` buffers head, body and
-//   trailers behind the parser's strict-mode checks; the streaming layer
-//   (`RequestParser.feed`) exists underneath for anything bigger.
-//
-//   Every printed line is a derived fact, never a port or an address, so
-//   the interpreter and the native build print byte-identical output.
+// Loopback HTTP/1.1 client and server; only the ephemeral port crosses the thread boundary.
+// `read_request()` buffers complete requests; `RequestParser.feed` handles streaming input.
+// Printed output omits the system-chosen port to remain deterministic.
 package main
 
 import std.http

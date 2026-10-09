@@ -1,6 +1,6 @@
 // The scale a decimal result carries, in the three places the arithmetic used
 // to get it wrong. Every answer here is Python's decimal module at the beans
-// contract — 38 significant digits, half-even — not this file's guess;
+// contract, 38 significant digits, half-even, not this file's guess;
 // tools/decimal_conformance.py replays 12,540 IBM operand pairs against the
 // same oracle.
 //
@@ -8,7 +8,7 @@
 //     use for. `0E-45 + 0E-1` came back at scale 38 and `0E-1 + 0E-45` at
 //     scale 45: addition was not commutative.
 //  2. When one operand was too small to reach the sum's 38 digits, the other
-//     was handed back untouched — scale and all — so a ledger total lost its
+//     was handed back untouched, scale and all, so a ledger total lost its
 //     decimals to a rounding-error-sized addend. And the cut was one digit too
 //     early, so `1 + -9E-39` answered 1 instead of borrowing.
 //  3. A zero quotient kept the dividend's scale instead of

@@ -1,4 +1,4 @@
-// `Table.seed(1)` was refused with "main.Table has no static 'seed'" — a
+// `Table.seed(1)` was refused with "main.Table has no static 'seed'", a
 // message that was never true. The static was declared right there, reading
 // it into a local and calling that local worked, and the same call through an
 // INSTANCE field had always been accepted. Only the static branch of call

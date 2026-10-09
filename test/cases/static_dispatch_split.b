@@ -1,7 +1,7 @@
 // A `static fn` declares no `self`, so it is not a method any receiver can
 // pick: it owns no dispatch slot, no selector index and no descriptor row.
-// Before #88 every static got one anyway — a lone static with nothing to
-// collide with still put a receiverless function in its class's table — and
+// Before #88 every static got one anyway, a lone static with nothing to
+// collide with still put a receiverless function in its class's table, and
 // a subclass's static replaced the row its base's instance method had
 // filled.
 //

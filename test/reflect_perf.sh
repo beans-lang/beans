@@ -7,7 +7,7 @@
 # end of every scan the registry ever had. Each program times a one-argument
 # Method.call and a one-argument Initializer.call through a cached
 # descriptor and prints ns/op. The gate fails when a call is slower than
-# REFLECT_PERF_MAX_NS (default 2000 — the regression this guards against
+# REFLECT_PERF_MAX_NS (default 2000, the regression this guards against
 # measured 79,000), or when the two program sizes disagree by more than
 # REFLECT_PERF_MAX_RATIO (default 2.5), which is what "position must stop
 # mattering" means as a number.

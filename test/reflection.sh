@@ -3,7 +3,7 @@
 #
 # These cases existed and their goldens did not. test/cases/reflect_*.b were
 # named only by test/sanitize.sh, whose run_asan builds and runs a program and
-# checks the sanitizers stayed quiet — it never opens the .out beside it. So
+# checks the sanitizers stayed quiet, it never opens the .out beside it. So
 # seven checked-in golden files described behaviour nothing compared anything
 # to, and reflection's answers were covered only by the generated differential
 # in test/reflection_fuzz.sh, which pins the two backends to each other and
@@ -13,8 +13,8 @@
 # against the golden, which is the claim the goldens were written to make: not
 # that the backends agree, but that reflection answers these exact strings.
 #
-# The value cases carry #163 — a box records the class a value IS, not the
-# type of the binding it was handed — because that rule is a string in a
+# The value cases carry #163, a box records the class a value IS, not the
+# type of the binding it was handed, because that rule is a string in a
 # golden and nothing else can see it.
 set -euo pipefail
 
@@ -22,7 +22,7 @@ cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-reflection.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
-# run_both <case-name> — interpreter and native, both against the golden
+# run_both <case-name>, interpreter and native, both against the golden
 run_both() {
     local name=$1
     local source="test/cases/$name.b"

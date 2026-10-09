@@ -1,10 +1,10 @@
-// regress_mem.b — memory-safety regressions from the stdlib-audit pass. The
+// Memory-safety regression cases from the standard-library audit. The
 // program runs clean up to the last line, then panics on the overflow bounds
 // check; run-vs-native must match output, panic message, and exit code.
 import std.io
 
 // C3: a value read from a container and passed straight into a call used to be
-// borrowed, not retained — if the callee overwrote that key, the value's memory
+// borrowed, not retained. If the callee overwrote that key, the value's memory
 // was freed and reused while the caller still held it (silent wrong answer /
 // heap-use-after-free natively). It must now stay alive across the call.
 fn clobber(m: Map<string, string>, victim: string) -> string {

@@ -3,14 +3,14 @@
 // http_smuggling.b proves the parser never re-liberalizes what llhttp
 // rejected. This is its mirror: a package that strict about what it accepts
 // must not serialize whatever it is handed. A header value carrying CR or LF
-// splices extra headers — or a whole extra response — into the wire format,
+// splices extra headers, or a whole extra response, into the wire format,
 // which is response splitting, and it is reachable the moment an application
 // puts user input in a `Location`.
 //
 // The head-span bound is here too. llhttp bounds the request target and the
 // header block but nothing else, so the status reason phrase and the
 // chunk-extension name and value would otherwise accumulate for as long as a
-// peer keeps sending — the shape of Node's CVE-2024-22019, which Node also
+// peer keeps sending, the shape of Node's CVE-2024-22019, which Node also
 // fixed in its binding layer rather than in llhttp.
 //
 // Every printed line is a derived fact.
@@ -247,7 +247,7 @@ fn unbounded(name: string, prefix: string, filler: string) {
     var refused: bool = false
     var kind: string = ""
     var rounds: int = 0
-    // 64 rounds of 64 KB is 4 MB — far past any legitimate head field, and
+    // 64 rounds of 64 KB is 4 MB, far past any legitimate head field, and
     // small enough that an unbounded parser is caught rather than tolerated.
     var chunk: Bytes = Bytes.from(prefix)
     var pad: string = filler

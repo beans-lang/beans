@@ -1,4 +1,4 @@
-// bun maps.js — mirror of maps.b / maps.go (hash map throughput)
+// Bun mirror of maps.b and maps.go (hash map throughput).
 const n = Number(process.argv[2] ?? 400000);
 const seed = Number(process.argv[3] ?? 1);
 const m = new Map();

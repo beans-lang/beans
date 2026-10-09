@@ -11,8 +11,8 @@
 # BEANS_OOM_AFTER=N lets N allocations succeed and makes the next return NULL.
 # This gate sweeps N across every allocation test/cases/oom_alloc_fail.b makes
 # and holds each failure to a clean panic. A crash (SIGSEGV) at any point is the
-# defect. A second pass under ASan/UBSan proves the release-before-panic paths —
-# a refused typed/managed-key grow releases the value and key it was handed —
+# defect. A second pass under ASan/UBSan proves the release-before-panic paths,
+# a refused typed/managed-key grow releases the value and key it was handed,
 # touch no freed memory.
 set -euo pipefail
 
@@ -45,7 +45,7 @@ grep -q '^oom-probe complete' "$tmp/probe.out"
 # Sweep BEANS_OOM_AFTER 0..max and classify every outcome. Every failure must be
 # exit 3 carrying "out of memory"; anything else (a SIGSEGV is exit 139) is the
 # NULL-dereference defect. A full-completion run must appear, which proves the
-# sweep bound is past the last allocation — otherwise a later unchecked site
+# sweep bound is past the last allocation, otherwise a later unchecked site
 # could hide beyond the bound.
 sweep() {
     local bin="$1" maxn="$2" label="$3"
@@ -102,13 +102,13 @@ sweep "$tmp/oom.asan" 250 "asan"
 # A Bytes or List backing carries no header. Its free is handed the byte size
 # the allocation was given and decides munmap-or-free from that size alone, so a
 # block at or past the threshold has to BE a mapping. Falling back to the heap
-# when the mapping fails would put a malloc'd pointer into munmap — and a large
+# when the mapping fails would put a malloc'd pointer into munmap, and a large
 # malloc is page-aligned often enough (macOS serves them from vm_allocate) that
 # the unmap would succeed and quietly take live heap away rather than fail with
 # EINVAL. So a refused mapping is a refused allocation, and every call site turns
 # that into the runtime's documented "out of memory" panic.
 #
-# A non-pooled beans_alloc object — a large string — records in its 16-byte
+# A non-pooled beans_alloc object, a large string, records in its 16-byte
 # prefix whether it was mapped, so its free can tell either way. That one falls
 # back to the heap and keeps working, which is why the two are written
 # differently instead of sharing one shape.

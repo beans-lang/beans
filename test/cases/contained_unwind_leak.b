@@ -9,7 +9,7 @@
 //
 // The four shapes:
 //   * a local holding the buffer behind an armed defer;
-//   * a temporary holding it — built as one argument while the next argument
+//   * a temporary holding it, built as one argument while the next argument
 //     panics, so it belongs to no local when the unwind starts;
 //   * an object whose init took it and then panicked (no deinit body runs, but
 //     the field it did assign must still drop);
@@ -61,7 +61,7 @@ fn holds_half_built(size: int) -> int {
 
 // The buffer arrives as an argument, so it is hoisted into the closure box the
 // contained call carries. The callee panics without ever taking it, which
-// leaves the box the only owner — and the box is this frame's to release, on
+// leaves the box the only owner, and the box is this frame's to release, on
 // the caught path as much as on the returning one.
 fn refuses(buf: Buffer, size: int) -> int {
     let empty: List<int> = []

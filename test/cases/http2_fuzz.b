@@ -3,7 +3,7 @@
 // between them.
 //
 // Upstream fuzzes HPACK and the frame decoder; what is unproven here is the
-// glue — the pump between socket and session, the event decoding, the
+// glue, the pump between socket and session, the event decoding, the
 // stream bookkeeping. So the invariants are the glue's:
 //
 //   **Flow-control accounting balances.** After an exchange settles, the
@@ -17,7 +17,7 @@
 //   is ever reported on it.
 //
 // Fragmentation is the mutation: the same frames, split at seeded random
-// points, must produce the same exchange — HTTP/2 framing is length-
+// points, must produce the same exchange, HTTP/2 framing is length-
 // prefixed, so a pump that assumes frame-aligned reads breaks here.
 //
 // Usage: http2_fuzz <seed> <rounds>

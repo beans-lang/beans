@@ -2,7 +2,7 @@
 // has to reach the same body an ordinary call would. Both backends matched
 // the runtime class's entry by name alone, so a `static fn` wearing the name
 // of an inherited instance method was substituted and then invoked with the
-// receiver — handed to a function that declares no parameter for it (#88).
+// receiver, handed to a function that declares no parameter for it (#88).
 //
 // The checker refuses that pair wherever a call could name it. `priv` is
 // exempt there on purpose: a private method belongs to its exact declaring

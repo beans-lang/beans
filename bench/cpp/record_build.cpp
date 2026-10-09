@@ -8,8 +8,8 @@
 
 // The five tags are string literals in the Beans source, which are immortal
 // statics: reading one costs nothing and allocates nothing. Both C++ builds
-// mirror that — the tuned one copies from a static table, the matched one
-// shares five process-lifetime control blocks — so the comparison is about the
+// mirror that. The tuned version copies from a static table; the matched version
+// shares five process-lifetime control blocks, so the comparison is about the
 // record's own strings and its tag list, not about how each language spells a
 // constant.
 static const char* const kTags[5] = {"alpha", "beta", "gamma", "delta",

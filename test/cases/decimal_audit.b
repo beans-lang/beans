@@ -1,7 +1,7 @@
 // The 38-digit decimal contract, re-audited 2026-07-28: exactness,
 // boundary literals, all five rounding modes at signed ties, division
 // to 38 significant digits with a half-even tail, checked casts,
-// formatting, and string parsing — every line must answer identically
+// formatting, and string parsing, every line must answer identically
 // in the interpreter and both native backends. The audit that wrote
 // this found Decimal::parse accepting any character as a digit
 // ("nan" became coefficient 6752) and NaN comparisons disagreeing

@@ -14,8 +14,8 @@ package main
 import std.io
 
 // ---- two built implementors, one the program never builds ---------------
-// NeverOp keeps the row genuinely undecided — three symbols share the slot,
-// so nothing is settled — while never standing behind a receiver, so it
+// NeverOp keeps the row genuinely undecided, three symbols share the slot,
+// so nothing is settled, while never standing behind a receiver, so it
 // earns no arm of its own.
 
 interface Op {
@@ -142,7 +142,7 @@ class Named extends Boxed {
 }
 
 // Deep writes nothing of its own either, so its copy of the inherited body
-// is raised when main builds one — after shelf_tag has been emitted.
+// is raised when main builds one, after shelf_tag has been emitted.
 class Deep extends Boxed {
     fn init() { super.init() }
 }
@@ -184,7 +184,7 @@ fn read_text(value: Source<string>) -> string {
 }
 
 // ---- a singleton is built without any `new` -----------------------------
-// Nothing writes `new Bell()` — the accessor allocates it — so a rule that
+// Nothing writes `new Bell()`, the accessor allocates it, so a rule that
 // waits for a `new` to be emitted never counts it at all.
 
 interface Chime {

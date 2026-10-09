@@ -114,9 +114,9 @@ diff -u test/cases/encoding_json_typed_encode.out \
     "$tmp/encoding_json_typed_encode.interp"
 diff -u test/cases/encoding_json_typed_encode.out \
     "$tmp/encoding_json_typed_encode.native"
-# The same golden through the DOM writer. encode_into has two append paths —
+# The same golden through the DOM writer. encode_into has two append paths,
 # the direct writer writes into the caller's Bytes as it goes, the DOM path
-# serializes into yyjson's buffer and appends once — and the schemas here pick
+# serializes into yyjson's buffer and appends once, and the schemas here pick
 # between them by whether they carry a float. BEANS_JSON_NO_DIRECT forces
 # every one of them onto the DOM path, so the bytes, the counts, the refusal
 # messages and the rollbacks have to be the same document either way.
@@ -136,8 +136,8 @@ echo "ok typed JSON struct output in interpreter and native code"
 # The escape scan must actually have a 16-byte vector path, not just the SWAR
 # fallback. Compiling the bridge with and without BEANS_JSON_SCALAR_SCAN must
 # differ: forcing the scalar path only changes the object if a vector path is
-# there to force off. x86-64 (SSE2) and arm64 (NEON) — the shipped targets and
-# where CI runs — both have one; reverting the vector block collapses the two.
+# there to force off. x86-64 (SSE2) and arm64 (NEON), the shipped targets and
+# where CI runs, both have one; reverting the vector block collapses the two.
 clang -O2 -S -Wno-override-module runtime/encoding/beans_enc_json.c \
     -o "$tmp/bridge_vector.s"
 clang -O2 -S -DBEANS_JSON_SCALAR_SCAN -Wno-override-module \
@@ -171,14 +171,14 @@ fi
 # ...and it must be selected only where its instructions exist. arm32 is a
 # supported target (armv7-unknown-linux-gnueabihf, and the two ARMv6 triples).
 # __ARM_NEON says the target has a NEON unit, not that it is AArch64, and the
-# across-vector reduction the scan uses — vmaxvq_u8 — is an AArch64 instruction
+# across-vector reduction the scan uses, vmaxvq_u8, is an AArch64 instruction
 # arm32 does not have. A scan guarded on the feature macro alone opens a block
 # arm32 cannot translate, and the build of any program that imports
 # std.encoding.json fails with a C error naming this bridge.
 #
 # Which clang defines __ARM_NEON for a bare armv7 triple has moved: Apple clang
 # 21 defines it with no flags at all, Ubuntu clang 18 and Debian clang 14 do
-# not. So the bare triple is reported here and never asserted — a host whose
+# not. So the bare triple is reported here and never asserted, a host whose
 # clang would not have selected NEON anyway is not a failure. What is stable on
 # every one of them is -mcpu=cortex-a8, which is exactly what
 # `beansc build --target armv7-unknown-linux-gnueabihf --cpu cortex-a8` hands
@@ -190,8 +190,8 @@ fi
 # Three checks, so no one of them can rot into a tautology. Ground truth first:
 # the bridge itself, put through a compiler aimed at each arm32 triple the
 # release ships, plain and with the CPU flag that turns NEON on. That needs a
-# set of C headers the cross target can parse — the macOS SDK's do, an
-# installed armhf sysroot does, a plain x86-64 glibc /usr/include does not —
+# set of C headers the cross target can parse, the macOS SDK's do, an
+# installed armhf sysroot does, a plain x86-64 glibc /usr/include does not,
 # and the probe below is what decides, rather than a guess about the host. When
 # no header root parses, this leg says so out loud instead of vanishing. Then
 # the two checks that keep it from rotting: the intrinsic really has to still
@@ -206,7 +206,7 @@ else
 fi
 
 # The bridge itself, put through a compiler aimed at each arm32 triple the
-# release ships — plain, and with the CPU flag that turns NEON on. -c, not
+# release ships, plain, and with the CPU flag that turns NEON on. -c, not
 # -fsyntax-only: the object is what the driver actually needs.
 #
 # Cross-compiling C needs headers the target can parse, and which ones work is
@@ -214,7 +214,7 @@ fi
 # arm32 triple, Debian's libc6-dev-arm*-cross packages serve the ABI they were
 # built for and refuse the other, and a plain x86-64 glibc /usr/include serves
 # none. Each configuration therefore probes for its own root, using the exact
-# include prefix the bridge opens with — stddef, stdint, string, stdlib. A
+# include prefix the bridge opens with, stddef, stdint, string, stdlib. A
 # thinner probe passes on the wrong-ABI sysroot and then the real compile dies
 # in gnu/stubs.h, which would read as a code failure and is not one. A
 # configuration with no usable root says so by name; it does not disappear.

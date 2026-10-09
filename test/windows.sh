@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The Windows correctness gate: cross-compile with MinGW-w64, execute under
 # Wine, and hold the result to the same differential standard as every other
-# backend — interpreter output and native output byte-identical, exit codes
+# backend, interpreter output and native output byte-identical, exit codes
 # included.
 #
 # Designed to run inside the container test/docker/windows.Dockerfile builds
@@ -11,7 +11,7 @@
 # The example set is discovered, not hardcoded: every examples/*.b that CHECKS
 # clean for the Windows target must then build, run under Wine and match the
 # interpreter. A check failure is only acceptable when it is the capability
-# system refusing a POSIX-only import — anything else fails the gate. That
+# system refusing a POSIX-only import, anything else fails the gate. That
 # split is the point: a new example can never be silently skipped, and the
 # refusal list can never rot into a vacuous pass.
 set -uo pipefail
@@ -27,8 +27,8 @@ WINE=${WINE:-}
 # and says nothing about where: on 2026-09-06 one example deadlocked under wine
 # and the CI job sat silent for 88 minutes before its own timeout killed it
 # with no evidence in the log. Every run below is capped, and a run that hits
-# the cap is a named failure. `timeout` is required rather than optional — a
-# cap that quietly is not there is the same silence over again — and it comes
+# the cap is a named failure. `timeout` is required rather than optional, a
+# cap that quietly is not there is the same silence over again, and it comes
 # from coreutils, which this gate's container already has for everything else.
 if ! command -v timeout > /dev/null 2>&1; then
     echo "skipping: coreutils timeout is required to cap each run here" >&2
@@ -130,7 +130,7 @@ if ! "$BEANSC" build --target $TRIPLE build/windows_gate/wants_socket.b \
 fi
 
 # The minimal runtime profile. windows.h used to arrive with the filesystem
-# shim, which only compiles at the full profile — so `--runtime minimal` failed
+# shim, which only compiles at the full profile, so `--runtime minimal` failed
 # on undeclared Sleep and DWORD while every example (all full-profile) passed.
 cat > build/windows_gate/wants_minimal.b <<'EOF'
 import std.io
@@ -152,7 +152,7 @@ fi
 
 # Windows compiles the full profile with the filesystem tier live, so the
 # POSIX-only capabilities are refused by the per-target check, named triple
-# and all — and std.fs must now check clean.
+# and all, and std.fs must now check clean.
 cat > build/windows_gate/wants_fs.b <<'EOF'
 import std.fs
 fn main() { }
@@ -219,12 +219,12 @@ fi
 # FIN queued behind unread data is invisible to WSAPoll (POSIX RDHUP shows it
 # immediately), and SIO_TCP_INFO's CLOSE_WAIT door is not implemented by
 # Wine. Hangup there surfaces once the data is drained. The example runs
-# under a masked diff below — only that one line is excused, and both sides'
+# under a masked diff below, only that one line is excused, and both sides'
 # verdicts are pinned so the exemption cannot quietly grow.
 # processes.b and child_process.b are POSIX *content*, not a runtime gap:
 # they spawn /bin/echo and /bin/sh by absolute path, which no Windows machine
 # has. The parametrized parent/child differential below proves the process
-# runtime itself — both sides spawn a beans-built child for their own
+# runtime itself, both sides spawn a beans-built child for their own
 # platform and must print identical bytes.
 # signals.b exercises real signal delivery, which Windows does not have; its
 # runtime stubs refuse with a sentence, pinned by the positive check below.
@@ -236,12 +236,12 @@ declare -a refused_names=()
 
 # No TMPDIR games: wine requires an absolute TMPDIR for its own sockets (a
 # relative one aborts wine itself), and the fs examples are already proven
-# temp-path independent — make test runs them on macOS and Linux, whose
+# temp-path independent, make test runs them on macOS and Linux, whose
 # TMPDIRs differ, with byte-identical output. They use Dir.temp_path() as a base
 # and never print it.
 #
 # A bare wine64 prefix synthesizes no Path variable at all, and files.b
-# checks that the environment has one — true on every real system, Windows
+# checks that the environment has one, true on every real system, Windows
 # included. WINEPATH is wine's documented way to provide it.
 export WINEPATH='C:\windows'
 
@@ -294,9 +294,9 @@ done
 # The multi-package program is a first-class diff target next to tour.b.
 run_diff examples/shop/main.b shop
 
-# The process differential: one parent source, two children — the interpreter
+# The process differential: one parent source, two children, the interpreter
 # spawns a host-native child, the Windows binary spawns the PE child inside
-# wine — and the printed bytes must be identical. This is what stands in for
+# wine, and the printed bytes must be identical. This is what stands in for
 # the two /bin-path examples excused above.
 cat > build/windows_gate/proc_child.b <<'EOF'
 import std.io
@@ -393,7 +393,7 @@ else
 fi
 
 # poller.b, masked: everything must match except the RDHUP-behind-data line,
-# and the two verdicts are asserted exactly — interpreter true, Windows false —
+# and the two verdicts are asserted exactly, interpreter true, Windows false,
 # so a change on either side reopens the question instead of hiding in the mask.
 if "$BEANSC" build --target $TRIPLE --linker lld examples/poller.b \
         -o build/windows_gate/poller.exe > build/windows_gate/poller.buildlog 2>&1; then
@@ -424,7 +424,7 @@ else
     sed 's/^/  /' build/windows_gate/poller.buildlog >&2
 fi
 
-# target_info under Wine must report the *Windows* target — a positive golden,
+# target_info under Wine must report the *Windows* target, a positive golden,
 # and proof std.target facts survive into a running PE binary.
 if "$BEANSC" build --target $TRIPLE --linker lld examples/target_info.b \
         -o build/windows_gate/target_info.exe > /dev/null 2>&1; then
@@ -438,7 +438,7 @@ else
     fail "examples/target_info.b does not build for $TRIPLE"
 fi
 
-# The compiler itself must cross-compile to Windows and answer under Wine —
+# The compiler itself must cross-compile to Windows and answer under Wine,
 # the standing proof behind beansc.exe. The full hosted differential loop
 # (test/windows_hosted.sh) runs on the real-Windows CI runner where a native
 # clang exists; here the interpreter half is the strongest executable claim.
@@ -459,7 +459,7 @@ if "$BEANSC" build --target $TRIPLE --linker lld src/main.b \
     # real-Windows runner. Two interpreters, one contract: what beansc.exe
     # reports under Wine must be byte-identical to what the Linux beansc
     # reports, panic lines and exit codes included. This is cheap and it is not
-    # theoretical — the two bugs it was written for are a panic message that
+    # theoretical, the two bugs it was written for are a panic message that
     # jumped ahead of the program's output (the runtime owns the redirected
     # stdout buffer on Windows, so libc's fflush drained nothing) and extern "C"
     # resolving no libc symbol at all (no Windows call searches every loaded

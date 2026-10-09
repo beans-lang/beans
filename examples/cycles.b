@@ -1,4 +1,4 @@
-// reference cycles — plain RC leaks these; the cycle collector frees them.
+// The cycle collector frees reference cycles that plain reference counting cannot.
 // run vs build must print the same; the native binary must stay flat on
 // memory and report 0 leaked bytes.
 import std.io
@@ -47,13 +47,13 @@ fn main() {
     s.next = some(s)
     io.println("self {s.id}")
 
-    // a big dropped ring exercises the iterative walk — must not smash the C stack
+    // A large ring checks that collection uses an iterative walk.
     var big: Node = ring(300000)
     big = new Node(-1)
     churn(1000)
     io.println("big dropped, now {big.id}")
 
-    // closure capturing its own cell — a closure<->cell cycle
+    // The closure and its captured cell form a cycle.
     var g: fn(int) -> int = fn(x: int) -> int { return x }
     g = fn(x: int) -> int {
         if x <= 0 { return 0 }

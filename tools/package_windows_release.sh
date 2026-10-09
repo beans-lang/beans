@@ -3,8 +3,8 @@
 #
 #   tools/package_windows_release.sh <version> <beans-target-triple> <output-dir>
 #
-# A full package bundles the LLVM-MinGW toolchain — clang, lld, llvm-ar, the
-# clang resource directory and the matching CRT/sysroot — so `beansc build`
+# A full package bundles LLVM-MinGW (clang, lld, llvm-ar, clang resources, and
+# the matching CRT/sysroot) so `beansc build`
 # works on a machine with no compiler installed. Only the final self-hosted
 # compiler ships.
 #

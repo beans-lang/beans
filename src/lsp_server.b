@@ -130,7 +130,7 @@ fn lsp_symbol_kind(kind: string) -> int {
 // advertises.
 // Bit flags into the `tokenModifiers` legend below. `declaration` and
 // `static` are LSP's own names; `private` is not one of LSP's, and it is here
-// because Beans has a visibility a theme should be able to see — an editor
+// because Beans has a visibility a theme should be able to see: an editor
 // that paints `priv` fields like public ones hides the one thing the modifier
 // exists to say.
 fn lsp_token_modifiers(snapshot: SemanticSnapshot,
@@ -1023,7 +1023,7 @@ class BeansLspServer {
                     text, declaration, move children))
         }
         // The later parts of a partial class. The declaration lives in the
-        // file that carries the header, so the loop above skipped it here —
+        // file that carries the header, so the loop above skipped it here:
         // and a continuation file would otherwise show an empty outline for
         // however many members it holds.
         for part: SemanticDecl in snapshot.partial_parts {
@@ -1227,7 +1227,7 @@ class BeansLspServer {
 
     // A local may only take a name that no binding it shares a scope with
     // already has. Renaming an inner `value` to `total` would make every
-    // later `total` mean the inner binding — the code still compiles, and it
+    // later `total` mean the inner binding: the code still compiles, and it
     // no longer does the same thing.
     fn local_conflict(snapshot: SemanticSnapshot,
                       declaration: SemanticDecl,
@@ -1260,7 +1260,7 @@ class BeansLspServer {
     // just above it. Looking up alone was wrong: renaming `Base.first` to
     // `second` when `Child.second` exists passed, and the edited program then
     // failed to build with "'second' hides an inherited method". Fields are
-    // worse — those compile and quietly share one slot.
+    // worse: those compile and quietly share one slot.
     //
     // For a method, `owners` is every type in its override family, so an
     // interface method is checked against each implementing type as well.
@@ -1423,7 +1423,7 @@ class BeansLspServer {
                 // "Its own" includes the rest of its override family. A
                 // virtual name is one name shared by an interface or base
                 // declaration and every implementation of it, so renaming
-                // one alone is not a rename — it leaves an `override` whose
+                // one alone is not a rename: it leaves an `override` whose
                 // parent no longer has the name, and an interface method
                 // nothing implements.
                 var by_file: Map<string, SemIds> = {}
@@ -1859,7 +1859,7 @@ class BeansLspServer {
                 self.workspace.touch()
                 // Owed, not sent yet. The publish happens once this message
                 // is fully handled, and it reads the same snapshot every
-                // other query at this revision reads — so a keystroke costs
+                // other query at this revision reads, so a keystroke costs
                 // one project check, not one per request that follows it.
                 self.pending[uri] = true
             }
@@ -1875,7 +1875,7 @@ class BeansLspServer {
         self.clear_diagnostics(uri)
     }
 
-    // A change on disk — a saved file, a new `beans.pot`, a dependency — can
+    // A change on disk (a saved file, a new `beans.pot`, a dependency) can
     // change what every open file means, so the whole workspace moves on.
     fn watched_files_changed() {
         self.workspace.touch()
@@ -1905,7 +1905,7 @@ class BeansLspServer {
             //
             // It reads and answers strictly in order, so by the time a
             // cancellation is read, the request it names has already been
-            // answered — a client cannot get a withdrawal in ahead of the
+            // answered: a client cannot get a withdrawal in ahead of the
             // work. Honouring one would need reading ahead of the current
             // request, which needs either threads or a non-blocking read of
             // stdin; the message loop has neither. LSP allows a server to

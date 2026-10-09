@@ -6,7 +6,7 @@
 // would not have caught it.
 //
 // NaNs are built from their bit patterns rather than from `0.0 / 0.0`, whose
-// sign is the platform's choice — x86 hands back a negative NaN there and
+// sign is the platform's choice, x86 hands back a negative NaN there and
 // arm64 a positive one. The transcript must not depend on that.
 
 import std.io

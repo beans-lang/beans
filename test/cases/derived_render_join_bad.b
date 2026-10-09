@@ -1,5 +1,5 @@
 // join renders each element the way interpolation does, so an element with
-// no string form has to be refused at check time — not by an emitter after
+// no string form has to be refused at check time, not by an emitter after
 // the tree interpreter has already printed it.
 import std.io
 import std.thread

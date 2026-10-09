@@ -21,9 +21,9 @@
 // What is *not* here, deliberately: the soft-float and 64-bit-integer helpers. `int` in
 // Beans is 64 bits and `float` is a double, so on a 32-bit machine a single `a / b` or
 // `x + y` becomes a call to `__divdi3` or `__adddf3`. Those come from the bare-metal GCC's
-// libgcc.a, which test/embedded.sh links. Hand-writing IEEE-754 soft float would be
-// reimplementing — and less carefully — what every embedded toolchain already ships. This
-// file has only what is genuinely specific to running Beans on these two boards.
+// libgcc.a supplies 32-bit arithmetic helpers; this file contains board-specific runtime support.
+
+
 
 typedef unsigned long long u64;
 typedef long long i64;
@@ -89,7 +89,7 @@ usize strlen(const char* s) {
 }
 
 // ARM's EABI names two of the above differently, and Clang emits the EABI spelling for
-// zeroing. They take (dest, byte count) with no value — the value is always zero.
+// zeroing. They take (dest, byte count); the value is always zero.
 #if defined(BEANS_BOARD_MPS2)
 void __aeabi_memclr(void* dst, usize n) { memset(dst, 0, n); }
 void __aeabi_memclr4(void* dst, usize n) { memset(dst, 0, n); }
@@ -102,14 +102,14 @@ void __aeabi_memset(void* dst, usize n, int value) { memset(dst, value, n); }
 #endif
 
 // ---- ARM unwind personality ------------------------------------------------
-//
-// LLVM gives every ARM function an EHABI unwind entry and names the personality routine
-// in it, even for C with no exceptions anywhere. The routine can never run — Beans has no
-// exceptions, a panic calls beans_host_exit, and mps2.ld discards .ARM.exidx outright —
-// but the *reference* still has to resolve, and resolving it against libgcc's real
-// unwinder drags in the whole unwinder, which then wants abort() and an exception index
-// table that a bare-metal image does not have. Stubbing it is the standard answer, and an
-// honest one: reaching one of these would mean an exception existed.
+// Stub ARM's mandatory unwind reference; Beans exits on panic and must never unwind here.
+
+
+
+
+
+
+
 #if defined(BEANS_BOARD_MPS2)
 void __aeabi_unwind_cpp_pr0(void) { }
 void __aeabi_unwind_cpp_pr1(void) { }
@@ -165,12 +165,12 @@ static void board_exit(int code) {
 #endif
 
 // ---- the five hooks --------------------------------------------------------
-//
-// A bump allocator over a fixed arena. There is no MMU and no OS to grow a heap, so the
-// arena is the machine's memory budget: exhausting it returns null, which the runtime
-// already treats as an allocation failure and reports as a panic. free() is a no-op, which
-// is a legitimate allocator — the contract only requires that a freed block is never
-// handed out again while live.
+// The fixed arena returns null on exhaustion and never reuses a freed block while live.
+
+
+
+
+
 
 #define ARENA_BYTES (1u << 20)
 static unsigned char arena[ARENA_BYTES] __attribute__((aligned(16)));
@@ -218,12 +218,12 @@ void beans_host_exit(int code) { board_exit(code); }
 
 // ---- float formatting ------------------------------------------------------
 //
-// The runtime routes every float through these two rather than snprintf/strtod. The
-// program prints one division at a written-out precision, so the fixed-point conversion
-// below is enough — and being explicit about that is better than a half-written dtoa
-// that looks general. The signatures match the runtime's declarations exactly: on these
-// ILP32 targets a `long long` return rides in two registers and an `int` one fills only
-// the first, so a narrower definition hands the caller half an answer.
+// Format explicit test precision and preserve the runtime's ILP32 return-width ABI.
+
+
+
+
+
 
 static int digits_of(u64 value, char* out) {
     int n = 0;
@@ -263,12 +263,12 @@ long long beans_host_format_f64(char* out, u64 cap, double value, int precision,
     return n;
 }
 
-// A bare `{x}` asks for the shortest text that reads back as the same value, and the
-// runtime finds it by formatting and reparsing — so a board that wants that answer has
-// to ship a correctly rounded parser, which is a real dtoa and not this. Reporting
-// failure is the honest reply: the runtime then prints a fixed ten significant digits
-// rather than trusting an answer this cannot give. examples/embedded.b writes its
-// precision out for the same reason, so nothing on these boards reaches here at all.
+// Shortest-round-trip parsing is unsupported; returning failure selects the runtime's fixed-precision fallback.
+
+
+
+
+
 int beans_host_parse_f64(const char* text, double* out, const char** end) {
     (void)out;
     if (end) *end = text;

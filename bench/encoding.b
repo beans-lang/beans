@@ -1,7 +1,7 @@
 // std.encoding benchmark, measured through the public Beans API.
 //
 // Every row reports input size, iterations and throughput. Where a cost can
-// be split, it is: each bridge-backed format is measured twice — once end to
+// be split, it is: each bridge-backed format is measured twice, once end to
 // end through the Beans API, and once by calling the same vendored codec
 // directly through its C entry point with the payload already in raw memory.
 // The difference is the marshalling and allocation the Beans wrapper adds,

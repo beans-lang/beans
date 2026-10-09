@@ -24,6 +24,6 @@ fn main() {
     // a call result is not a generic target
     let f: fn(int) -> int = plain
     io.println(f<int>(7))
-    // partial explicit leaves the rest inferable — B has no source here
+    // partial explicit leaves the rest inferable, B has no source here
     io.println(twice<int>(8))
 }

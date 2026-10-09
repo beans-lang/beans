@@ -1,22 +1,6 @@
-// Clocks and secure random.
-//
-// Two clocks, with separate names because picking the wrong one is a real bug:
-//
-//   `time.monotonic_nanos()` never goes backwards and is unaffected by anyone
-//   setting the date. It has no meaning as a moment — only differences between
-//   readings mean anything — and it is the only correct way to measure a duration.
-//
-//   `time.wall_nanos()` names a moment: nanoseconds since 1970. It can jump forwards
-//   or backwards when the clock is adjusted, so measuring elapsed time with it is
-//   the bug the two names exist to prevent.
-//
-// `std.random` is the OS CSPRNG and nothing else. There is deliberately no fallback
-// to a pseudo-random generator, because a caller asking for random bytes is usually
-// making a key, a token or a nonce — and quietly handing over a predictable sequence
-// is worse than failing. Every entry point returns a Result.
-//
-// Everything here prints a *derived fact* rather than a value, because the values
-// differ every run and on every machine. The facts do not.
+// Use the monotonic clock for durations and wall time for timestamps.
+// Secure random APIs use the OS CSPRNG, return `Result`, and have no weak fallback.
+// The example prints derived facts so its output remains deterministic.
 
 import std.io
 import std.time
@@ -29,8 +13,7 @@ fn main() {
     let elapsed: int = time.monotonic_nanos() - started
 
     io.println("monotonic moved forward {elapsed > 0}")
-    // sleep_nanos sleeps *at least* as long as asked, retrying if a signal cuts it
-    // short — so this is a floor, not an approximation.
+    // sleep_nanos retries interrupted sleeps and waits at least the requested duration.
     io.println("slept at least 3ms {elapsed >= 3000000}")
     // Two readings in a row can be equal on a coarse clock but never decreasing.
     io.println("never goes backwards {time.monotonic_nanos() >= started}")
@@ -44,9 +27,7 @@ fn main() {
         err(e) => io.println("no random source: {e.msg}"),
     }
 
-    // A bounded draw is uniform by rejection sampling, not by `% limit` — modulo is
-    // biased unless the limit divides 2^64, and for a shuffle or a token that bias is
-    // the whole problem.
+    // Rejection sampling avoids the modulo bias of `% limit`.
     match random.below(6) {
         ok(roll) => io.println("a die roll is in range {roll >= 0 && roll < 6}"),
         err(e) => io.println("no random source: {e.msg}"),

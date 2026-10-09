@@ -1,7 +1,7 @@
 // The parts of std.math with exact answers: the ordering helpers, the
 // Euclidean remainder that `%` does not give, hypot's scaling, and the f32
 // twins. Every value here is one a reader can check by eye, which is the point
-// — the transcendentals cannot be checked that way and are gated against libm
+// Transcendentals use libm checks in test/math.sh instead.
 // patterns in test/math.sh instead.
 package main
 

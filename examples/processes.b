@@ -1,13 +1,5 @@
-// Running another program.
-//
-// A command is a program name and a list of arguments. **There is no shell**: the
-// arguments reach `execvp` untouched, so a filename containing a space, a quote or a
-// semicolon is just a filename. There is nothing to escape and nothing to get wrong.
-//
-// One call spawns the program, feeds it stdin, drains both output streams, waits and
-// reaps it. Doing all of that together is what makes the classic deadlock impossible —
-// a parent that reads stdout to EOF while the child blocks writing stderr hangs
-// forever, and the only fix is to watch every descriptor at once.
+// Commands pass arguments directly to the child without a shell.
+// `run()` feeds stdin, drains both output streams, waits, and reaps the child.
 
 import std.io
 import std.process
@@ -46,8 +38,7 @@ fn main() {
         err(e) => io.println("failed: {e.kind}"),
     }
 
-    // A program that ran and failed is an `ok` with a non-zero status — that is not an
-    // error in the Result sense, it is an answer.
+    // A non-zero exit status is an `ok` result; the process ran successfully.
     var exits: process.Command = new process.Command("/bin/sh")
     exits.arg("-c").arg("exit 3")
     match exits.run() {

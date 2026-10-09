@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The compiler hosted on Windows: beansc.exe runs the same differential loop
-# make test runs everywhere else — interpret each example, compile it natively,
+# make test runs everywhere else, interpret each example, compile it natively,
 # and hold the two to byte-identical output, exit codes included.
 #
 # Runs on a real Windows machine under Git Bash (GitHub's windows runners have
@@ -57,7 +57,7 @@ fi
 # The reserved-name rule and the C ABI bridge, held on this host too: the
 # compiler that runs here must refuse a builtin type name with the exact
 # message every other platform pins, and must build an aggregate FFI bridge
-# with the same driver selection `build` uses — including honoring BEANS_CC
+# with the same driver selection `build` uses, including honoring BEANS_CC
 # and naming a configured driver that does not exist.
 cat > build/windows_hosted/reserved.b <<'EOF'
 class Box {
@@ -137,8 +137,8 @@ echo "narrow extern arguments marshal by declared width on this host"
 
 # Which exception killed it, when one did.
 #
-# Git Bash reports a native crash as 139 — its own translation of a Windows
-# exception into SIGSEGV — and that translation throws away the one thing
+# Git Bash reports a native crash as 139, its own translation of a Windows
+# exception into SIGSEGV, and that translation throws away the one thing
 # worth knowing. The raw NTSTATUS separates faults that mean entirely
 # different bugs: 0xC0000005 is an access violation, 0xC0000374 is heap
 # corruption found at free, 0xC0000409 is a stack cookie or __fastfail, and

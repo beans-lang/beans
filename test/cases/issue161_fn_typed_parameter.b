@@ -1,6 +1,6 @@
 // Issue #161: a generic whose type parameter appears inside a function-typed
 // parameter. `fn(T)` written without `-> unit` is the same type as
-// `fn(T) -> unit` — hir_type_key renders both the same way — but only the
+// `fn(T) -> unit`, hir_type_key renders both the same way, but only the
 // second carries the result in `args`, and a closure literal always carries
 // it. The two places that matched function types read the raw `args` list, so
 // an annotation's `fn(T)` never lined up with a literal's `fn(Hint) -> unit`:
@@ -29,7 +29,7 @@ pub class Derived extends Base {
     pub fn init() { super.init("derived") }
 }
 
-// A — the reported shape: a free function taking `fn(T)`, with the result
+// A, the reported shape: a free function taking `fn(T)`, with the result
 // left unwritten. The body calls the closure `rounds` times.
 pub fn drive<T>(rounds: int, value: T, setup: fn(T)) -> int {
     var index: int = 0
@@ -40,7 +40,7 @@ pub fn drive<T>(rounds: int, value: T, setup: fn(T)) -> int {
     return rounds
 }
 
-// B — the mirror: the parameter spells `-> unit`, the argument may not.
+// B, the mirror: the parameter spells `-> unit`, the argument may not.
 pub fn drive_spelled<T>(rounds: int, value: T,
                         setup: fn(T) -> unit) -> int {
     var index: int = 0
@@ -51,7 +51,7 @@ pub fn drive_spelled<T>(rounds: int, value: T,
     return rounds
 }
 
-// C — T in the function type's result, and in the value it returns.
+// C, T in the function type's result, and in the value it returns.
 pub fn fold<T>(value: T, step: fn(T) -> T, rounds: int) -> T {
     var carried: T = value
     var index: int = 0
@@ -62,17 +62,17 @@ pub fn fold<T>(value: T, step: fn(T) -> T, rounds: int) -> T {
     return carried
 }
 
-// D — a function type nested inside a function type.
+// D, a function type nested inside a function type.
 pub fn nested<T>(outer: fn(fn(T))) -> string {
     return "nested"
 }
 
-// E — a function type in the result.
+// E, a function type in the result.
 pub fn make_setter<T>(seed: T) -> fn(T) {
     return fn(x: T) {}
 }
 
-// F — function types inside composites.
+// F, function types inside composites.
 pub fn from_list<T>(setups: List<fn(T)>, value: T) -> int {
     for setup: fn(T) in setups {
         setup(value)
@@ -90,36 +90,36 @@ pub fn from_option<T>(setup: Option<fn(T)>, value: T) -> string {
     }
 }
 
-// G — two type parameters, only one of them inside the function type.
+// G, two type parameters, only one of them inside the function type.
 pub fn pair_apply<A, B>(left: A, value: B, setup: fn(B)) -> string {
     setup(value)
     return "pair"
 }
 
-// H — a sendable function type.
+// H, a sendable function type.
 pub fn take_send<T>(value: T, setup: send fn(T)) -> string {
     setup(value)
     return "send"
 }
 
-// I — a generic calling a generic, forwarding its own T: the instance an
+// I, a generic calling a generic, forwarding its own T: the instance an
 // instance begets.
 pub fn twice<T>(value: T, setup: fn(T)) -> int {
     return drive<T>(2, value, setup)
 }
 
-// J — T only in the function type's result, nowhere else in the signature.
+// J, T only in the function type's result, nowhere else in the signature.
 pub fn produce<T>(make: fn() -> T) -> string {
     return "produced"
 }
 
-// K — a generic free function with an ordinary class parameter, called with
+// K, a generic free function with an ordinary class parameter, called with
 // a subclass. Unification lines nothing up here, and that was refused too.
 pub fn labelled<T>(value: T, at: Base) -> string {
     return "{at.tag}"
 }
 
-// M — a type parameter that shadows a class name. Which names are type
+// M, a type parameter that shadows a class name. Which names are type
 // variables is the template's own business: resolving the name instead finds
 // the class, so the parameter read as a concrete type, matched nothing, and
 // the call was refused at build time on a program the checker took.
@@ -132,7 +132,7 @@ pub fn shadow_apply<Hint>(value: Hint, setup: fn(Hint)) -> int {
     return 1
 }
 
-// N — the argument list's own shapes beside a function-typed parameter: an
+// N, the argument list's own shapes beside a function-typed parameter: an
 // `inout` operand, and a defaulted parameter the call may or may not write.
 pub fn bump<T>(inout counter: int, value: T,
                setup: fn(T)) -> int {
@@ -205,45 +205,45 @@ pub class Holder<T> {
 fn stamp(x: Hint) { x.label = "{x.label}n" }
 
 fn main() {
-    // A — the reported shape, at two arguments, closure invoked each round
+    // A, the reported shape, at two arguments, closure invoked each round
     let h: Hint = new Hint()
     var seen: int = 0
     io.println("A {drive<Hint>(3, h, fn(x: Hint) { x.label = "{x.label}a" })}")
     io.println("A {drive<int>(4, 7, fn(v: int) { seen += v })}")
     io.println("A {h.label} {seen}")
 
-    // A — the same call written without an explicit type argument. The
+    // A, the same call written without an explicit type argument. The
     // checker used to refuse this one on its own, with "expected fn(T) ->
     // unit, got fn(main.Hint) -> unit".
     io.println("A {drive(2, h, fn(x: Hint) { x.label = "{x.label}b" })}")
     io.println("A {h.label}")
 
-    // A — a named function as the argument rather than a closure literal
+    // A, a named function as the argument rather than a closure literal
     io.println("A {drive<Hint>(2, h, stamp)}")
     io.println("A {h.label}")
 
-    // A — and through a variable, the spelling that always worked
+    // A, and through a variable, the spelling that always worked
     let via: fn(Hint) = fn(x: Hint) { x.label = "{x.label}v" }
     io.println("A {drive<Hint>(1, h, via)} {h.label}")
 
-    // B — parameter spells the result, argument does not, and the reverse
+    // B, parameter spells the result, argument does not, and the reverse
     io.println("B {drive_spelled<Hint>(2, h, via)}")
     io.println("B {drive_spelled<Hint>(1, h, fn(x: Hint) { x.label = "{x.label}s" })}")
     io.println("B {h.label}")
 
-    // C — T in the function type's result
+    // C, T in the function type's result
     io.println("C {fold<int>(1, fn(v: int) -> int { return v * 3 }, 3)}")
     io.println("C {fold<string>("x", fn(v: string) -> string { return "{v}y" }, 2)}")
 
-    // D — a function type inside a function type
+    // D, a function type inside a function type
     io.println("D {nested<Hint>(fn(inner: fn(Hint)) {})} {nested<int>(fn(inner: fn(int)) {})}")
 
-    // E — a function type as the result
+    // E, a function type as the result
     let made: fn(Hint) = make_setter<Hint>(h)
     let made_int: fn(int) = make_setter<int>(2)
     io.println("E {drive<Hint>(1, h, made)} {drive<int>(1, 5, made_int)}")
 
-    // F — function types inside composites
+    // F, function types inside composites
     var count: int = 0
     let setups: List<fn(int)> = [
         fn(v: int) { count += v },
@@ -254,25 +254,25 @@ fn main() {
     let empty: Option<fn(int)> = none
     io.println("F {from_option<int>(empty, 1)} {count}")
 
-    // G — two parameters, one of them in the function type
+    // G, two parameters, one of them in the function type
     io.println("G {pair_apply<int, Hint>(1, h, fn(x: Hint) { x.label = "{x.label}g" })}")
     io.println("G {pair_apply<string, int>("k", 4, fn(v: int) { count += v })} {count}")
 
-    // H — a sendable function type
+    // H, a sendable function type
     io.println("H {take_send<int>(6, fn(v: int) {})} {take_send<string>("t", fn(v: string) {})}")
 
-    // I — an instance begetting an instance
+    // I, an instance begetting an instance
     io.println("I {twice<Hint>(h, fn(x: Hint) { x.label = "{x.label}i" })} {h.label}")
 
-    // J — T only in the result of the function type, both spellings
+    // J, T only in the result of the function type, both spellings
     io.println("J {produce(fn() -> int { return 1 })}")
     let plain: fn() = fn() {}
     io.println("J {produce(plain)}")
 
-    // K — a subclass where a plain class parameter is declared
+    // K, a subclass where a plain class parameter is declared
     io.println("K {labelled<int>(1, new Derived())} {labelled<string>("s", new Base("base"))}")
 
-    // L — the receiver forms: instance, static, generic class, and the
+    // L, the receiver forms: instance, static, generic class, and the
     // static of a generic class through the bare class name
     let host: Host = new Host()
     io.println("L {host.apply<Hint>(2, h, fn(x: Hint) { x.label = "{x.label}m" })}")
@@ -282,7 +282,7 @@ fn main() {
     io.println("L {Holder.stat_apply<Hint>(h, fn(x: Hint) { x.label = "{x.label}w" })}")
     io.println("L {h.label}")
 
-    // M — a type parameter shadowing a class name, on every route, and one
+    // M, a type parameter shadowing a class name, on every route, and one
     // of them with the shadowed name inside a function type as well
     let ws: List<int> = shadow_wrap(3)
     let wt: List<string> = shadow_wrap("t")
@@ -291,7 +291,7 @@ fn main() {
     io.println("M {shadow_apply<string>("z", fn(v: string) {})}")
     io.println("M {Shadow.stat("y", fn(v: string) {})} {Shadow.stat<int>(1, fn(v: int) { count += v })} {count}")
 
-    // N — an inout operand and a defaulted parameter beside the function type
+    // N, an inout operand and a defaulted parameter beside the function type
     var counter: int = 0
     io.println("N {bump<Hint>(inout counter, h, fn(x: Hint) { x.label = "{x.label}x" })} {counter}")
     io.println("N {bump<int>(inout counter, 2, fn(v: int) { count += v })} {counter} {count}")

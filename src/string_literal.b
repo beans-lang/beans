@@ -2,8 +2,8 @@ package main
 
 // What a string literal means, decided in exactly one place.
 //
-// A literal token keeps the bytes the source wrote — quotes, prefix and
-// escapes included — all the way into HIR and MIR, so `beansc lex`, `beansc
+// A literal token keeps the bytes the source wrote: quotes, prefix and
+// escapes included: all the way into HIR and MIR, so `beansc lex`, `beansc
 // parse` and a diagnostic all show the spelling a reader typed. Everything
 // that needs the *value* asks here. Before this file the escape table was
 // written out four times (the tree interpreter, the LLVM emitter, and the
@@ -21,7 +21,7 @@ package main
 
 // The number of '#' a raw literal opening at `index` uses, or -1 when a raw
 // literal does not open there. `r"` opens with none, so it answers 0; `r#"`
-// answers 1. This is the raw-literal test at an arbitrary position — the
+// answers 1. This is the raw-literal test at an arbitrary position: the
 // lexer asks it at the start of a token, and a brace-matcher asks it in the
 // middle of an interpolation, so both agree on what `r"…"` means.
 fn raw_hashes_at(source: string, index: int, end: int) -> int {
@@ -37,8 +37,8 @@ fn raw_hashes_at(source: string, index: int, end: int) -> int {
 }
 
 // A raw literal opens at `index`, and its `r` is a fresh token: the byte
-// before it is not an identifier byte, so a name that ends in `r` — `str`,
-// `ptr` — right before a `"` is not read as a raw prefix. At the top level
+// before it is not an identifier byte, so a name that ends in `r`: `str`,
+// `ptr`: right before a `"` is not read as a raw prefix. At the top level
 // the lexer keeps this by scanning a whole identifier before it ever looks
 // for `r"`; inside an interpolation it walks byte by byte and asks here.
 // One rule, so the lexer and every walker re-reading a string token find
@@ -103,7 +103,7 @@ fn string_literal_body_start(source: string) -> int {
 }
 
 // One past the last byte of the body. An unterminated literal still reaches
-// here — the lexer reports it and keeps the token — so this never returns a
+// here (the lexer reports it and keeps the token) so this never returns a
 // bound before the body's start.
 fn string_literal_body_end(source: string) -> int {
     let hashes: int = string_literal_hashes(source)
@@ -206,7 +206,7 @@ fn string_escape_unicode_valid(value: int) -> bool {
 
 // How many source bytes the escape starting at `index` occupies. Always at
 // least 1, so a walker that trusts this can never fail to advance. A
-// malformed escape answers 2 — the lexer already refused it, and the walk
+// malformed escape answers 2: the lexer already refused it, and the walk
 // only has to finish.
 fn string_escape_length(source: string, index: int,
                         end: int) -> int {

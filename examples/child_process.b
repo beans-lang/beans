@@ -1,23 +1,7 @@
-// A child that outlives the call.
-//
-// `Command.run()` handles the common case — start it, feed it, collect everything, wait —
-// and it is the right tool whenever the output is all you want. It cannot help when the
-// child keeps running: a server to talk to, a process to watch, something to stop after a
-// deadline. `Command.start()` gives a `Child` instead.
-//
-// Two things about `Child` are decisions rather than details:
-//
-//   **A dropped `Child` is asked to stop, then killed, then reaped.** Not left running,
-//   and not left as a zombie. An orphan outliving the program that started it is a bug you
-//   find days later; a zombie per spawn leaks the one resource a process cannot get more
-//   of. Call `wait()` if you want it to finish on its own terms.
-//
-//   **`wait_timeout` reports "still running" as `none`, not as an error.** Escalating from
-//   polite to forceful is the normal path, not the exceptional one, so it does not go
-//   through error handling.
-//
-// Every program used here is a fixed command with fixed input, so the output is identical
-// every run.
+// `run()` handles finite commands; `start()` returns a `Child` for ongoing processes.
+// Dropping a child terminates and reaps it; call `wait()` to let it exit normally.
+// `wait_timeout()` returns `none` while the child is still running.
+// Fixed commands and inputs keep this example's output deterministic.
 
 import std.io
 import std.process
@@ -30,7 +14,7 @@ fn a_conversation() -> Result<int> {
     io.println("it has a real pid {child.process_id() > 0}")
     io.println("and it has not finished {!child.is_finished()?}")
 
-    // cat echoes what it is given. Closing stdin is what tells it to finish — a program
+    // cat echoes what it is given. Closing stdin signals EOF to the reader.
     // reading to EOF waits forever otherwise.
     // write_text sends the string bytes directly. read_to_end grows one final
     // Bytes, so neither direction needs full-size staging buffers.
@@ -141,7 +125,7 @@ fn dropping_one_is_safe() -> Result<int> {
     cmd.arg("while true; do sleep 0.05; done")
     let forgotten: process.Child = cmd.start()?
     io.println("started one and will not wait for it {forgotten.process_id() > 0}")
-    // `forgotten` is dropped here. deinit terminates, kills if needed, and reaps — so
+    // `forgotten` is dropped here. deinit terminates, kills if needed, and reaps, so
     // this function leaves behind neither a running process nor a zombie.
     return ok(1)
 }

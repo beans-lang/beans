@@ -1,8 +1,8 @@
 // #117, the container half: because a payload-free enum satisfies `Order`, it
 // is a legal key for the stdlib's ordered containers, whose bodies compare
 // keys through a generic `K implements Order` `<`. That is a different path
-// from `List.sort` — a balanced-tree insert and a heap sift, not a merge over
-// a slot array — and it has to give the same answer on the interpreter and
+// from `List.sort`, a balanced-tree insert and a heap sift, not a merge over
+// a slot array, and it has to give the same answer on the interpreter and
 // both native builds. A plain enum key (pointer at its tag) and an `enum(u8)`
 // key (bare tag) both appear, since their representations differ.
 package main

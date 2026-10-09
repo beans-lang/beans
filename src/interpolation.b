@@ -1,15 +1,6 @@
 package main
 
-// Where a slot's expression ends and its format spec begins.
-//
-// The question is asked three times about one program — the checker splits
-// the expression here, the tree interpreter reads the spec here, and the
-// LLVM emitter emits it here — so it is answered once. When the three
-// disagreed the two compilers printed different strings for the same
-// literal: the emitter counted only braces, so the `:` in a closure
-// parameter's type ended the expression for it and not for anybody else,
-// and `"{apply(fn(x: int) -> int { ... }, 9):6}"` came out padded under the
-// interpreter and unpadded native.
+// The checker, interpreter, and LLVM emitter share one parser for format separators.
 
 // The index of the `:` that starts the format spec, or -1 when the slot has
 // none. A `:` inside `(`, `[` or `{`, inside a nested string, or inside a

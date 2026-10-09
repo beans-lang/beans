@@ -1,6 +1,6 @@
 // B2: `%` between floats. The checker has always accepted it and the native
 // lowering has always had frem; the interpreter had no float row and
-// panicked. The negative operands are the ones that matter — a floored
+// panicked. The negative operands are the ones that matter, a floored
 // substitute agrees with C on the positives and disagrees here.
 package main
 

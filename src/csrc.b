@@ -174,7 +174,7 @@ fn csrc_quoted_include(line: string) -> string {
     rest = rest.slice(1, rest.len()).trim()
     // `#import` as well as `#include`. Every Objective-C source uses `#import`
     // and nothing else, so a scanner that knew only `#include` left the
-    // headers of every `.m` file out of the cache key — the same bug this
+    // headers of every `.m` file out of the cache key: the same bug this
     // function was written to fix, still open for one language. It surfaced in
     // cortado: a change to the header every host implements silently reused
     // the object built before it, and the program reported an ABI version the
@@ -308,7 +308,7 @@ fn csrc_run_library(units: List<CsrcUnit>,
     let compiler: string = csrc_host_compiler()
     // Each unit's own flags go into the key beside its sources. Two packages
     // can disagree about a -D, so the flags cannot be unioned into one
-    // compile — each file is compiled with its own set and the objects are
+    // compile: each file is compiled with its own set and the objects are
     // linked together below.
     var inputs: string = ""
     var seen: List<string> = []

@@ -1,23 +1,5 @@
-// CPU feature detection and safe dispatch.
-//
-// A program is often compiled once and run on machines with different
-// instructions. The pattern is: write a fast path that needs a feature, write a
-// path that needs nothing, and pick between them at run time.
-//
-// Two pieces make that safe:
-//
-//   * `cpu.has(CpuFeature.aes)` asks the machine that is *running*, not the one the
-//     program was compiled for.
-//   * `feature "aes" fn` marks a body as allowed to use that feature's
-//     instructions. Only a marked function carries the permission, so the compiler
-//     cannot hoist a feature-requiring instruction out of it into a caller that
-//     never checked.
-//
-// The compiler then requires the guard: calling a marked function anywhere the
-// feature is not known present is an error, not a crash on the wrong machine.
-//
-// `aes` is used here because both x86-64 and arm64 have it in their feature sets,
-// so this one file compiles for either.
+// `cpu.has` checks the running machine; feature-gated functions keep required instructions behind that guard.
+// Calling a gated function without a known feature is a compile error. AES is available on x86-64 and arm64.
 
 import std.io
 import std.cpu
@@ -55,7 +37,7 @@ fn mix(seed: int, rounds: int) -> int {
 fn main() {
     // The point of a dispatch is that the answer does not depend on which path
     // ran. Printing the answer, not the feature, is what keeps this output the same
-    // on every machine — and it is also the property worth asserting.
+    // on every machine, which is the property this example asserts.
     let dispatched: int = mix(7, 1000)
     let generic: int = mix_generic(7, 1000)
     io.println("result {dispatched}")

@@ -4,7 +4,7 @@
 // and a close handshake that completes with codes intact.
 //
 // The server runs on the main thread and the client on a spawned one, so
-// only the port number crosses the boundary — sockets stay where they were
+// only the port number crosses the boundary, sockets stay where they were
 // made. Every printed line is a derived fact.
 package main
 

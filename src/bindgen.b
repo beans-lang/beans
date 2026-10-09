@@ -104,7 +104,7 @@ class BindgenGenerator {
             return "bool"
         }
         // Plain `char` is its own type, and whether it is signed is the
-        // target's choice — Clang says so with __CHAR_UNSIGNED__.
+        // target's choice: Clang says so with __CHAR_UNSIGNED__.
         if type == "char" {
             return self.sized(
                 type, self.facts.char_bytes,
@@ -498,8 +498,8 @@ class BindgenGenerator {
     }
 
     // A C enum binds only when Clang gave it the plain signed-int
-    // representation this compiler emits. Anything else — a fixed underlying
-    // type, or a value that pushed the whole enum to unsigned — would change
+    // representation this compiler emits. Anything else: a fixed underlying
+    // type, or a value that pushed the whole enum to unsigned: would change
     // what the constants mean.
     fn enum_is_supported(
         name: string,
@@ -629,7 +629,7 @@ fn run_self_bindgen(
     var clang_options: List<string> = []
     var only: Map<string, bool> = {}
     // The package clause to write above the bindings. Empty means none, which
-    // is only loadable as a lone file — a generated file dropped into a real
+    // is only loadable as a lone file: a generated file dropped into a real
     // package directory has to declare that package like every other file.
     var package_name: string = ""
     var allow_unsupported: bool = false
@@ -1146,7 +1146,7 @@ fn run_self_bindgen(
     }
     // Records and enums come out in name order. A map hands its keys back in
     // whatever order it stored them, and the two bindgen implementations do not
-    // store them the same way — sorting is what makes their output identical.
+    // store them the same way: sorting is what makes their output identical.
     var record_names: List<string> =
         generator.needed_records.keys()
     record_names.sort()

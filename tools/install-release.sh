@@ -5,7 +5,7 @@
 #
 # POSIX sh on purpose: this is the first Beans code a machine ever runs, so it
 # may not assume bash, and it may not assume jq, python, node or git either. It
-# needs curl or wget, tar, and one of sha256sum, shasum or openssl — all of
+# needs curl or wget, tar, and one of sha256sum, shasum, or openssl; all are
 # which ship with the systems Beans supports.
 #
 # Nothing is installed until the download has been checksummed and unpacked into
@@ -91,7 +91,7 @@ fi
 # `--retry` alone does not: curl counts only its own transient errors, and a
 # connection that opens and then goes quiet is error 56, which it will not
 # retry. With no timeout either, such a transfer sits until the kernel gives
-# up on the socket — nine minutes on a GitHub macOS runner, and then a failed
+# up on the socket for nine minutes on a GitHub macOS runner, then fail the
 # install for a user whose network hiccuped once.
 #
 # So the retry is a loop here rather than a curl flag, which also means it

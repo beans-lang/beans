@@ -1,11 +1,11 @@
-// tour.b — one file that shows every beans idea so far
+// Tour of core Beans language features.
 
 import std.io
 
 interface Shape {
     fn area() -> f64
 
-    // default method body — most "abstract class" jobs die here
+    // A default method body covers common abstract-class use cases.
     fn describe() -> string {
         return "shape with area {self.area()}"
     }
@@ -98,7 +98,7 @@ fn main() {
         io.println(s.describe())
     }
 
-    // as? — checked downcast, returns Option, never crashes
+    // `as?` performs a checked downcast and returns Option.
     let first: Shape = new Circle(1.0)
     match first as? LoudCircle {
         some(lc) => io.println("loud: {lc.describe()}"),
@@ -130,7 +130,7 @@ fn main() {
         i += 1
     }
 
-    // generics in use — short init: left side already says the type
+    // Generic construction infers the initializer type from the left side.
     var st: Stack<int> = new Stack()
     st.push(1)
     st.push(2)

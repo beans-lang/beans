@@ -1,6 +1,6 @@
 // A struct that reaches itself through its own fields has no finite layout,
 // and that error is reported on its own terms. Checking carries on past it, so
-// the cyclic type is still around to be asked other questions — including
+// the cyclic type is still around to be asked other questions, including
 // whether it is move-only. This case pins that the answer comes back instead
 // of walking the cycle until the stack runs out.
 

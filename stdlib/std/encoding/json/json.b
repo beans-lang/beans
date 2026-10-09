@@ -2,7 +2,7 @@
 //
 // This is a native Value/DOM API: parse gives a Value view over yyjson's
 // immutable document, and child Values keep that document alive through a
-// shared owner object — nothing is eagerly copied into Beans collections.
+// shared owner object: nothing is eagerly copied into Beans collections.
 // Typed decoding entry points are declared here and lowered by the compiler.
 // Their schemas use tool-retained annotations; the hot path never needs
 // runtime reflection or public Value wrappers.
@@ -14,7 +14,7 @@
 // gives it.
 //
 // Strict RFC 8259 is the default. The explicit opt-ins in `Options` accept
-// three common extensions — comments, trailing commas, and inf/nan literals.
+// three common extensions: comments, trailing commas, and inf/nan literals.
 // That is a subset of JSON5, deliberately not called JSON5: unquoted keys,
 // single quotes and the rest are not accepted.
 //
@@ -240,7 +240,7 @@ pub class DecodeOptions {
 
 // The shared owner of one yyjson document. Every Value holds a reference,
 // so the native document lives exactly as long as any Value over it, and
-// deinit frees it exactly once — on whichever thread drops the last Value.
+// deinit frees it exactly once: on whichever thread drops the last Value.
 class Doc {
     handle: int
     writable: bool
@@ -380,7 +380,7 @@ pub class Value {
         return ok(f64_from_bits(bits as u64))
     }
 
-    /// Any numeric kind as f64 — a convenience that accepts integers too,
+    /// Any numeric kind as f64: a convenience that accepts integers too,
     /// converting with the usual f64 rounding above 2^53.
     pub fn number() -> Result<float> {
         var raw: int = -1

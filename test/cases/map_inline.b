@@ -1,13 +1,13 @@
-// Every map entry point the emitter can put inside a loop, exercised past the
-// linear-scan cutoff (MAP_LINEAR_MAX is 8, so these sizes run the hash index,
-// its tombstones and its reindex) and with removals, so an OrderedMap has real
-// holes for iteration to skip.
-//
-// test/map_inline.sh builds this twice: without --lto every one of those entry
-// points must be a symbol in the binary, which is what proves the program
-// really reaches them, and with --lto not one of them may survive, which is
-// what proves always_inline folded them all. The answers below must match on
-// the interpreter and on both builds.
+// Exercise map entry points in loops past the linear-scan cutoff, including
+// removals and OrderedMap holes. test/map_inline.sh checks LTO behavior and
+// compares output across the interpreter and native builds.
+
+
+
+
+
+
+
 import std.io
 
 struct Point {
@@ -21,10 +21,10 @@ class Tag {
     fn deinit() { io.println("drop {self.name}") }
 }
 
-// Every Cell counts itself in and out. A removal that released a value twice,
-// or dropped an entry without releasing it, shows up as a non-zero balance —
-// a claim that does not depend on the order the drops happen in, so it holds
-// across a randomised stream where a golden could not.
+// Track each Cell lifetime to catch missing and duplicate releases.
+
+
+
 class Tally {
     pub live: int = 0
     pub made: int = 0

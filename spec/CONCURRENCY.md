@@ -1,11 +1,11 @@
-# Fibers — the Beans concurrency contract (async v3 design record)
+# Fibers - the Beans concurrency contract (async v3 design record)
 
 Status: **F1 and the F2 core are implemented.** The fiber runtime
-(`runtime/beans_fiber.{h,c}`, `test/fiber_core.sh`) and the `brew` surface —
+(`runtime/beans_fiber.{h,c}`, `test/fiber_core.sh`) and the `brew` surface -
 parse, check, both lowerings, `Brew<T>` with join/cancel, the synthesized
-scope join, panic containment and escalation — are in the tree; see the
+scope join, panic containment and escalation - are in the tree; see the
 "where the implementation stands" section at the end for what deliberately
-remains (may-park inference and nested-scope brews) — panic and cancellation
+remains (may-park inference and nested-scope brews) - panic and cancellation
 unwind now land on both backends on the DWARF-EH targets, and `contained f(args)`
 puts its boundary at a call instead of at a fiber. The async v2
 state-machine branch is archived, unmerged, at the tag
@@ -15,7 +15,7 @@ document exists.
 ## The reversal, owned
 
 The 1.0 spec said "OS threads, not green threads", because green threads make
-every C call expensive — Go pays a stack switch at every cgo boundary, and
+every C call expensive - Go pays a stack switch at every cgo boundary, and
 Beans lives on C bridges. That objection was about *moving* stacks. Pinned
 fibers keep every property that made the objection true in Go false in Beans:
 
@@ -27,7 +27,7 @@ fibers keep every property that made the objection true in Go false in Beans:
   thread-local reactor stay exactly as they are.
 - Parking is a **cooperative register swap** (~20 instructions), not a signal
   and not a state-machine re-entry. Between parks a fiber is ordinary compiled
-  sync code — the same code the 0.2 engine runs today.
+  sync code - the same code the 0.2 engine runs today.
 
 `std.thread` remains the tool for CPU-heavy and blocking work, and `main()`
 still runs on the real process main thread. Fibers replace the async v2
@@ -35,7 +35,7 @@ state machines, not threads.
 
 Why v2 lost (same machine, same route, 4 workers): sync 0.2 served 183.7k
 req/s at c128 where async v2 served 119.0k, at ~32µs CPU/request against
-~8µs. The lowering was the tax — every async call heap-allocated a task, three
+~8µs. The lowering was the tax - every async call heap-allocated a task, three
 closures, and two cells, and every event rode a boxed enum into the cycle
 collector. Fibers allocate a stack once per fiber and nothing per park.
 
@@ -83,8 +83,8 @@ h.cancel()                          // request cancellation; returns nothing
   `Result<unit>` in Beans because `ok` takes a value, so a child that computes
   nothing has nothing for `join` to answer with, and the call is refused at
   check time about the program (spec/SYNTAX.md, "Option and Result"). The
-  handle itself is not refused — `Brew<unit>` is an ordinary handle and the
-  statement form, a kept handle nobody joins, and `cancel()` all run — because
+  handle itself is not refused - `Brew<unit>` is an ordinary handle and the
+  statement form, a kept handle nobody joins, and `cancel()` all run - because
   a `Brew<T>` payload names what the child computes and "nothing" is a real
   answer there. It is only answering a `Result` about it that has no value to
   put inside. Give the brewed function a result to return, or let the
@@ -95,7 +95,7 @@ h.cancel()                          // request cancellation; returns nothing
   handle and consumes
   the outcome: the handle's joined flag is the single source of truth, and a
   second `join` answers an `err` of kind `closed`. (A change from the F0
-  sketch, which had join move the handle — a moved handle fought the
+  sketch, which had join move the handle - a moved handle fought the
   synthesized scope join, which must still see the flag on every exit path;
   one flag beats two owners.)
 - `cancel()` requests cancellation and returns immediately. It never
@@ -104,14 +104,14 @@ h.cancel()                          // request cancellation; returns nothing
   The child belongs to the scope and the worker that brewed it. Cross-thread
   hand-off is what `thread.spawn` is for.
 
-### Structure — the scope contract
+### Structure - the scope contract
 
 Every fiber a scope brews belongs to that scope. This is the promise that
 makes leaked-goroutine bugs unrepresentable:
 
 - **Normal scope exit joins.** Falling off the end of the scope (or a plain
   `return`) parks until every un-joined child of the scope has finished, in
-  reverse brew order, exactly where armed defers run — children are joined
+  reverse brew order, exactly where armed defers run - children are joined
   newest-first, interleaved with defers in the order the scope armed them.
 - **Error exit cancels, then joins.** Leaving the scope through `?`
   propagation or a panic first requests cancellation of every un-joined
@@ -120,7 +120,7 @@ makes leaked-goroutine bugs unrepresentable:
 - **An auto-joined failure escalates.** If scope exit joins a child that
   panicked and no `join()` call ever saw that failure, the parent panics at
   the scope exit with the child's message and position. A failure can be
-  handled (`join()` returns it as a value) or it propagates — it cannot
+  handled (`join()` returns it as a value) or it propagates - it cannot
   evaporate. A child cancelled *by* the exiting scope's own error path does
   not escalate; the original error keeps priority.
 - Handles may outlive nothing: a `Brew<T>` cannot be stored in a field,
@@ -128,44 +128,44 @@ makes leaked-goroutine bugs unrepresentable:
   a local of the scope that brewed it. (Same rule and same reasons as the v2
   `TaskGroup`: the structure is the point.)
 
-Dynamic fleets — N children where N is a runtime value — use `TaskGroup<T>`,
+Dynamic fleets - N children where N is a runtime value - use `TaskGroup<T>`,
 rebuilt on fibers as a builtin: `new TaskGroup<T>()`, then
 `group.brew(f(x))` (the v2 `start`, renamed to match `brew`) starts a child
 exactly as a lone brew does, `next()` / `try_next()` answer
-`Option<Result<T>>`, `wait_all()` answers `Result<List<T>>` in spawn order —
+`Option<Result<T>>`, `wait_all()` answers `Result<List<T>>` in spawn order -
 every child is joined even on failure, and the first failure in spawn order
-is the fleet's answer — `cancel_all()` cancels newest-first, joins, and
+is the fleet's answer - `cancel_all()` cancels newest-first, joins, and
 discards every outcome newest-first (handling by discard, the v2 contract),
 and a drained group is reusable. One v2 semantic is deliberately changed:
-`next()` delivers in **completion order**, spawn order breaking ties — a
+`next()` delivers in **completion order**, spawn order breaking ties - a
 fleet exists to take answers as they land; `wait_all` keeps spawn order.
 The group carries the same scope-bound walls as a `Brew` handle (move,
 capture, signature, field, nesting, var) plus the same synthesized scope
 join, which escalates the first unseen panic in spawn order and then
-releases the ok results nobody claimed **newest-first** — reverse spawn
+releases the ok results nobody claimed **newest-first** - reverse spawn
 order, the LIFO order a scope drops what it owns, the same order the
 results a `wait_all` handed back would release in when the returned list
-dies — so a discarded value's `deinit` runs in the same order on both
+dies - so a discarded value's `deinit` runs in the same order on both
 engines (#106). Delivery order (`next`, `wait_all`) is a separate promise
 kept above; this is only the order the fleet destroys what no one took.
 `group.brew` itself is legal
 at any block depth, unlike a lone brew, because the join references the
 group binding and the nested-block wall on `new TaskGroup` pins that
 binding to the function's own scope. Channels, `Gate` (the plan's `Event`,
-renamed: `Event` is everyday user vocabulary — `std.poll` exports a
-`poll.Event` — and a builtin must not take it away), timers, and `sleep`
+renamed: `Event` is everyday user vocabulary - `std.poll` exports a
+`poll.Event` - and a builtin must not take it away), timers, and `sleep`
 stay library types; their `_async` API variants fold back into the plain
-names — a channel `receive` on a fiber simply parks.
+names - a channel `receive` on a fiber simply parks.
 
 **A claimed result belongs to whoever claimed it.** `join()`, `next()`,
 `try_next()` and `wait_all()` *move* the value out of the child's row: the
 row keeps no reference to what it handed over, so the value's only owner is
-the binding that took it and its `deinit` runs when that binding dies — the
+the binding that took it and its `deinit` runs when that binding dies - the
 end of the match arm that claimed it, or the death of the list `wait_all`
 answered. A claimed value is never held to the death of the handle or the
 group, and the group never destroys something it has already given away.
 The result nobody claimed is the same rule's other half: it dies inside the
-synthesized scope join itself, ahead of the scope's own locals — for a
+synthesized scope join itself, ahead of the scope's own locals - for a
 group, discarded newest-first as above; for a lone handle, at the join.
 Both engines pick these moments identically; a row that kept a second
 reference to a value it had handed over was #124.
@@ -173,22 +173,22 @@ reference to a value it had handed over was #124.
 ### Cancellation
 
 - Cancellation is **cooperative and park-scoped**: a cancel request is
-  observed at the fiber's next park (or immediately if it is parked now —
+  observed at the fiber's next park (or immediately if it is parked now -
   the park wakes with the cancelled outcome). Straight-line code between
   parks is never interrupted.
 - A cancelled park does not return a value to the code that parked: the
-  fiber begins a **cancellation unwind** — the same controlled unwind a
+  fiber begins a **cancellation unwind** - the same controlled unwind a
   panic uses, with a distinguished cancelled failure. Armed defers run
   newest-first exactly once; owned values drop; children of the cancelled
   fiber are cancelled in cascade (newest-first), and its join then reports
   kind `cancelled`.
-- Code that must not be cancelled mid-protocol does not park mid-protocol —
+- Code that must not be cancelled mid-protocol does not park mid-protocol -
   the same discipline as today's sync code. There is no mask/unmask API in
   v3; if real code proves one necessary, that is a new decision.
 
 ## May-park inference and its walls
 
-The checker computes "may park" transitively, whole-program — no annotation,
+The checker computes "may park" transitively, whole-program - no annotation,
 no function color. A function may park if it parks directly (channel
 receive, join, sleep, readiness wait, `brew` scope exit, …) or calls a
 function that may park.
@@ -197,7 +197,7 @@ The walls, refused statically with named messages:
 
 - **`deinit` may not park.** Drops run inside arbitrary code, including
   other fibers' unwinds; a parking drop would deadlock cleanup. Message
-  discipline: "deinit cannot park — it runs during cleanup; move the wait
+  discipline: "deinit cannot park - it runs during cleanup; move the wait
   before the value drops".
 - **Synchronous C callbacks may not park.** A Beans function passed as a
   sync C callback (`extern "C"` export, `CFunctionPtr`, `StoredCallback`,
@@ -212,22 +212,22 @@ The walls, refused statically with named messages:
   through a function value, interface method, or reflection is treated as
   may-park. In a no-park context that is a static refusal; if a blind spot
   survives (reflection into a park from a C callback), the runtime backstops
-  with a clean named panic — "parked in a context that cannot park" — with
+  with a clean named panic - "parked in a context that cannot park" - with
   the fiber's name and position. The backstop is a bug detector, not a
   control-flow path.
 
 `main()` runs as the root fiber of worker 0. A program that never brews
 never parks, pays for nothing, and behaves byte-for-byte as today.
 
-## Panic containment — a language guarantee
+## Panic containment - a language guarantee
 
 Promoted from "espresso feature" to core Beans property, stated in the
 contract:
 
 > **A panic terminates only the fiber it happened on.** That fiber's stack
 > unwinds, running its armed defers newest-first exactly once; owned values
-> drop; the fiber is marked failed; the failure — message and source
-> position — is delivered at its join point as an ordinary catchable error.
+> drop; the fiber is marked failed; the failure - message and source
+> position - is delivered at its join point as an ordinary catchable error.
 > Nothing else stops.
 
 - The **main fiber** panicking with no one to catch it ends the program with
@@ -238,14 +238,14 @@ contract:
   panic that arrives at the entry of a `thread.spawn` closure **ends the
   process**, with the same report and the same exit `3` the main fiber's
   panic gives. `Thread<T>.join()` answers `T`, not `Result<T>`, so a thread
-  has no join-shaped place to deliver a failure as a value — and a thread
+  has no join-shaped place to deliver a failure as a value - and a thread
   that is detached, or simply never joined, has no join at all, so a stashed
   failure would be dropped on the floor rather than reported. The thread's
   own frames are abandoned, exactly as the main fiber's are. `brew` is the
   contained form; a thread panicking inside its own `brew` is contained as
   usual and only reaches the thread entry if it escapes that join.
 - **ARC makes the unwind complete**: a dead fiber's memory is reclaimed
-  deterministically by its own unwind — there is no shared heap to corrupt,
+  deterministically by its own unwind - there is no shared heap to corrupt,
   because `Send` + move + pinning mean a fiber cannot have been mutating
   another worker's data when it died.
 - **Unwind order** is the reverse of construction, the same order a normal
@@ -254,13 +254,13 @@ contract:
 - A panic **inside a defer** during an unwind is the one unrecoverable
   case: double panic aborts the process with both positions, as today.
 
-### Contained calls — containment without a fiber
+### Contained calls - containment without a fiber
 
 Containment came in with `brew`, so for a while the only place a failure could
 stop was a fiber's entry. That coupled two things that are not the same: a
 server that wants a panicking handler to become a 500 was paying a fiber spawn,
 two context switches and a join on every request, whether or not anything ever
-panicked (issue #145). The unwind was never the fiber's — it is the platform's
+panicked (issue #145). The unwind was never the fiber's - it is the platform's
 forced unwind, and it stops wherever a landing pad declines to resume. So the
 boundary moves to a call:
 
@@ -274,8 +274,8 @@ match contained handle(request) {
 > `contained f(args)` runs `f` **on the current fiber, in the current frame's
 > call position**, under a catch frame, and answers `Result<T>` where `T` is
 > `f`'s declared result type. A panic raised anywhere under that call unwinds
-> the frames between it and the boundary — each frame's defers newest-first
-> exactly once, each frame's owned values dropped — and arrives at the call
+> the frames between it and the boundary - each frame's defers newest-first
+> exactly once, each frame's owned values dropped - and arrives at the call
 > site as `err` of kind `panic`, carrying the same message and source position
 > a brewed fiber's `join` would have delivered for the same panic. Nothing is
 > spawned, nothing switches, nothing is joined.
@@ -292,7 +292,7 @@ match contained handle(request) {
   on the parent fiber. Only the call is contained. They are also *hoisted*
   outside, into invisible locals of the enclosing scope, so a value moved into
   a contained call dies when that scope exits rather than when the callee
-  returns — again exactly as a `brew`'s arguments do. Inside a loop body that
+  returns - again exactly as a `brew`'s arguments do. Inside a loop body that
   is the iteration; at a function's own scope it is the function.
 - **Cancellation is not contained.** On the supported unwind targets, a cancelled park starts cleanup and
   passes through `contained` catch frames to the fiber entry; the join reports
@@ -301,17 +301,17 @@ match contained handle(request) {
   defer, owned value, and child join can finish; the original failure retains
   priority. A panic raised during cancellation cleanup is a fatal double panic.
 - **A double panic is still fatal.** A panic raised while the fiber is already
-  unwinding — from a defer or a deinit that the unwind itself is running — is
+  unwinding - from a defer or a deinit that the unwind itself is running - is
   the one unrecoverable case, and a catch frame does not change it: both
   reports go out and the process stops. The runtime asks "is this fiber
   unwinding" before it asks whether a frame is standing, and the tree walker
   asks the same question in the same order.
 - **Resources**: the unwind is the same one `brew` containment uses, so ARC
-  reclamation is complete — every frame it passes drops what it owned, in
+  reclamation is complete - every frame it passes drops what it owned, in
   reverse construction order, and an object whose initializer did not return
   is released without its `deinit` body (issue #120). Nothing is resurrected:
   a value the callee was building is gone, and the caught `err` carries only
-  the report. The cycle collector needs nothing special — it sees the same
+  the report. The cycle collector needs nothing special - it sees the same
   releases a return would have made.
 - **`defer`** in the callee's frames runs during the unwind, newest-first.
   `defer` in the *caller's* frame is untouched: the caller did not exit.
@@ -320,17 +320,17 @@ match contained handle(request) {
   unwind is running that defer.
 - **`brew` under a `contained` call** keeps its own boundary: a child's panic
   belongs to the child's join, not to the frame standing on the parent. A
-  child nobody joined escalates at the scope exit, and *that* panic — raised
-  on the parent — is the contained boundary's to catch.
+  child nobody joined escalates at the scope exit, and *that* panic - raised
+  on the parent - is the contained boundary's to catch.
 - **Where the count lives.** Whether a catch frame is standing is asked of one
   fiber, not of the thread. Fibers of a worker share thread storage but not
   stacks, so a frame on one fiber's stack is not one another fiber's failure
   can reach; both backends keep the count on the fiber (`contained_depth` in
   the fiber record, a per-fiber entry in the tree walker).
 - **A thread is not a fiber, but a catch frame still works on one.** A panic
-  that reaches the entry of a `thread.spawn` closure still ends the process —
+  that reaches the entry of a `thread.spawn` closure still ends the process -
   `Thread<T>.join()` answers `T` and has no join-shaped place to put a failure
-  — but that is about the *entry*, and a `contained` call needs no join to
+  - but that is about the *entry*, and a `contained` call needs no join to
   deliver to. The first `contained` call on a thread promotes it to a worker so
   the count has a fiber to live on, and from there the boundary answers exactly
   as it does on the main worker.
@@ -338,7 +338,7 @@ match contained handle(request) {
   report and a line saying the catch could not be found, rather than doing
   something undefined. That needs a frame between the panic and the boundary
   with no unwind table, which for a Beans program means a C frame built without
-  one — the driver passes `-funwind-tables` for every unit it compiles in a
+  one - the driver passes `-funwind-tables` for every unit it compiles in a
   build that can unwind, so it takes a hand-linked object to get there.
 
 **How it differs from `brew`.** `brew` is for concurrency and gives
@@ -347,18 +347,18 @@ concurrency. `brew` answers a scope-bound `Brew<T>` handle whose `join` may
 also report `cancelled` or `closed`; `contained` answers a `Result<T>`
 immediately, whose only failure kind is `panic`. `brew` may only appear at a
 function body's own scope (the synthesized scope join rides function-exit
-defers); `contained` is an ordinary expression, legal wherever one is —
+defers); `contained` is an ordinary expression, legal wherever one is -
 inside a loop, an `if`, a match arm. `brew` runs a unit-returning call
-happily as long as nobody joins it — the statement form, a kept handle and
+happily as long as nobody joins it - the statement form, a kept handle and
 `cancel()` are all fine, and only `join` is refused, because it has to answer
 a `Result`; `contained` cannot run one at all, because answering the `Result`
-is the whole of what it does, and there is no `Result<unit>` in Beans — `ok`
+is the whole of what it does, and there is no `Result<unit>` in Beans - `ok`
 takes a value.
 
 **Where it is refused**, at check time, about the program:
 
 - a target without the controlled unwind (`TargetDescription.supports_unwind`
-  — today that is Windows/COFF, wasm, and 32-bit ARM). On those the native
+  - today that is Windows/COFF, wasm, and 32-bit ARM). On those the native
   backend has no landing pad to catch with, so allowing it would let a panic
   end the process where the tree interpreter caught it. `brew` and `join`
   remain the way to contain a panic there, at the cost of the fiber;
@@ -368,18 +368,18 @@ takes a value.
   same line one step later, at `join` rather than at the call.
 - the walls the fabricated closure imposes, shared with `brew`: the operand
   must be a call to a user function or method, a method's receiver must be a
-  reference (a class or an interface — a value receiver would run on the
+  reference (a class or an interface - a value receiver would run on the
   hoisted copy), and no argument may be `inout`.
 
 ### The lock question, answered: poison
 
-The one sharp edge is a panic while holding worker-shared state — inside
+The one sharp edge is a panic while holding worker-shared state - inside
 `Mutex.with_lock`. Decision: **poison the lock.**
 
 - The unwind releases the OS lock (the closure frame drops), but the `Mutex`
   is marked poisoned first: the protected value may be half-mutated.
 - Every later `with_lock` on a poisoned mutex **panics** with kind
-  `poisoned` — "mutex poisoned: a fiber panicked while holding it (at
+  `poisoned` - "mutex poisoned: a fiber panicked while holding it (at
   <position>)". The failure spreads only to fibers that actually touch the
   poisoned state, and each such panic is itself contained and reported at
   its own join. It cannot spread silently, and it cannot take down fibers
@@ -388,19 +388,19 @@ The one sharp edge is a panic while holding worker-shared state — inside
   restructures to not share that mutex across panic boundaries; if real code
   earns an escape hatch, that is a new decision with its own tests.
 - Process abort was rejected because it re-couples every request to every
-  other request — exactly what containment exists to end. Poison keeps the
+  other request - exactly what containment exists to end. Poison keeps the
   blast radius exact: the fibers that depend on the poisoned data.
 
 ## Runtime shape (F1 contract)
 
 Per worker: **one FIFO run queue + the existing reactor.** A ready fiber
-runs to its next park; a fiber made ready goes to the queue tail (FIFO —
+runs to its next park; a fiber made ready goes to the queue tail (FIFO -
 this is the fairness rule, and `yield()` is "park to my own tail"). When the
 queue is empty the worker blocks in kevent/epoll exactly as the sync engine
 does today. A kernel event resumes a fiber instead of marking a task. Wakes
 from another thread (channel send, `Gate.open`, cancel, cross-worker join)
 use the existing wake handles: the wake carries the fiber, the owning
-worker's poller wakes, and the worker queues its own fiber — a fiber is only
+worker's poller wakes, and the worker queues its own fiber - a fiber is only
 ever *run* by its own worker.
 
 - **Context switch**: hand-written asm for arm64 AAPCS64 and x86-64 SysV,
@@ -411,24 +411,24 @@ ever *run* by its own worker.
   page below, pages commit lazily; a typical connection fiber touches
   4–8KB. Overflow hits the guard and panics cleanly with the fiber's name.
   Stack reservations pool and recycle per worker. Interpreter-hosted fibers
-  reserve bigger (default 8MB) — tree-walking frames are C frames; virtual
+  reserve bigger (default 8MB) - tree-walking frames are C frames; virtual
   address space is free at interpreter scale.
 - **The park registry** from the v2 branch (`b97a529`, lock-free state
   reads, sticky dispatch-mode registrations, deadline-fused park) is the
   reference design for the fiber netpoller: same states, same stickiness,
   "wake a task" becomes "resume a fiber". It is re-implemented against
-  fibers in F1, not cherry-picked — its host files (`std.async$rt`) no
+  fibers in F1, not cherry-picked - its host files (`std.async$rt`) no
   longer exist.
 - **Deadlock report**: when every fiber on every worker is parked and no
   readiness, timer, channel, or wake source can fire, the runtime reports
-  the fiber table — name, park site, what it waits for — and aborts. The v2
+  the fiber table - name, park site, what it waits for - and aborts. The v2
   rule ("pending with no possible wake is a deadlock, not a busy spin")
   survives verbatim.
 
 ## The interpreter decision: one scheduler, real contexts
 
 Decision: **the interpreter hosts each fiber on a real fiber stack and runs
-the tree-walker inside it** — the same C fiber runtime, the same scheduler,
+the tree-walker inside it** - the same C fiber runtime, the same scheduler,
 the same queues as native. There is no second engine and no order-insensitive
 golden scheme:
 
@@ -438,45 +438,45 @@ golden scheme:
   for genuinely racy output (cross-worker interleavings), as today.
 - The cost is stack size, not correctness: interpreter frames are heavy, so
   interpreter fibers reserve 8MB virtual (still lazily committed).
-- The rejected option — keeping a tree-driven cooperative driver — was a
+- The rejected option - keeping a tree-driven cooperative driver - was a
   second scheduler with its own fairness bugs and a permanent
   goldens-diverge risk. One scheduler is the entire lesson of the
   v1-vs-native differential wars.
 
-## What happens when — the v2 ledger, re-answered
+## What happens when - the v2 ledger, re-answered
 
 Every behavioral promise the v2 contract made, restated on fibers. The
 ported test suite pins each one.
 
 | v2 promise | v3 answer |
 | --- | --- |
-| Async call positions restricted | Gone — any call anywhere; `brew` takes exactly one call expression |
+| Async call positions restricted | Gone - any call anywhere; `brew` takes exactly one call expression |
 | `async let` child, awaited once | `let h = brew f(x)` + `h.join()`, joined once (moved handle) |
 | Scope exit cancels unfinished children | Error exit cancels then joins; normal exit joins (see scope contract) |
 | Defers survive suspension, run once | Defers are frames on the fiber stack; parks don't touch them; unwind runs them exactly once |
 | Cancellation only at suspension points | Cancellation observed only at parks; straight-line code never interrupted |
 | Fairness: each pass polls every child once | FIFO run queue per worker; resumed fibers to the tail; `yield()` parks to tail |
-| `yield_now` gives every runnable task a turn | `yield()` — FIFO tail guarantees every ready fiber runs before the yielder resumes |
+| `yield_now` gives every runnable task a turn | `yield()` - FIFO tail guarantees every ready fiber runs before the yielder resumes |
 | Panics surface at the poll site | Panics unwind the fiber and surface at the join, kind `panic`, message + position |
 | `init`/`deinit`/`extern "C"`/`inout` can't be async | No async to refuse; the walls that survive: deinit and sync C callbacks may not park |
-| Unique-receiver await borrow rules | Gone with await; ordinary borrow rules apply — a park holds whatever borrows the frame holds, safely, because the stack doesn't move |
+| Unique-receiver await borrow rules | Gone with await; ordinary borrow rules apply - a park holds whatever borrows the frame holds, safely, because the stack doesn't move |
 | No await in `defer`/interpolation | No await; defers and interpolation may call parking functions unless inside a wall |
 | Timers: `sleep_millis`, `sleep_until`, non-positive completes now | Same names, same rules, on the fiber timer wheel; a plain `sleep` that parks the fiber |
-| `Event`: sticky, `Send + Sync`, set from any thread | Shipped as `Gate` (`wait`/`open`/`is_open`) — the semantics unchanged, waiters are fibers |
+| `Event`: sticky, `Send + Sync`, set from any thread | Shipped as `Gate` (`wait`/`open`/`is_open`) - the semantics unchanged, waiters are fibers |
 | Channels: same FIFO + close rules, cancellation loses nothing | Unchanged; `send`/`receive` park fibers; `try_send`/`try_receive` never park; closed-send panics; cancellation removes only that waiter |
-| `spawn_async` worker + `join_async` | Gone; `thread.spawn` + `join` — `join` parks the calling fiber instead of blocking the worker |
+| `spawn_async` worker + `join_async` | Gone; `thread.spawn` + `join` - `join` parks the calling fiber instead of blocking the worker |
 | Readiness: level-triggered, close wakes the parked waiter, no false wake on fd reuse | Same contract, fiber-shaped: park-on-readable/writable in std internals; runtime close marks the token dead and resumes the waiter with `false` |
-| One executor cannot park two waits on one live fd | One worker cannot park two fibers on the same live descriptor — same rule, same reason |
+| One executor cannot park two waits on one live fd | One worker cannot park two fibers on the same live descriptor - same rule, same reason |
 | Profiles: compute-only async everywhere, timers need clock, channels need threads, readiness needs `full` | Same ladder for parking features; `brew` itself needs the thread runtime; wasm/freestanding refuse it all at check time |
-| Reflection renders `async fn` types, async call variants | Gone — one function type, one call path; reflection may call a parking function from a fiber; the may-park conservatism applies through reflective calls |
-| No public Task/executor/detach/block_on | Still true: no Task type, no executor API, no detach — `Brew` handles are scope-bound and structure is mandatory |
+| Reflection renders `async fn` types, async call variants | Gone - one function type, one call path; reflection may call a parking function from a fiber; the may-park conservatism applies through reflective calls |
+| No public Task/executor/detach/block_on | Still true: no Task type, no executor API, no detach - `Brew` handles are scope-bound and structure is mandatory |
 
 ## Migration (what old code does)
 
 - `async fn f(…)` → `fn f(…)`. `await e` → `e`.
 - `async let a = f(x)` … `await a` → `let a = brew f(x)` … `a.join()?` (or
   drop the handle form entirely and let scope exit join).
-- `TaskGroup.start(f(x))` → `group.start(brew-shaped call)` — the fleet API
+- `TaskGroup.start(f(x))` → `group.start(brew-shaped call)` - the fleet API
   survives with the same names on fibers.
 - `net.readable`/`writable` (removed with v1) → nothing: `read`/`write`
   simply park when they must. Poller code (`std.poll`) is untouched and
@@ -488,11 +488,11 @@ ported test suite pins each one.
 Lifted as fresh commits onto the fiber branch, independent of fibers,
 because they fix today's runtime:
 
-1. `4e9eacb` — husk sweeps and worker trial walks exclude each other (CC race).
-2. `8938ed0` — husk sweeps run at the last walk's exit, not only on appends (CC leak timing).
-3. `3939f6c` — collector pauses are bounded slices (CC pause bound + net_concurrency proof).
-4. `fa664ba` — the applicable halves: wide-closure environment chaining in MIR (plain-language bug, `wide_closure.b` proves it) and worker releases inside the collector window (CC race). Async-lowering hunks dropped.
-5. `f46ad60` — the `Channel.try_send`/`try_receive` surface (checker, both backends, docs); its async$rt reactor half dropped. Tests re-homed from `test/async.sh` (deleted) into the thread/channel suites.
+1. `4e9eacb` - husk sweeps and worker trial walks exclude each other (CC race).
+2. `8938ed0` - husk sweeps run at the last walk's exit, not only on appends (CC leak timing).
+3. `3939f6c` - collector pauses are bounded slices (CC pause bound + net_concurrency proof).
+4. `fa664ba` - the applicable halves: wide-closure environment chaining in MIR (plain-language bug, `wide_closure.b` proves it) and worker releases inside the collector window (CC race). Async-lowering hunks dropped.
+5. `f46ad60` - the `Channel.try_send`/`try_receive` surface (checker, both backends, docs); its async$rt reactor half dropped. Tests re-homed from `test/async.sh` (deleted) into the thread/channel suites.
 
 Reference designs, re-implemented rather than cherry-picked (hosts deleted):
 `b97a529` (lock-free sticky park registry → F1 netpoller), `879d6f9`'s
@@ -502,8 +502,8 @@ test suite (ported to the brew surface in F2 as the gate).
 Dropped: every state-machine lowering commit, the `async$rt` package, the
 v2 reflection async-call API, `2b70a3e` (its Makefile pin is already on
 main in another form; the re-drain it removes no longer exists), and
-`2a982bc` (the externs it resolves — `beans_async_*`,
-`beans_chan_async_waiter_*` — left the runtime with async v2; its lesson,
+`2a982bc` (the externs it resolves - `beans_async_*`,
+`beans_chan_async_waiter_*` - left the runtime with async v2; its lesson,
 direct-dispatching runtime externs in the interpreter, is already house
 practice).
 
@@ -516,15 +516,15 @@ What is in the tree: the F1 fiber core with its full gate
 containment routed through `beans_panic` (only the faulting fiber ends, the
 report is delivered at the join); escalation at unjoined scope exits;
 scope-bound handle refusals (move, capture, signature, field, nesting, var);
-the interpreter hosting fibers on real fiber stacks — one scheduler, and the
+the interpreter hosting fibers on real fiber stacks - one scheduler, and the
 brew differential outputs are byte-identical with native by construction.
 
-Of F3 itself: std parks fibers instead of blocking workers — channels carry
+Of F3 itself: std parks fibers instead of blocking workers - channels carry
 FIFO fiber wait lines beside their condvars, `sleep` parks on a per-worker
 deadline min-heap, and `thread.join` parks until the joined thread finishes
-(`test/fiber_std.sh`); `Gate` is in the language — sticky broadcast flag,
+(`test/fiber_std.sh`); `Gate` is in the language - sticky broadcast flag,
 `new Gate()` / `wait` / `open` / `is_open`, opened from any thread, waiters
-are fibers (`test/gate.sh`); the netpoller is in — one kernel poller per
+are fibers (`test/gate.sh`); the netpoller is in - one kernel poller per
 worker (kqueue on the BSD family, epoll + an eventfd kick on Linux), fused
 into the idle wait beside the sleeper heap: a fiber's net wait parks with
 `beans_fiber_wait_io`, its socket goes nonblocking for good at the first
@@ -532,20 +532,20 @@ fiber op (thread-only programs keep blocking sockets untouched), socket
 deadlines ride into the parked wait, and both TCP ends run as fibers of one
 worker (`test/fiber_net.sh`, `test/fiber_core.sh`); a program whose
 every fiber is parked with no thread able to wake them prints the fiber
-table and exits 3 instead of hanging — unless an io waiter exists, whom the
-kernel can always wake; and `TaskGroup<T>` closes F3 — the children reuse
+table and exits 3 instead of hanging - unless an io waiter exists, whom the
+kernel can always wake; and `TaskGroup<T>` closes F3 - the children reuse
 the Brew row machinery wholesale, completion stamps ride a per-fiber done
 hook on the scheduler's settle path (a panicking fiber never returns
 through its entry function, so the entry itself was not a place a
-completion could be observed — the hook fires for return, panic, and
+completion could be observed - the hook fires for return, panic, and
 cancel alike, which is what makes a panicked child deliverable), the one
 parked `next()`/`wait_all` waiter is woken by that same hook, and delivery
 order is byte-identical across both engines (`test/taskgroup.sh`).
 Containment is proven at storm scale, not just for one moody child: ~2600
-fibers and ~900 contained panics per run — fleets with a third of their
+fibers and ~900 contained panics per run - fleets with a third of their
 children panicking, lone handles joined one by one, sixty gate waiters
 woken into panics, senders panicking on a closed channel, and four
-threads running fleets of their own — every failure a value, both
+threads running fleets of their own - every failure a value, both
 engines byte-identical (`test/fiber_soak.sh`).
 
 Landed since:
@@ -553,7 +553,7 @@ Landed since:
 0. **The contained-panic unwind, both backends** (#44). A panic caught by
    `brew`/`join` no longer abandons the fiber's frames: every frame between the
    failure and the fiber entry runs its defers newest-first and drops what it
-   owns — owned, move-only and captured-cell locals alike — exactly as a return
+   owns - owned, move-only and captured-cell locals alike - exactly as a return
    would. Native does it with the platform unwinder: `invoke`/`landingpad`
    cleanup pads (`src/llvm_unwind.b`) walked by `_Unwind_ForcedUnwind`, armed
    only for a program that brews, ended at the fiber entry thunk. The
@@ -561,22 +561,22 @@ Landed since:
    flag, and on a contained one it runs each frame's defers and each local's
    deinit as the poison returns through the frame, with the panic set aside so
    the cleanup body runs. A panic inside a defer or deinit during the unwind is
-   the one unrecoverable case — double panic, reported and aborted — on both.
+   the one unrecoverable case - double panic, reported and aborted - on both.
    `test/cases/brew_unwind.b` is the differential golden. The child's closure
    box is released on both paths.
 
    The cleanup a frame runs is the one a return runs, in the order the tree
    walker leaves the frame, and both backends print it byte for byte:
 
-   1. what the failing statement was holding — every owned value still in
+   1. what the failing statement was holding - every owned value still in
       flight (a temporary argument already built when the next argument
       panicked, the pieces of an interpolation, the elements of a literal, the
       collection a `for` took from a call, a value a store out of range never
-      took) and the locals of the nested blocks the failure sat inside — newest
+      took) and the locals of the nested blocks the failure sat inside - newest
       first, the way expression frames and block scopes pop;
    2. the function's defers, newest first;
    3. the function's own locals, newest first;
-   4. the function's `move` parameters, last-declared first — they are bound
+   4. the function's `move` parameters, last-declared first - they are bound
       before the first local, and a frame releases what it owns in reverse
       order of binding, so a moved-in argument dies with the callee on the
       panic path exactly as it does on a return (spec/SYNTAX.md). Its own
@@ -585,12 +585,12 @@ Landed since:
    5. the value a `return` was carrying, if a defer or a deinit on the way out
       panicked;
    6. and, for the frame that was running `new`, the half-built object: it is
-      released as a whole, so its `deinit` runs — seeing each field's default
-      or whatever init had assigned — and then its fields drop.
+      released as a whole, so its `deinit` runs - seeing each field's default
+      or whatever init had assigned - and then its fields drop.
 
    The scope join every `brew` synthesizes is one of those defers, so an
    unwinding frame joins the children it never joined exactly as a return
-   would — after the defers registered later, before its locals drop — and no
+   would - after the defers registered later, before its locals drop - and no
    child outlives its scope on the panic path either. A child whose own panic
    nobody caught escalates at that join, inside a cleanup the unwind is
    running: that is the double-panic case, fatal on both backends, and the
@@ -600,11 +600,11 @@ Landed since:
    is the same shape one level down: the unwind does not release it a second
    time and its `deinit` does not run again, the locals that had not dropped
    yet still drop, and what the object itself still held is released by the
-   death it was in the middle of — see the entry below.
+   death it was in the middle of - see the entry below.
 
    A value handed to a runtime entry (`push`, `insert`, `set`, `send`, a
-   `map[k] = v`) is released by the unwind when the entry refused it — a store
-   out of range, a send on a closed channel — exactly as the interpreter
+   `map[k] = v`) is released by the unwind when the entry refused it - a store
+   out of range, a send on a closed channel - exactly as the interpreter
    releases it; once the entry has stored it, it is the collection's. A
    declined `insert` is the exception the #81 entry below records: refusing
    runs the value's `deinit`, so that entry owns the value by then and
@@ -613,16 +613,16 @@ Landed since:
    take: a class used as a map key hashes by identity with the runtime's own
    hasher, so no user `hash` or `eq` ever runs inside a map operation.
 
-   A runtime frame that calls back into Beans code — a sort's comparator or
-   key function, a reflected callee — owns no heap memory across that call
+   A runtime frame that calls back into Beans code - a sort's comparator or
+   key function, a reflected callee - owns no heap memory across that call
    without a cleanup the unwind runs: when a contained panic passes through,
    the frame's scratch is freed like everything else. And a collection
    operation interrupted by a panicking callback leaves the collection
-   exactly as it was before the call — same contents, same order — on both
+   exactly as it was before the call - same contents, same order - on both
    backends: a sort snapshots the array it permutes in place before the
    first callback can run, and the unwind puts it back. A callback that
    *structurally changes* the list mid-sort is refused as the program's own
-   panic instead (`list changed during sort`, spec/SYNTAX.md) — the list
+   panic instead (`list changed during sort`, spec/SYNTAX.md) - the list
    then stays as the mutation left it, since the snapshot no longer
    describes the storage. With no panic at
    all, both backends run the same bottom-up stable merge, so they agree on
@@ -630,15 +630,15 @@ Landed since:
    included. A `deinit` that panics while a runtime replace holds the old
    value (`map[k] = v` over an existing key, `Box.set`) is contained like
    any other panic, and the store stands: the entry takes the new value
-   and drops the duplicate key first — none of which can panic — and the
+   and drops the duplicate key first - none of which can panic - and the
    old value's release runs last, so its panic finds the map already
    consistent, the old object abandoned mid-destruction, and nothing
    double-freed. Both backends agree, the caller's key and value
    included. A declined `insert` releases the incoming value before it
    touches the duplicate key, for the same reason in mirror image. A
    `remove` is that rule read the other way: the entry leaves the map
-   first — `len`, `contains_key`, `get` and iteration all see the key
-   gone — and only then is the value released, so a panicking `deinit`
+   first - `len`, `contains_key`, `get` and iteration all see the key
+   gone - and only then is the value released, so a panicking `deinit`
    finds no entry still pointing at what it has just destroyed. Both
    backends agree on the map that survives. `clear` is the same rule at
    container scale, and applies to `List`, `Map`, `OrderedMap` and
@@ -647,18 +647,18 @@ Landed since:
    reads the container sees it empty, one that adds to it keeps what it
    added, and the container is usable the moment the panic is contained.
    Every element it detached is destroyed, the ones after the panicking
-   one included — see the entry below.
+   one included - see the entry below.
 
    For a map that covers **both halves of an entry**. Keys and values are
    detached together, so no accessor can answer out of a half the clear
-   has not reached — `len`, `is_empty` and `contains_key` cannot report
-   entries that `keys` says are gone, or the reverse — and a class key's
+   has not reached - `len`, `is_empty` and `contains_key` cannot report
+   entries that `keys` says are gone, or the reverse - and a class key's
    `deinit` sees exactly what a class value's does. The releases then run
    entry by entry from the back, a value before its own key.
 
    That value-before-key, entry-from-the-back order is what a map releases
-   its entries in whenever the map itself dies — a whole map **dropped** at a
-   scope exit or a return, or **reassigned** to a new one — and it is the
+   its entries in whenever the map itself dies - a whole map **dropped** at a
+   scope exit or a return, or **reassigned** to a new one - and it is the
    order a `clear` already used (#97, #83). The native runtime releases one
    entry array that way. The tree interpreter stores each entry as a single
    value owning both halves, declared so the host cascade releases the entries
@@ -673,7 +673,7 @@ Landed since:
    interpreter releases the removed value before its key; the native runtime
    (`map_remove_found`) releases the key before the value. With class keys
    compared by identity the removed key is always a local the caller still
-   holds — you cannot name an entry to remove without holding its key — so its
+   holds - you cannot name an entry to remove without holding its key - so its
    `deinit` never runs at the remove and only the value's does, which makes the
    difference unobservable today. It would become a real split if a key type's
    equality were ever user-defined; the two backends would have to be
@@ -683,10 +683,10 @@ Landed since:
    (#81). The rule the two backends now share: the release that was under way
    finishes. The object whose `deinit` panicked does not run its `deinit` a
    second time, but its fields are released and its shell freed like any other
-   death, and everything else that release still owed — the remaining elements
+   death, and everything else that release still owed - the remaining elements
    of a container being cleared, the rest of a dying object graph's worklist,
    the rest of a white set the collector killed, the remaining fields of a
-   wide record — is destroyed exactly as it would have been with no panic.
+   wide record - is destroyed exactly as it would have been with no panic.
    Only then does the panic continue on its way out, to the join. Natively
    that is one guard per runtime frame that holds references mid-release
    (`runtime/beans_rt.c`: the cascade in `beans_release`, the three container
@@ -694,7 +694,7 @@ Landed since:
    deferred stacks); the tree interpreter's poison flag never stopped its host
    cascade, so it already did this and is the golden. Before it, native
    stopped where it stood: the elements a `clear` had not reached were never
-   destroyed and never freed, unreachable from the program — O(n) leaked per
+   destroyed and never freed, unreachable from the program - O(n) leaked per
    caught panic, and the two backends printed different deinit counts for one
    checked program. `test/cases/deinit_panic_cascade.b` is the differential
    golden. A *second* `deinit` panicking before the first has been delivered
@@ -711,7 +711,7 @@ Landed since:
    A declined `Map`/`OrderedMap` `insert` is the one runtime entry whose
    refusal releases what it was handed rather than leaving it to the unwind.
    Refusing runs the value's `deinit`, so the entry has to own the value by
-   then — otherwise the frame's cleanup releases what the entry has already
+   then - otherwise the frame's cleanup releases what the entry has already
    destroyed, which is a double release, invisible only while a panicking
    `deinit` left its object abandoned and a use-after-free the moment that
    object's shell started coming back. Every map entry point owns its key and
@@ -723,7 +723,7 @@ Landed since:
    half already followed (#79): it swaps the new value in before releasing
    the old, because releasing first left a panicking deinit with the box
    pointing at the bytes it had just destroyed and the new value never
-   stored — `box.get()` handed the program freed memory.
+   stored - `box.get()` handed the program freed memory.
 
    What is *not* a rule either backend keeps: **when** a cycle collection
    runs. The two collectors trigger on their own budgets, so the number of
@@ -745,7 +745,7 @@ Deliberately not yet here, in dependency order:
 0. **Native unwinding off elf/macho x86_64/arm64.** The native pads ride the
    platform unwinder, and only those four target pairs carry it today
    (src/target.b names them; VERSION's ABI note says the same). Everywhere
-   else — Windows native builds included — panic still abandons
+   else - Windows native builds included - panic still abandons
    the fiber's frames in a native build while the interpreter unwinds, so
    defer/deinit output under a contained panic differs between the legs on
    those targets. Differential tests that run there must not pin
@@ -785,12 +785,12 @@ Deliberately not yet here, in dependency order:
    may park.)
 5. **Nested-scope brews.** The synthesized scope join rides function-exit
    defers, so a handle brewed inside a nested block would die with its
-   block before the join runs — natively that was a use-after-free at
+   block before the join runs - natively that was a use-after-free at
    function exit. Until per-scope joins land with the unwind work, `brew`
    inside a nested block is refused at check time; brew at the function's
    own scope. (Chasing this also fixed a real pre-fiber bug: an interpreted
    `defer` inside a nested block panicked with "unknown name" where native
-   read its slot — deferred records now carry their registration frame.)
+   read its slot - deferred records now carry their registration frame.)
 
 ## Milestone gates (unchanged from the plan)
 

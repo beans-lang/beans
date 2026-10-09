@@ -4,8 +4,8 @@
 # HTTP date forms, RFC 3339 offsets and fractions, calendar arithmetic and
 # every error path, byte for byte on both backends and under ASan. Then a
 # differential run generates thousands of epoch instants across the whole
-# proleptic-Gregorian range — negative epochs, leap days, non-leap centuries,
-# both calendar ends — and checks Beans against Python's datetime, which shares
+# proleptic-Gregorian range, negative epochs, leap days, non-leap centuries,
+# both calendar ends, and checks Beans against Python's datetime, which shares
 # calendar.b's three decisions (proleptic Gregorian, years 1..9999, no leap
 # seconds). A single wrong day or format byte fails the diff.
 set -euo pipefail

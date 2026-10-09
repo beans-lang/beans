@@ -42,7 +42,7 @@ diff -u "$golden" "$tmp/release.out"
 
 # The golden pins the exact names; these hold the claim even if someone
 # regenerates it. Every row must agree, there must be rows from both asking
-# packages, and the cross-package name must be the one that shows up — a
+# packages, and the cross-package name must be the one that shows up, a
 # regenerated golden full of `inside=interp164.Widget agree` would mean the
 # fabricated name had won on both sides.
 rows=$(grep -c ': inside=' "$tmp/interp" || true)

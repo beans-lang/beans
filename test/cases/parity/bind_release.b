@@ -9,10 +9,10 @@
 // which is why nothing caught it: only the frees differed.
 //
 // Two witnesses make the free itself observable, on both backends:
-//   * `arc+`/`arc-` markers from init and deinit — backend_parity.sh
+//   * `arc+`/`arc-` markers from init and deinit, backend_parity.sh
 //     requires the two sets to balance and pins the construct count;
 //   * a zeroing `weak` back-reference to every unlinked node, printed
-//     after its last strong holder is gone — `freed=n` means every one of
+//     after its last strong holder is gone, `freed=n` means every one of
 //     the n slots reads none.
 // The long chains use a static counter instead of markers so the run
 // passes the runtime's internal growth thresholds without printing

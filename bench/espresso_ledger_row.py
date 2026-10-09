@@ -68,7 +68,7 @@ def main():
 
     # A run with dropped connections or error responses is not a measurement of
     # the route; it is flagged here so no reader has to open the wrk log to
-    # find out. Read timeouts alone are noted but not disqualifying — wrk
+    # find out. Read timeouts alone are noted but not disqualifying; wrk
     # counts a slow tail as a timeout.
     flags = []
     if non2xx:

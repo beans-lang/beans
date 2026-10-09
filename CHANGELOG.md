@@ -145,14 +145,14 @@ One fix, for a regression 0.1.45 shipped.
 ### The emitter was using the checker's rule to answer a layout question
 
 0.1.45 replaced six `render_hir_type(a) == render_hir_type(b)` comparisons in
-the LLVM emitter with `hir_types_equal`. That removed the real bug — a type's
-identity is not how it was spelled — and introduced another, because
+the LLVM emitter with `hir_types_equal`. That removed the real bug - a type's
+identity is not how it was spelled - and introduced another, because
 `hir_types_equal` is the **checker's** rule and says two more things:
 
 - `poison` compares equal to everything. That means "already reported, do not
   cascade a second message", not "same representation".
-- `hir_type_key` folds `Result<T>` into `Result<T, Error>`. True of the type —
-  the defaulted error *is* `Error` — but the `?` lowering rebuilds the error
+- `hir_type_key` folds `Result<T>` into `Result<T, Error>`. True of the type -
+  the defaulted error *is* `Error` - but the `?` lowering rebuilds the error
   box for one and not the other, so they are not one representation.
 
 `std.process::Stream.write_all` and `Stream.write_text` are exactly that
@@ -174,7 +174,7 @@ to interpret `examples/inline_results.b`, which the Wine differential gate
 caught and no other gate did.
 
 The emitter now uses `hir_types_identical`: structural identity with the
-canonical scalar spellings — `f64`/`float`, `i64`/`int`, `byte`/`u8` — and
+canonical scalar spellings - `f64`/`float`, `i64`/`int`, `byte`/`u8` - and
 nothing else. The Windows IR of the whole compiler is byte-identical to what
 the emitter produced before 0.1.45, so the regression is gone by construction,
 and 0.1.45's own fix is unchanged.
@@ -188,7 +188,7 @@ Reverting either half turns it red.
 `tools/gen_width_table.py` read the UCD from
 `unicode.org/Public/UCD/latest/`. Unicode 18.0.0 was published, `latest`
 moved, and `test/display_width.sh` began reporting this tree's Unicode 17.0.0
-tables as stale — on every machine, for every commit, including ones that had
+tables as stale - on every machine, for every commit, including ones that had
 passed the day before. An external party's release date is not a property of
 this repository.
 
@@ -196,13 +196,13 @@ The UCD release is pinned now, and the pin is verified rather than trusted:
 the generator refuses a download whose own version header disagrees with
 `UCD_VERSION`. Moving to a new Unicode is a deliberate edit that regenerates
 the tables, which is what it always should have been. The check keeps its
-teeth — a single altered entry in the generated block still fails it.
+teeth - a single altered entry in the generated block still fails it.
 
 ## [0.1.45] - 2026-09-16
 
 Two rules the compiler stated one way and enforced another. Both were found
-building real packages against it — the four database drivers in
-`community-libs` — and neither shows up in a program small enough to write by
+building real packages against it - the four database drivers in
+`community-libs` - and neither shows up in a program small enough to write by
 hand.
 
 ### A type's identity is not how it was spelled
@@ -226,7 +226,7 @@ fn value() -> Result<f64, Boom> {
 }
 ```
 
-The build refused with `LLVM emitter does not support ok payload '...' yet` —
+The build refused with `LLVM emitter does not support ok payload '...' yet` -
 a message about the emitter, naming a spelling the program never wrote, for a
 program `beansc check` had already accepted. Rule 4 of this project's bar
 broken in both directions at once.
@@ -234,7 +234,7 @@ broken in both directions at once.
 The other two are the reflection type-kind table, in the runtime
 (`beans_reflect_type_kind`) and in the tree interpreter's own copy of it. Both
 listed `int` but not `i64`, `u8` but not `byte`, `float` but not `f64`, so a
-field declared `f64` answered kind `0` — unknown — where the identical field
+field declared `f64` answered kind `0` - unknown - where the identical field
 declared `float` answered `4`. Reflection's value-against-parameter check had
 the same hole on both sides, which is what stopped
 `reflect.Initializer.call` constructing **any** class with an `f64` field.
@@ -252,8 +252,8 @@ package vendoring a C library with its own include tree had no way to name it:
 an absolute path is correct on exactly one machine, and that is what
 `beansc pot add --system` exists for.
 
-A flag that names a **directory** — `-I`, `-iquote`, `-isystem`, `-idirafter`,
-`-F` — now resolves a relative value against the declaring package, exactly as
+A flag that names a **directory** - `-I`, `-iquote`, `-isystem`, `-idirafter`,
+`-F` - now resolves a relative value against the declaring package, exactly as
 that package's `csrc` paths already do. Joined and separated spellings both
 work:
 
@@ -263,7 +263,7 @@ cflags all "-I" "vendor/postgresql/src/include"
 ```
 
 An absolute value passes through untouched, and the rewrite applies only to the
-package that declared the row — a dependency's include path never reaches
+package that declared the row - a dependency's include path never reaches
 another package's C.
 
 `-include` and `-imacros` are deliberately **not** rewritten. They name a file
@@ -294,15 +294,15 @@ Outer { inner: Tail { tail: [1] } } == Outer { inner: Tail { tail: [1] } }
 ```
 
 `true` interpreted, `false` built, at any depth, for two values equal in every
-field. A bare `xs == ys` never had it — that goes through the runtime's list
-comparison — but a struct field, an `Option` payload, a `Result` arm and a map
+field. A bare `xs == ys` never had it - that goes through the runtime's list
+comparison - but a struct field, an `Option` payload, a `Result` arm and a map
 key all took an identity compare instead. The interpreter walks a list element
 by element wherever it meets one, so the native answer was the wrong one. Both
 paths make the same call now.
 
 A `Map` reached through a struct field took that same branch, so a struct was
 equal to *itself* because both sides held the one map pointer. A map is equal to
-nothing — the checker refuses a bare `m == n` outright — and now answers so
+nothing - the checker refuses a bare `m == n` outright - and now answers so
 through a field as well.
 
 Typed JSON encoding disagreed on floats: `0` and `-5.764607523034235e+17` where
@@ -311,8 +311,8 @@ formats through the same writer now rather than a second one.
 
 ### Ran interpreted, would not build
 
-- **`io.println("{v}")` on an `Option<Point>`** — a debug print of an optional
-  struct — refused the whole build. Fourteen shapes: `Option` of a struct, a
+- **`io.println("{v}")` on an `Option<Point>`** - a debug print of an optional
+  struct - refused the whole build. Fourteen shapes: `Option` of a struct, a
   decimal, another `Option`, a `Result`, and `Result<Option<…>>`.
 - **`TaskGroup.next()` / `try_next()`** refused any payload wider than a slot:
   a struct, an `Option`, a `Result`, a decimal. The group always accepted them;
@@ -333,8 +333,8 @@ comparator is refused in the program's own terms instead.
 ### Refused at check time
 
 **`decimal %` is no longer accepted.** It passed `check` and then failed twice
-over: the tree interpreter panicked at run time — so a program that never
-reached the line shipped fine — and the native build refused at compile time
+over: the tree interpreter panicked at run time - so a program that never
+reached the line shipped fine - and the native build refused at compile time
 talking about the emitter. Neither backend has ever had a decimal remainder.
 The refusal names the program and the way out:
 
@@ -350,8 +350,8 @@ program: every `decimal %` in existence either panicked or would not build.
 
 **`json.decode<T>`, `decode_bytes`, `decode_bytes_in_place` and
 `decode_with_options` work under `beansc run`.** They used to answer the stdlib
-body's own `err("typed JSON decoding was not lowered")` — an ordinary `Result`
-failure, no diagnostic and no panic — so a program that branches on the result
+body's own `err("typed JSON decoding was not lowered")` - an ordinary `Result`
+failure, no diagnostic and no panic - so a program that branches on the result
 took a different branch than in its own binary. Both backends parse through one
 vendored yyjson, so the two decoders read one document. The JSONTestSuite corpus
 and all four fuzz seeds now run through both and are diffed.
@@ -363,8 +363,8 @@ the program naming the boundary rather than handing back a plausible failure.
 
 - Map's documented method list said `contains`; the checker only ever accepted
   `contains_key`.
-- `take` is reserved — it is the removed spelling of `move`, kept so old code
-  gets a real message — and appeared in no keyword list, so `fn take()` read
+- `take` is reserved - it is the removed spelling of `move`, kept so old code
+  gets a real message - and appeared in no keyword list, so `fn take()` read
   *"expected function name"*. The spec records it, and a name spot holding any
   keyword now names the word.
 
@@ -380,8 +380,8 @@ a constant, because it carries its own version.
 
 **`--target aarch64-linux-android` and `x86_64-linux-android`.** An aarch64 ELF
 whose interpreter is `/system/bin/linker64`, pushed to an emulator with adb and
-run. The toolchain must be the NDK's clang — Android's compiler-rt builtins and
-libunwind ship with the NDK — so the driver takes `BEANS_ANDROID_CC`, else the
+run. The toolchain must be the NDK's clang - Android's compiler-rt builtins and
+libunwind ship with the NDK - so the driver takes `BEANS_ANDROID_CC`, else the
 clang under `ANDROID_NDK_HOME` or `ANDROID_NDK_ROOT`, and refuses naming both
 when neither is set. The API level rides in the triple.
 
@@ -394,8 +394,8 @@ something with different lifetime rules.
 **A subdirectory of a git dependency that has its own `beans.pot` is its own
 module.** It used to be loaded as a package of the repository above it, under
 the name the *path* spelled, so its files' own `package` clause mismatched, its
-`require` rows were never read, and importing its own module root — legal for a
-module, refused for a package — failed:
+`require` rows were never read, and importing its own module root - legal for a
+module, refused for a package - failed:
 
     import github.com/acme/http/app
     → app/app.b:3:1: error: a package cannot import its own module root
@@ -413,8 +413,8 @@ what a consumer outside this workspace can actually write.
 
 **`TaskGroup.try_next()` hands over to the scheduler when it has nothing
 ready.** It did not, and brewed children run on the caller's own scheduler, so
-the drain loop the concurrency spec describes — poll `try_next` until every row
-has been seen — starved the very fibers it was waiting for and never finished.
+the drain loop the concurrency spec describes - poll `try_next` until every row
+has been seen - starved the very fibers it was waiting for and never finished.
 Two million polls answered `none` for a group of three children that were all
 ready to run:
 
@@ -430,12 +430,12 @@ for seen < 3 {
 `next()` was unaffected, because it parks. The yield is one hand-over, to the
 tail of the run queue, so every ready fiber runs before the poller looks again;
 `try_next` still never parks, and is still not where a cancel is observed. Both
-engines carry it — the tree interpreter runs its own delivery loop, and a fix
+engines carry it - the tree interpreter runs its own delivery loop, and a fix
 in only one of them would have been the split this repository exists to catch.
 
 `test/backend_parity.sh` bounds every run now. `taskgroup_wide.b` had been
 hanging rather than failing since it was written, and a suite that waits
-forever cannot go red — it reads as still running, which is how this survived
+forever cannot go red - it reads as still running, which is how this survived
 several CI runs.
 
 ### Also
@@ -448,7 +448,7 @@ several CI runs.
   resolved against `dlsym(RTLD_DEFAULT, …)` first, so a package that vendors a
   C library got whatever else was loaded: cortado links AppKit, AppKit drags in
   the system libsqlite3, and the vendored SQLite 3.53's shims were answered by
-  macOS's 3.51 — one statement prepared by one library and bound by another.
+  macOS's 3.51 - one statement prepared by one library and bound by another.
   The native backend never had it, because the linker binds the vendored copy.
 - **`#import` counts as a header when hashing a `csrc` source.** The cache key
   followed `#include` only, so every Objective-C file's headers were missing
@@ -457,7 +457,7 @@ several CI runs.
   `link` rows and nothing else, so a library whose headers are off the default
   include path linked but would not compile. `beansc pot update --system gtk4
   linux` is the shape.
-- The C ABI suite covers float-only aggregates — a struct of up to four floats
+- The C ABI suite covers float-only aggregates - a struct of up to four floats
   or doubles travels in the vector registers on arm64, and every `extern "C"
   struct` in the corpus had been a mixed one.
 
@@ -481,9 +481,9 @@ match s as? Named {
 ```
 
 That program passed `beansc check`, then the two backends disagreed in the two
-worst ways at once: `beansc build` refused it — *"LLVM emitter does not support
+worst ways at once: `beansc build` refused it - *"LLVM emitter does not support
 as? to 'main.Named' yet"*, a message about the emitter for code the checker had
-accepted — and `beansc run` answered `none` for a downcast that holds, silently.
+accepted - and `beansc run` answered `none` for a downcast that holds, silently.
 A class target was always right, so the object, the interface table and the
 downcast machinery were sound and only the interface target was broken.
 
@@ -491,8 +491,8 @@ Both backends answer it now. The target may be a class or an interface and must
 be narrower than the source; asking for an interface asks whether the object's
 own class reaches it, directly through `implements`, through a base class that
 implements it, or through an interface that `extends` it. Downcasting to an
-**instantiated** generic stays refused, interface or class — the test reads the
-object's own class and an object does not carry its type arguments — and that
+**instantiated** generic stays refused, interface or class - the test reads the
+object's own class and an object does not carry its type arguments - and that
 refusal now names `implements` for an interface where it used to say `extends`
 for everything.
 
@@ -509,7 +509,7 @@ entry.
   interpreter with an empty argument list; it is handed the command line now.
 - **Diagnostics no longer leak the checker's `poison` marker.** A type is
   refused when any part of it is, so `let l: List<Nope>` reported `unknown type
-  'Nope'` and then, on the next line, `unknown class 'List<poison>'` — a type
+  'Nope'` and then, on the next line, `unknown class 'List<poison>'` - a type
   nobody wrote, composed out of an internal marker. Nine rules stop on it:
   type mismatches, annotation validation, `new`, both cast arms, string
   interpolation, the three `extern "C"` ABI readers and the annotation schema.
@@ -517,7 +517,7 @@ entry.
 - **One reflect error state, one text.** `beans_reflect_error_message()`
   answered *"reflection operation failed"* where no error code was set and the
   tree interpreter answered nothing, so `rt.error_message()` printed two
-  different things depending on the backend — reachable from any program, since
+  different things depending on the backend - reachable from any program, since
   every reflection entry clears the code on the way in and a call that
   *succeeded* leaves that state behind. The runtime says `""` now; the words
   for a refusal that did not say what it was live once, in `std.reflect`.
@@ -532,7 +532,7 @@ A package is named by the module it declares, not by the path that reached it.
 Before this, the same package answered to two different names depending on how
 a consumer required it. `require path "../dep"` gave `dep`; `require
 github.com/acme/dep v1` gave `github.com/acme/dep`. Source spelled `dep.Thing`
-either way — only the name **reflection** reported moved. So a library that
+either way - only the name **reflection** reported moved. So a library that
 finds its own annotation by qualified name, which is how an annotation-driven
 framework discovers anything, worked from a path row and silently found
 nothing from a git row:
@@ -551,14 +551,14 @@ went for `type_of(T).qualified_name()`.
 
 A package's identity is now the module name in its own `beans.pot`, dotted with
 any subpackage directories beneath it, whatever the importer wrote. `dep` and
-`dep.sub` — one name, one package, one spelling in every diagnostic and every
+`dep.sub` - one name, one package, one spelling in every diagnostic and every
 reflective answer. `beans.lock` and the package cache still key on the git path,
 because that is the thing being fetched.
 
 Two consequences worth knowing:
 
 - **One module name is one package.** Requiring the same name from two
-  different roots — a path row and a git row, or two git paths — is refused
+  different roots - a path row and a git row, or two git paths - is refused
   where it is written, naming both roots. It used to be accepted, and whichever
   import ran first decided what the name meant.
 - `beansc load` prints the new identity. A script matching
@@ -586,7 +586,7 @@ reports the **closed** form it was reached through, so `declaring_type()` on
 `Grid<int>.title` says `Grid<int>` rather than `Grid`; `reflect.value` boxes
 what an object **is** rather than what its binding said, so a subclass survives
 a base-class binding; and a closed generic's **annotations** are found at all,
-which they were not natively in 0.1.40 — an annotation-driven framework scanned
+which they were not natively in 0.1.40 - an annotation-driven framework scanned
 a generic component correctly in the edit loop and found nothing in the shipped
 binary.
 
@@ -600,9 +600,9 @@ that does not exist.
 `BEANS_SANITIZE` now instruments the code the compiler emits. It never did:
 ASan, UBSan and TSan saw `beans_rt.c` and not one generated function, so an
 out-of-bounds access the emitter produced was invisible to `make test-sanitize`
-on every host. The gate carries positive controls now — a double free, a
+on every host. The gate carries positive controls now - a double free, a
 heap-buffer-overflow read and write, a use-after-free and a data race, each in
-generated code, each of which must be caught — because a sweep whose
+generated code, each of which must be caught - because a sweep whose
 instrumentation reaches nothing is indistinguishable from a clean one.
 
 Thanks to **@Akimbo92i**, who independently found and fixed the truncated
@@ -618,8 +618,8 @@ bug shipped for want of anything watching the class.
   parsed chunked bodies in both directions and could encode none, so there was
   no way to send a response whose length is not known when the head has to go
   out: every encoder refused a caller-supplied `Transfer-Encoding` and wrote a
-  `Content-Length` instead. The refusal stays — it is what keeps a caller from
-  lying about the framing — and a second framing strategy arrives behind the
+  `Content-Length` instead. The refusal stays - it is what keeps a caller from
+  lying about the framing - and a second framing strategy arrives behind the
   same validation.
 
   ```beans
@@ -633,7 +633,7 @@ bug shipped for want of anything watching the class.
   `finish_append`, and `finish_trailers_append` for a trailer section. It is a
   value that remembers where in the message it is, because the mistakes that
   corrupt a streamed response are sequencing mistakes no single function can
-  see — a chunk before the head, a chunk after the terminator, and above all a
+  see - a chunk before the head, a chunk after the terminator, and above all a
   zero-length chunk, which is not an empty write but the terminator: writing
   one mid-body ends the response there and everything after it is read as a
   trailer section, silently, with a 200 already on the wire. Each is refused at
@@ -655,8 +655,8 @@ bug shipped for want of anything watching the class.
 - **A WebSocket server can answer permessage-deflate with fewer parameters
   than the client offered.** `accept`, `accept_websocket` and
   `websocket_tls.accept` take a `prefer: Option<Deflate>` that narrows what
-  this end will agree to — no server-side context takeover, a smaller LZ77
-  window, or both — where before a server could only agree to whatever the
+  this end will agree to - no server-side context takeover, a smaller LZ77
+  window, or both - where before a server could only agree to whatever the
   client offered or turn compression off entirely. Since a DEFLATE context
   costs about a third of a megabyte per direction, those were the only two
   settings a server with many mostly idle connections had, and neither is the
@@ -676,8 +676,8 @@ bug shipped for want of anything watching the class.
   response: a `true` flag asks for a no-context-takeover the offer need not
   have named and can never clear one it did, a window answers the smaller of
   the two, and `false` and 15 are the neutral values.
-  `client_max_window_bits` carries §7.1.2.2's extra condition —
-  a server must not name it in a response unless the offer named it — so a
+  `client_max_window_bits` carries §7.1.2.2's extra condition -
+  a server must not name it in a response unless the offer named it - so a
   preference for the client's window applies to an offer that mentioned the
   parameter and is ignored by one that did not. A preference never turns
   compression on: an offer with no permessage-deflate in it is still answered
@@ -690,7 +690,7 @@ bug shipped for want of anything watching the class.
   package could create a temp file and had no spelling for deleting it, so a
   store that placed one could never release it and every refused, oversized or
   panicking upload became permanent disk. The only workaround was
-  `std.process` spawning `rm` — a shell command built from a path, in the one
+  `std.process` spawning `rm` - a shell command built from a path, in the one
   code path whose whole job is never to build a path out of anything a client
   sent (runtime ABI 20).
 
@@ -703,7 +703,7 @@ bug shipped for want of anything watching the class.
   thunk now ask the receiver which instantiation it is. A non-generic subclass
   of a closed generic could not be constructed reflectively at all natively.
 - **A member reported the open form as its `declaring_type()`** (#159), so
-  `Grid<int>.title` said it was declared by `Grid` with no type arguments —
+  `Grid<int>.title` said it was declared by `Grid` with no type arguments -
   which made the obvious guard, "this member is declared by a generic type",
   answer false for exactly the members it was written to catch. It answers with
   the link the queried type reaches the member through.
@@ -724,7 +724,7 @@ bug shipped for want of anything watching the class.
   now checked against its literal.
 - **A free or static generic function taking `fn(T)` passed `check`, ran under
   the interpreter, and failed the native build in the emitter's own words**
-  (#161) — the checker accepting what a backend cannot emit. A function type's
+  (#161) - the checker accepting what a backend cannot emit. A function type's
   result is part of it whether or not the source wrote it.
 - **A `static fn` on a generic class could be declared and never called**
   (#162): nothing at the call site bound the class's type parameter, by any
@@ -733,7 +733,7 @@ bug shipped for want of anything watching the class.
   imports** (#164) and fell back to composing the asking package's name with
   the simple name. `new T()` and `x as? T` were refused for naming a type that
   does not exist, and `type_of(T)` silently returned a descriptor whose name
-  `find_type` cannot find — so a framework asking "is this type one of mine?"
+  `find_type` cannot find - so a framework asking "is this type one of mine?"
   answered no for every one of them.
 - **`BEANS_SANITIZE` instrumented the runtime and no generated code at all**
   (#168), for ASan, UBSan and TSan alike. The emitter marks every function it
@@ -744,7 +744,7 @@ bug shipped for want of anything watching the class.
   (#154), which is the same shape as #161: the program was told about the
   emitter rather than about itself.
 - **A poisoned match subject produced a diagnostic per arm** (#194), each
-  naming `poison`, the checker's own word for "already reported" — and up to
+  naming `poison`, the checker's own word for "already reported" - and up to
   five errors for one unknown function, because a skipped binding left the arm
   body naming something that resolved to nothing.
 - **The typed-JSON concurrency probe raced its own fixture** (#152).
@@ -752,7 +752,7 @@ bug shipped for want of anything watching the class.
 ## [0.1.40] - 2026-09-07
 
 A way to contain a panic without spawning a fiber, and a WebSocket that can
-compress. The runtime ABI moves from 16 to 19 — three releases' worth of
+compress. The runtime ABI moves from 16 to 19 - three releases' worth of
 entries in one, so a program built against 0.1.39's runtime must be rebuilt
 rather than relinked.
 
@@ -766,12 +766,12 @@ kilobyte can name a gigabyte.
 
 ### Added
 
-- **`contained f(args)` — containing a panic no longer needs a fiber.**
+- **`contained f(args)` - containing a panic no longer needs a fiber.**
   Containment arrived with `brew`, so the only place a failure could stop was a
   fiber's entry, and a server that wants a panicking handler to become a 500
   paid a pool spawn, two context switches and a join on every request whether
-  or not anything ever panicked. The unwind was never the fiber's — it is the
-  platform's forced unwind, which came in with runtime ABI 12 — and it stops
+  or not anything ever panicked. The unwind was never the fiber's - it is the
+  platform's forced unwind, which came in with runtime ABI 12 - and it stops
   wherever a landing pad declines to resume. So the boundary is now a call:
 
   ```beans
@@ -783,8 +783,8 @@ kilobyte can name a gigabyte.
 
   `contained f(args)` runs the call on the current fiber, in the current frame,
   under a catch frame, and answers `Result<T>`. A panic raised anywhere under
-  it unwinds the frames in between — defers newest-first, owned values dropped,
-  an unfinished construction released without its `deinit` — and arrives as
+  it unwinds the frames in between - defers newest-first, owned values dropped,
+  an unfinished construction released without its `deinit` - and arrives as
   `err` of kind `panic` with the same message and position a brewed fiber's
   `join` would have delivered. Nothing is spawned, nothing switches, nothing is
   joined. Unlike `brew` it is an ordinary expression, legal wherever one is.
@@ -796,7 +796,7 @@ kilobyte can name a gigabyte.
   arguments are being evaluated, which happens before the frame is opened.
   Refused at check time, about the program: a target without the controlled
   unwind (Windows/COFF, wasm, 32-bit ARM), `--runtime freestanding`, a
-  unit-returning call (there is no `Result<unit>` — `ok` takes a value), and
+  unit-returning call (there is no `Result<unit>` - `ok` takes a value), and
   the three walls `brew` already has on the call it packages.
 
   The runtime ABI goes to 18 for `beans_contained_enter`,
@@ -810,7 +810,7 @@ kilobyte can name a gigabyte.
   and a server holding many connections should choose to spend that rather
   than discover it. A server takes the first offer in
   `Sec-WebSocket-Extensions` it can honour and echoes exactly what it agreed
-  to, declining — never failing on — an offer naming a parameter or a value it
+  to, declining - never failing on - an offer naming a parameter or a value it
   cannot honour. A client reads the answer strictly, because an answer it
   cannot honour would mean compressing into a stream the server cannot read.
   `deflate()` reports the agreed `Deflate` parameters. Autobahn's compression
@@ -824,7 +824,7 @@ kilobyte can name a gigabyte.
 
 - **`max_message` bounds the decompressed message.** On a connection carrying
   permessage-deflate it is what the message may reach *after* it inflates, not
-  what arrived in the frame — the only bound that means anything once a
+  what arrived in the frame - the only bound that means anything once a
   kilobyte on the wire can name a gigabyte in memory. Crossing it is kind
   `too_large` and a close with 1009; a payload that is not a DEFLATE stream,
   or text that is only invalid UTF-8 once decompressed, is kind `protocol` and
@@ -832,9 +832,9 @@ kilobyte can name a gigabyte.
 - **Runtime ABI 18 -> 19.** `beans_ws_valid_utf8` is new: the framer cannot
   run RFC 6455's text check on a message that is still compressed when it
   hands it over, so the same Table 3-7 walk is reachable for the bytes that
-  come out of the inflater. Three request layouts widened with it —
+  come out of the inflater. Three request layouts widened with it -
   `beans_ws_new` takes "permessage-deflate negotiated", `beans_ws_queue` takes
-  the frame's reserved bits, and `beans_zlib_stream_new` takes a window size —
+  the frame's reserved bits, and `beans_zlib_stream_new` takes a window size -
   and the framer's message event grew the byte that carries those reserved
   bits out.
 
@@ -843,18 +843,18 @@ kilobyte can name a gigabyte.
 - **`beansc build --debug` could not build a program that can unwind.** The
   cleanup pad wrote its `landingpad` across two lines, and the pass that
   attaches debug locations appends `, !dbg !N` to every line it does not
-  recognise as a label — so the second line came out `cleanup, !dbg !26` and
+  recognise as a label - so the second line came out `cleanup, !dbg !26` and
   clang stopped in the LLVM parser. That is every program that brews, since
   the pads landed in 0.1.36, and every program that contains a panic now. The
   pad is one line, and both goldens are built with `--debug` in the gate.
 
 - **`brew` and `contained` now take an interface-typed receiver.** The wall
-  was "a method through a class receiver — a value receiver would run on the
+  was "a method through a class receiver - a value receiver would run on the
   fiber's own copy", and it read `kind == "class"`, so `brew handler.serve(x)`
   through an interface was refused. The reason does not apply: `extends` and
   `implements` belong to classes, an interface value is an object whose first
   word is its descriptor, and a struct, union or enum that names either is
-  refused at its declaration — so the hoisted binding holds the same object
+  refused at its declaration - so the hoisted binding holds the same object
   the caller does and the dispatch reaches the same instance. A value receiver
   is still refused, for the reason the message gives.
 
@@ -862,7 +862,7 @@ kilobyte can name a gigabyte.
   so and exits, instead of finishing a fiber the scheduler cannot return
   from.** Only a `contained` call makes the root fiber unwind at all, so this
   is reachable only when a frame between the panic and the catch carries no
-  unwind table — a C frame built without one.
+  unwind table - a C frame built without one.
 
 ## [0.1.39] - 2026-09-06
 
@@ -874,14 +874,14 @@ Read the two entries under Changed before upgrading. Both are breaking, and
 both are breaking because the two backends had been reading the same program
 differently, so there was no single meaning to keep. `+` on a string passed
 `beansc check` and ran under the tree interpreter, and only a native build
-refused it — as a message about the LLVM emitter rather than about the program.
+refused it - as a message about the LLVM emitter rather than about the program.
 A `deinit` ran on an object whose `init` had panicked, read a field the
 initializer never reached, and turned a contained failure into a dead process.
 
 The additions are the other half of the same story: a generic class could not
 extend a base class, and a `const` could not size a fixed array. Neither was
-refused where it was written — the first reached the emitter, the second the
-parser — so both are cases of the checker and the backends disagreeing about
+refused where it was written - the first reached the emitter, the second the
+parser - so both are cases of the checker and the backends disagreeing about
 what the language is.
 
 ### Added
@@ -889,7 +889,7 @@ what the language is.
 - **A generic class may now extend another class.** The language did not have
   this: `spec/SYNTAX.md` said "a generic class may implement interfaces but
   still may not extend a base class", and the native backend refused every such
-  shape at build time. Nothing enforced it earlier, though — `beansc check`
+  shape at build time. Nothing enforced it earlier, though - `beansc check`
   passed the program and the tree interpreter ran it, so the refusal arrived
   from the emitter, about the emitter: *"LLVM emitter cannot form class layout
   'main.Empty<int>': its pointer mask or class shape exceeds runtime metadata
@@ -910,12 +910,12 @@ what the language is.
   **`as?` still cannot name an instantiation.** `b as? Sub<int>` is refused: a
   downcast is decided at run time from the object's own class, and an object
   does not carry its type arguments, so `Sub<int>` and `Sub<string>` cannot be
-  told apart there — the interpreter would answer yes where the native backend
+  told apart there - the interpreter would answer yes where the native backend
   answers no. The message now says that instead of denying a parent/child
   relation that does hold. What is newly allowed is the other direction: the
   *source* of an `as?` may be written at an instantiation, so `c: Crate<int>` can
   be tested against a non-generic class that extends `Crate<int>`. That was
-  refused before for no reason — the target carries the runtime identity, and
+  refused before for no reason - the target carries the runtime identity, and
   it is a plain class. (#123)
 
 - **A module constant can size a fixed array.** `const LIMIT: int = 128`
@@ -925,12 +925,12 @@ what the language is.
   enum payload, an `extern "C"` struct or union member, a static field, a
   generic class's field and a partial class continuation. A constant defined
   from another constant works, in any file order, as does a `pub const` from
-  another package — reached bare, qualified through a package alias, or
+  another package - reached bare, qualified through a package alias, or
   selected with `import {SLOTS} from pkg`. Constants are folded at the end of
   signature checking, which is before any type is laid out; they used to be
   folded after it, which is why a length could only ever be an integer literal.
-  A name that is not a constant is refused for what it is — a class, a
-  function, a type parameter, or nothing in scope — and a constant that cannot
+  A name that is not a constant is refused for what it is - a class, a
+  function, a type parameter, or nothing in scope - and a constant that cannot
   supply one says which constant and what it holds: *"fixed array length must
   be between 1 and 4096, and const ZERO is 0"*. A `const` still **cannot** be a
   parameter default: a default is read while the signature holding it is
@@ -940,14 +940,14 @@ what the language is.
 ### Changed
 
 - **`+` on a string is refused by the checker.** The language has never had
-  one — `spec/SYNTAX.md`, "Strings" — and the native backend never emitted
+  one - `spec/SYNTAX.md`, "Strings" - and the native backend never emitted
   one, but the checker accepted it and the tree interpreter joined the two
   strings. So `a + b` passed `beansc check`, printed the right answer under
   `beansc run`, and failed only at `beansc build`, with a message about the
-  LLVM emitter rather than about the program — which is the fast iteration
+  LLVM emitter rather than about the program - which is the fast iteration
   loop people are told to use, so the rule arrived at release time. All three
   entry points now refuse it in the program's own terms: *"'+' is not defined
-  for string — write the pieces as one interpolated string, "{a}{b}", or push
+  for string - write the pieces as one interpolated string, "{a}{b}", or push
   them onto a fmt.StringBuilder and call to_string() once."* Code that joined
   strings with `+` and never ran a native build will stop passing `check`, and
   must use interpolation, `std.fmt`, `list.join(sep)` or `fmt.StringBuilder`.
@@ -955,25 +955,25 @@ what the language is.
 
 - **An object whose `init` has not returned is released without running its
   `deinit` body.** A panic inside an initializer left a half-built object, and
-  the release that followed still ran the class's `deinit` on it — handing user
+  the release that followed still ran the class's `deinit` on it - handing user
   code a `self` whose fields the initializer had never reached. The body read a
   slot holding nothing: in the tree interpreter that was a second panic during
   the unwind, reported as a double panic and exit 134, and in a native build a
   segmentation fault. Either way a failure `brew`/`join` had correctly contained
   became a dead process. Releasing the fields was always right; running the body
-  was not, so only the body is skipped now — every field the initializer did
+  was not, so only the body is skipped now - every field the initializer did
   assign is still released, in the ordinary order.
 
   The rule covers every way construction stops partway: a panic in the `init`
   body, in a field's default expression, or in a base `init` reached through
   `super.init`, and a `deinit` a class inherits as much as one it declares. It
-  is about that one object — everything it had already built and stored dies
+  is about that one object - everything it had already built and stored dies
   normally, and a reference the initializer handed out (possible only once every
   field is assigned) keeps the object alive, so its own later death is an
   ordinary one that does run `deinit`.
 
-  If a `deinit` was relied on to run after a failed construction — to close a
-  handle or unregister something the initializer had already taken — it will
+  If a `deinit` was relied on to run after a failed construction - to close a
+  handle or unregister something the initializer had already taken - it will
   stop running there. Move that work out of `deinit`: acquire the resource
   through a named static returning `Result<T>` that validates before it calls
   `new`, so a failure never builds the object at all. (#120)
@@ -982,7 +982,7 @@ what the language is.
 
 - **A class chain deeper than 32 links builds.** The emitter capped the walk at
   32 and reported giving up as *"its pointer mask or class shape exceeds
-  runtime metadata capacity"* — so a 41-link hierarchy of ordinary, non-generic
+  runtime metadata capacity"* - so a 41-link hierarchy of ordinary, non-generic
   classes passed `check`, ran under the interpreter, and then failed the build
   with a message about metadata that had nothing to do with it. The only real
   bound is the program's own class count: a class appears at most once in an
@@ -994,7 +994,7 @@ what the language is.
   the child's row, so the binding that took it is its only owner. The tree
   interpreter handed out a copy and left the row's own reference in place, so a
   claimed value stayed alive until the handle or the group itself fell out of
-  scope — a whole function later than the native backend, which detaches the row
+  scope - a whole function later than the native backend, which detaches the row
   and zeroes the slot. A program with a loud `deinit` saw the two engines run it
   at different moments and still exit 0, so nothing failed loudly. The result
   nobody claims is the same rule's other half: it dies inside the synthesized
@@ -1023,13 +1023,13 @@ what the language is.
   else", and it was printed in six messages — *"poison cannot be indexed"*,
   *"poison is not iterable"*, *"poison is not callable"*, *"'?' needs Result or
   Option, got poison"*, the two unary ones, and *"size_of: poison is not a
-  declared value type"* — each a second line about a value with no type, naming
+  declared value type"* - each a second line about a value with no type, naming
   a type nobody wrote. A rule that reads a value's type now stops when that type
   is poison. (#59)
 
 - **The installer downloads its package from the release its manifest named.**
-  `tools/install-release.sh` — the script behind the documented
-  `curl -fsSL … | sh`, and the copy `beansc upgrade` runs — chose its download
+  `tools/install-release.sh` - the script behind the documented
+  `curl -fsSL … | sh`, and the copy `beansc upgrade` runs - chose its download
   base before it knew which release it was installing. Without `--version` that
   base is `.../releases/latest/download`, and `latest` moves: the manifest
   fetched from it names a version, and the download that followed went back to
@@ -1040,7 +1040,7 @@ what the language is.
   that release's own directory; a caller who sets `BEANS_INSTALL_BASE_URL` keeps
   theirs, which is how a mirror points the installer at its own bytes.
   `tools/install-release.ps1` had the same shape and takes the same fix, but it
-  is unverified — there was no Windows host here to run it on, and the new
+  is unverified - there was no Windows host here to run it on, and the new
   regression test covers only the shell installer. (#118)
 
 ## [0.1.38] - 2026-09-05
@@ -1056,7 +1056,7 @@ The runtime ABI moves to 16.
   them two, so `Sub.v` and `Base.v` were the same storage under one compiler and
   different storage under the other. There is no reading of that program both
   backends can share, so the checker now refuses it: *"field 'v' redeclares a
-  field 'Sub' inherits from 'Base' — an inherited field name is a slot the base
+  field 'Sub' inherits from 'Base' - an inherited field name is a slot the base
   already owns, so a subclass cannot declare it again; rename this field."*
   Existing code that shadowed a base field will stop compiling and must rename.
   (#95)
@@ -1065,7 +1065,7 @@ The runtime ABI moves to 16.
   an object was fully built, so a never-assigned field passed `check` and then
   panicked in the interpreter and read uninitialised memory natively. The
   checker now runs definite-assignment over initializers and refuses the gap:
-  *"'C' init returns with unassigned fields (a) — every field must be assigned
+  *"'C' init returns with unassigned fields (a) - every field must be assigned
   before construction finishes."* Code that relied on a field being implicitly
   valid will stop compiling. Field defaults and every path through a branch are
   understood, so only genuinely unassigned fields are reported. (#94)
@@ -1087,7 +1087,7 @@ The runtime ABI moves to 16.
 
 - **Comparing two `Result<T, E>` values no longer segfaults natively.** The
   emitter evaluated *both* payload comparisons and chose between them with a
-  `select`, which does not short-circuit — so comparing an `ok` against an `err`
+  `select`, which does not short-circuit - so comparing an `ok` against an `err`
   dereferenced the dead arm's payload as the wrong type. Equality now branches
   on the tags and touches only the arm that is live. (#93)
 
@@ -1102,7 +1102,7 @@ The runtime ABI moves to 16.
   three failures: a base `deinit` ran twice and ahead of the middle class's own,
   an ordinary method's vtable row was left null when a package-private method in
   another package answered a different selector, and a `deinit` on a plain class
-  above a generic base never ran at all — which of them you hit depended on the
+  above a generic base never ran at all - which of them you hit depended on the
   order bodies happened to be emitted in. (#119)
 
 - **A deep chain of objects that declare `deinit` no longer overflows the
@@ -1117,7 +1117,7 @@ The runtime ABI moves to 16.
   key whose `deinit` observed its value saw a different world depending on the
   backend. (#97)
 
-- **A `TaskGroup` discards unclaimed results newest-first on both backends** —
+- **A `TaskGroup` discards unclaimed results newest-first on both backends** -
   the order a scope drops what it owns, and the order the interpreter releases
   its children. It was oldest-first natively. (#106)
 
@@ -1140,12 +1140,12 @@ The runtime ABI moves to 16.
 ### Added
 
 - **A C function with a `...` tail can be declared and called.** `ioctl`,
-  `fcntl`, three-argument `open`, `printf` — none could be bound at all, so
+  `fcntl`, three-argument `open`, `printf` - none could be bound at all, so
   anything reaching for them dropped to hand-written C. `extern "C" fn
   ioctl(fd: i32, request: u64, ...) -> i32` declares one. The tail belongs to
   the **call site**, not the declaration: one declaration has as many
   signatures as it has calls, and each is classified by the target's own
-  variadic rules. That is the point of the form rather than a convenience — on
+  variadic rules. That is the point of the form rather than a convenience - on
   Apple arm64 the fixed head stays in registers while the tail goes on the
   stack, so the same arguments passed through a fixed signature land in the
   wrong places. Both backends materialise the signature the call actually has
@@ -1157,11 +1157,11 @@ The runtime ABI moves to 16.
 
 - **`std.term`, so a terminal program is not hand-rolled.** Raw mode, window
   size, ANSI output and key decoding. The split is deliberate: the parts whose
-  shape is the platform's — `struct termios` (72 bytes on macOS, 60 on Linux),
-  `struct winsize`, the Windows console — are four calls in the runtime's C,
+  shape is the platform's - `struct termios` (72 bytes on macOS, 60 on Linux),
+  `struct winsize`, the Windows console - are four calls in the runtime's C,
   and everything portable is Beans. `RawMode.enter` returns a guard that
-  restores on `restore()`, on going out of scope, and — because the runtime
-  registers the restore with `atexit` — on a normal exit and on a panic, both
+  restores on `restore()`, on going out of scope, and - because the runtime
+  registers the restore with `atexit` - on a normal exit and on a panic, both
   of which reach `exit()` on either backend. A crash by `SIGSEGV`/`SIGBUS` is
   the documented boundary: only the fault reporter runs then and it is fenced
   to flushing output, so a full-screen program should watch `terminate` and
@@ -1175,8 +1175,8 @@ The runtime ABI moves to 16.
 ### Fixed
 
 - **`?` keeps exactly the count the ownership plan gave it.** The MIR plan
-  already says who owns the operand — `consumes` means the count transfers and
-  nothing else will release it — and both halves of the emitter read that
+  already says who owns the operand - `consumes` means the count transfers and
+  nothing else will release it - and both halves of the emitter read that
   decision from the wrong place, in opposite directions.
 
   The unwrap's two `Option` arms retained the payload either way, so every
@@ -1188,14 +1188,14 @@ The runtime ABI moves to 16.
 
   The propagate's same-representation fast path had the mirror fault: the
   operand flowed straight out even when it was a borrow, handing the caller a
-  box the frame never retained — `let x = borrowed_result?` on the error path
+  box the frame never retained - `let x = borrowed_result?` on the error path
   was a double free the moment the caller let go. Two shipped files already had
   the shape and survived only because their error payload was a string literal,
   which is immortal. (#114)
 
   Neither arm writes a count op it does not owe now. An `Option` is not a box,
   so a consumed operand hands its count straight over and the emitter writes
-  nothing at all — one atomic increment fewer than before on the hottest
+  nothing at all - one atomic increment fewer than before on the hottest
   ownership path there is. Across the whole tree the emitted IR is unchanged
   except at `?` itself.
 
@@ -1203,15 +1203,15 @@ The runtime ABI moves to 16.
 
 ### Added
 
-- **`_` is a discard, not a name.** It works wherever a name is bound — `let`,
+- **`_` is a discard, not a name.** It works wherever a name is bound - `let`,
   `var`, function and closure parameters, loop bindings, and a match arm's
-  payload — and binds nothing: any number of them may share one scope, and
+  payload - and binds nothing: any number of them may share one scope, and
   none can be read, moved, lent or assigned to. Each of those four says what
   `_` is instead of offering a suggestion list for a name the author declined
   to make, including inside a string interpolation, where the brace hint used
   to speak over it. The value is still owned: `let _: Packet = open()` and
   `fn eat(move _: Packet)` drop what they take at the end of their scope,
-  once, exactly where a named binding would — the same point on both
+  once, exactly where a named binding would - the same point on both
   backends. Nothing completes to `_` and nothing renames it. (#56)
 
 ### Changed
@@ -1219,8 +1219,8 @@ The runtime ABI moves to 16.
 - **`m[k] = v` takes a move-only value.** Writing one into a map is a move in,
   the same transfer `m.set(k, v)` does and the same instruction it lowers to;
   the read rule is untouched and still refuses `let b = m[k]`. A move-only
-  *key* is still refused, and the refusal now says why — a map owns a copy of
-  every key and `keys()` hands copies back — and, for the `Bytes` key the rule
+  *key* is still refused, and the refusal now says why - a map owns a copy of
+  every key and `keys()` hands copies back - and, for the `Bytes` key the rule
   is usually met with, names the way out: a Beans string keeps every byte, so
   key by `string` and convert with `Bytes.to_string()`. Both places that check
   the rule say the same sentence now; the one behind an inferred map literal
@@ -1230,28 +1230,28 @@ The runtime ABI moves to 16.
   `config.limits.retries += 1` write the one struct rather than a copy: the
   chain walks back through as many struct fields and fixed-array elements as
   the source wrote, and ends at a mutable local's slot, at the heap object a
-  class field sits in, or at a static field — including an `inout` parameter,
+  class field sits in, or at a static field - including an `inout` parameter,
   an `inout fn` receiver, and a local a closure captured. The checker and the
   LLVM emitter walk that chain through one shared helper, so the two backends
   cannot compute a different address. What stays refused names which storage
-  it is — a temporary, a `List` or `Map` element, a `union` field — rather
+  it is - a temporary, a `List` or `Map` element, a `union` field - rather
   than "needs a local variable for now". A struct's move-only refusal names
   the field responsible, following the chain down to the one that actually
   fails. (#48, #112)
 
 - **A float orders and compares by totalOrder wherever `Order` and `Eq` do the
-  work.** IEEE comparison is not an order — NaN is unordered with everything —
+  work.** IEEE comparison is not an order - NaN is unordered with everything -
   and three things were built on it: `Map<float, _>` disagreed across backends
   (native made a NaN key write-only and grew the map without bound on every
   re-insert, the interpreter replaced), `SortedMap` and `PriorityQueue` read
   "neither less nor greater" as "found it" and so `set(NaN, v)` overwrote
   whichever key the descent stopped at, and `[3.0, 1.0, NaN, 2.0].sort()`
   answered `[1, 3, nan, 2]`. `float` and `f32` now order by IEEE 754
-  totalOrder — `-NaN < -inf < ... < -0.0 < +0.0 < ... < +inf < +NaN` — with bit
+  totalOrder - `-NaN < -inf < ... < -0.0 < +0.0 < ... < +inf < +NaN` - with bit
   equality as the equality that belongs to that order, so two NaNs are one
   value when sign and payload match and the two zeros are two map keys. **The
   operators are untouched**: `nan < 1.0` and `nan == nan` are still false,
-  `-0.0 == 0.0` is still true, and arithmetic is unchanged — the same split
+  `-0.0 == 0.0` is still true, and arithmetic is unchanged - the same split
   Java draws between `a < b` on a `double` and `Double.compare`. See
   `examples/float_order.b`. (#84)
 
@@ -1260,29 +1260,29 @@ The runtime ABI moves to 16.
   stood: for a list of 40 with a failing `deinit` at index 20, the interpreter
   ran 40 deinits and a native build ran 20, leaking the other 20 with the list
   reporting `len 0`. O(n) leaked per caught panic, and the two backends
-  disagreeing. The release that was under way now finishes on both — the
+  disagreeing. The release that was under way now finishes on both - the
   remaining elements of a container being cleared, the rest of a dying graph's
-  worklist, the rest of a white set the collector killed — in the order it
+  worklist, the rest of a white set the collector killed - in the order it
   would have run in anyway, and only then does the panic continue to the join.
   The object whose `deinit` panicked is never destroyed twice. (#81)
 
 - **An enum cannot implement an interface or extend a class.** An interface
   value is an object with a descriptor and an enum value is a tag, so only a
-  class can implement one. Every spelling is refused at the declaration now —
+  class can implement one. Every spelling is refused at the declaration now -
   two interfaces at once, payload variants, `enum(u8)`, a generic enum, a base
-  class — rather than reaching a backend. (#87)
+  class - rather than reaching a backend. (#87)
 
 - **A dispatch slot belongs to a method that can fill it.** A `static fn` in a
   subclass silently took over an inherited instance method's slot, so
   `b.greet()` on a `Base` holding a `Sub` called a function with a receiver its
-  signature does not declare — on both backends. A generic method took a slot
+  signature does not declare - on both backends. A generic method took a slot
   it has no single body to fill. Both are refused at the declaration with a
   message about the program, and the reflective path, which a `priv static`
   reached without passing the checker, now checks too. (#88, #89)
 
 - **A settled call goes straight to its method.** A call is provably one method
   when every non-abstract class that could stand behind the receiver answers
-  the same dispatch symbol — which settles a leaf class, an unreplaced
+  the same dispatch symbol - which settles a leaf class, an unreplaced
   inherited body, an abstract class with one concrete subclass, a sole
   interface implementor and a kept interface default in one condition. Those
   calls no longer go through the object descriptor, which also unblocks
@@ -1291,7 +1291,7 @@ The runtime ABI moves to 16.
 - **Guarded devirtualization speculates on the classes the program builds.** It
   used to fire only when a class had already been registered by an emitted
   `new`, so whether a call took the fast path depended on the order the
-  compiler happened to emit things — the same program, different codegen. The
+  compiler happened to emit things - the same program, different codegen. The
   set of classes a program builds is computed up front now. The guard itself is
   unchanged and still checks. (#90)
 
@@ -1316,7 +1316,7 @@ The runtime ABI moves to 16.
 - **An `Option` propagated by `?` into a different `Option` built invalid
   IR.** A `Result` carries its error across a `?`, so the propagation extracts
   the payload and rewraps it; an `Option` carries nothing, and had no arm of
-  its own — it fell through to the `Result` code, which read an error payload
+  its own - it fell through to the `Result` code, which read an error payload
   out of a value that has none. The module did not verify, so `beansc build`
   failed naming a `.ll` file for a program the checker had accepted and the
   interpreter ran correctly. A propagating `Option` is now the target's
@@ -1324,7 +1324,7 @@ The runtime ABI moves to 16.
 
 - **A `?` in an assignment target short-circuits the statement.** The
   interpreter threw the propagated value away and ran on, finishing a function
-  the native backend had already left — `find(id)?.count = next()` ran
+  the native backend had already left - `find(id)?.count = next()` ran
   `next()` and everything after it on the `none` path. It returns the
   propagated value now, from the target's receiver, an index key, and a weak
   field alike.
@@ -1335,8 +1335,8 @@ The runtime ABI moves to 16.
   matched, so the canonical order never ran for that object and
   `SortedMap<int, Loud>.clear()` printed `1 / 2 / 0` interpreted against
   `2 / 0 / 1` natively. Every declared field's slot is reserved when the object
-  is built now — base class first, declaration order within each class, the
-  order a native build lays it out — so the host's back-to-front release of
+  is built now - base class first, declaration order within each class, the
+  order a native build lays it out - so the host's back-to-front release of
   that map *is* the canonical order, for every field shape. A `clear()` on a
   `Map` or `OrderedMap` also sets both halves of an entry aside before
   releasing either, so no accessor can answer out of a half the clear has not
@@ -1345,7 +1345,7 @@ The runtime ABI moves to 16.
 - **A deque tells the truth at every point a `deinit` can read it.** The
   crossover window mutated storage before updating the counters that `len()`,
   `get()`, `first()`, `last()` and both `pop_*` read, and the window allocates
-  — which is where the cycle collector runs, so a `deinit` can be scheduled
+  - which is where the cycle collector runs, so a `deinit` can be scheduled
   precisely inside it. A probe holding the deque from inside a cycle saw 1,622
   order tears in 316,810 reads natively and panicked inside the stdlib under
   the interpreter. See `examples/deque.b`. (#86)
@@ -1357,7 +1357,7 @@ The runtime ABI moves to 16.
 - **A contained panic unwinds its fiber's frames, on both backends.** A panic
   caught by `brew`/`join` used to abandon every frame between the failure and
   the fiber entry: defers skipped, deinits skipped, everything the frames held
-  stranded — a server that caught panics leaked by the request. The unwind now
+  stranded - a server that caught panics leaked by the request. The unwind now
   runs each function's defers newest-first and at most once, drops every owned
   local, releases every in-flight temporary and half-built object (the
   argument built when the next one panics, interpolation pieces, list-literal
@@ -1366,11 +1366,11 @@ The runtime ABI moves to 16.
   the same order on the tree interpreter and a native build, byte for byte. A
   child's uncaught panic escalating into its parent's unwind is a double
   panic, reported with both failures named. The panicking `deinit`'s own
-  object stays abandoned mid-destruction — never destroyed twice. (#44)
+  object stays abandoned mid-destruction - never destroyed twice. (#44)
 
 - **Every removal from an owned structure leaked one node natively.** A
   pattern arm's bind stored its retained payload without setting the local's
-  live flag, so the guarded drop read the clear flag and skipped the release —
+  live flag, so the guarded drop read the clear flag and skipped the release -
   one leaked node per unlink, invisible to `leaks --atExit` behind the
   exit-time pool free. The rule is uniform now: every write that makes a
   flagged slot hold an owned reference sets the flag, every move-out or drop
@@ -1378,14 +1378,14 @@ The runtime ABI moves to 16.
   44.5 MB to 1.6 MB, flat in the number of removals. (#60)
 
 - **A runtime frame survives a panicking callback.** A panic raised in a
-  Beans callback that a runtime C frame was running — a sort's comparator or
-  key function, a reflective call — used to unwind through the frame leaving
+  Beans callback that a runtime C frame was running - a sort's comparator or
+  key function, a reflective call - used to unwind through the frame leaving
   its merge buffer leaked and the collection half-permuted. The frame's
   scratch is freed on the way through now, and an interrupted sort puts the
   list back exactly as it was. A `deinit` panicking inside a map replace
   leaves the map consistent too: the entry takes the new value and drops the
   duplicate key before the old value's release runs, so the store stands and
-  nothing is freed twice — the old order freed the caller's key first, and
+  nothing is freed twice - the old order freed the caller's key first, and
   the unwind then released it again. (#73)
 
 - **The backends could sort the same list differently, with no panic
@@ -1399,7 +1399,7 @@ The runtime ABI moves to 16.
 
 - **One caught deinit panic disabled the cycle collector for the rest of the
   process.** The in-deinit counters stranded when a contained panic unwound
-  out of a deinit body, and `cc_collect` refuses to run while one is up —
+  out of a deinit body, and `cc_collect` refuses to run while one is up -
   every later cycle leaked with its deinit silently skipped, unbounded growth
   in a long-running program. The counters, the release cascade's work stack
   and the collector's own flags and buffers all restore on that unwind now.
@@ -1414,21 +1414,21 @@ The runtime ABI moves to 16.
 - **A move argument leaked when the panic point was inline arithmetic.**
   Integer `/` and `%`, decimal operations and static reads panic natively
   where the effects table said "none", so a temporary consumed by a move
-  parameter had no unwind slot across them — the interpreter printed the
+  parameter had no unwind slot across them - the interpreter printed the
   deinit, native skipped it. The table tells the truth at the emit site now.
 
 - **A large brewing program could not build natively at all.** The parallel
   backend's cross-chunk declarations copied the definition's personality,
-  which LLVM refuses on a declaration — every brewing module past the 4 MiB
+  which LLVM refuses on a declaration - every brewing module past the 4 MiB
   chunk threshold failed to link. Declarations are cut before both.
 
-- **An out-of-range `List.insert` panicked the interpreter itself** — the
+- **An out-of-range `List.insert` panicked the interpreter itself** - the
   position pointed into `interpreter.b`, and on a brewed fiber the join hung
   forever. It fails as the program's own panic with the native runtime's
   message now.
 
 - **A stalled download no longer fails the install.** `tools/install-release.sh`
-  passed `--retry 3` to curl, which counts only curl's own transient errors — a
+  passed `--retry 3` to curl, which counts only curl's own transient errors - a
   connection that opens and then goes quiet is error 56, and curl will not
   retry that. There was no timeout either, so such a transfer sat until the
   kernel gave up on the socket: nine minutes, then a failed install for a user
@@ -1442,13 +1442,13 @@ The runtime ABI moves to 16.
 - **A `defer` must sit at the top level of the function body, and the checker
   refuses a nested one.** That was always the spec's rule; the checker
   accepted the nested shape anyway, and the native run-site then read the
-  captured cell after the block's locals dropped — a segfault on any owned
+  captured cell after the block's locals dropped - a segfault on any owned
   capture. The primitive-capture case only looked like it worked. The refusal
   names the way out: defer at the function's own scope, or do the cleanup at
   the block's end.
 
 - **A callback that structurally changes the list it is sorting is refused.**
-  Push, remove, clear — anything that moves the length or the storage — is
+  Push, remove, clear - anything that moves the length or the storage - is
   the program's own panic at the first callback return after the change,
   `list changed during sort (length A -> B)`, identical on both backends. The
   sort would otherwise permute stale storage: a use-after-free on growth,
@@ -1457,7 +1457,7 @@ The runtime ABI moves to 16.
   place (`l[i] = v`) moves nothing and stays allowed.
 
 - **An index assignment evaluates left to right on both backends.** Receiver,
-  then index or key, then the right-hand side — and a compound array
+  then index or key, then the right-hand side - and a compound array
   assignment evaluates its index once. The interpreter ran the value first
   and the index twice, so a side-effecting key and value observably swapped
   between the legs.
@@ -1471,14 +1471,14 @@ The runtime ABI moves to 16.
   `entry file must sit next to beans.pot` on line 1 and no navigation, no
   hover, no completion and no semantic tokens anywhere in the file. `beansc
   lsp` picked the project's entry by looking for those two names and, finding
-  neither, handed the loader the file the editor had open — which the loader
+  neither, handed the loader the file the editor had open - which the loader
   refuses, because an entry has to sit beside the manifest. A module root is
   free to be called anything; `community-libs/crema`'s is `crema.b`.
   - The entry is now the file the loader would start from, which is the same
     rule `beansc build` uses and the same one workspace discovery already used.
   - **And the entry alone was not enough.** A library root that imports none of
-    its own packages — the common shape, since a module root is often an empty
-    `package` clause and no more — loads exactly one file, leaving every other
+    its own packages - the common shape, since a module root is often an empty
+    `package` clause and no more - loads exactly one file, leaving every other
     file in the project with nothing to answer from. The loader now also pulls
     in the package the open file belongs to, or loads it as its own entry when
     it sits under `examples/` or `tests/`. A compiler build never names an open
@@ -1493,7 +1493,7 @@ The runtime ABI moves to 16.
   editor had nothing to say about any of it.
   - The continuation's members are now walked against the class they belong
     to, and the file's outline names that class with the members this part
-    holds. The type keeps one declaration, at the part carrying the header —
+    holds. The type keeps one declaration, at the part carrying the header -
     declaring it twice would make go-to-definition depend on the order the
     loader happened to walk the files in.
 
@@ -1511,7 +1511,7 @@ The runtime ABI moves to 16.
 
 - **`std.math` gains float helpers and transcendentals.** `fmax`, `fmin`,
   `fclamp`, `rem_euclid`, `is_finite`, `infinity`, `sqrt`, `hypot`, `exp`,
-  `sin` and `cos`, each with an `f32` twin named with a `32` suffix — the
+  `sin` and `cos`, each with an `f32` twin named with a `32` suffix - the
   convention `std.intrinsic` already sets with `sqrt`/`sqrt32`. `clamp` and
   `gcd` stay integer.
   - **Written in Beans, not bound to libm.** A freestanding or
@@ -1522,7 +1522,7 @@ The runtime ABI moves to 16.
     64-bit patterns rather than printed digits, over 22,924 points: `exp`
     within 1 representable step across its whole finite range and exact where
     the result is subnormal, `sin` and `cos` within 2, and bit-identical at the
-    multiples of pi/2 — where the answer is made almost entirely of the
+    multiples of pi/2 - where the answer is made almost entirely of the
     reduction residual, and a shorter constant builds it from bits that were
     rounded away.
   - Past `angle_limit()` an f64 carries fewer bits than a full turn needs, so
@@ -1533,7 +1533,7 @@ The runtime ABI moves to 16.
     becomes the thing under test.
 
 - **`cflags <selector> <flag> [<flag>...]` in `beans.pot`.** Clang flags for
-  the `csrc` files the same package declared — the define a vendored C library
+  the `csrc` files the same package declared - the define a vendored C library
   needs now lives where a reader of the manifest can see it, instead of in a
   wrapper source or a build script. Flags are separate words rather than one
   quoted string, so a path with a space stays one argument. Selectors and
@@ -1542,7 +1542,7 @@ The runtime ABI moves to 16.
     another package's C: one package silently miscompiling another's code with
     a define its author never saw is the failure this rules out.
   - **In the cache key, both backends.** Changing a flag recompiles rather than
-    reusing the object built with the old set — a key that ignored them would
+    reusing the object built with the old set - a key that ignored them would
     answer with the previous build forever and give nothing to notice it by.
     The interpreter's path compiles one object per file for the same reason:
     two packages can disagree about a `-D`, so the flags cannot be unioned
@@ -1551,7 +1551,7 @@ The runtime ABI moves to 16.
 
 - **A cross sysroot can come from the environment.** `BEANS_WASM_SYSROOT` for a
   wasm target and `BEANS_SYSROOT` for anything else, with `--sysroot` winning
-  over both — so the path a machine happens to keep wasi-libc at stays out of
+  over both - so the path a machine happens to keep wasi-libc at stays out of
   every project's build script. A directory that does not exist is reported
   with the setting that named it, because Clang's own answer is a header error
   from inside the sysroot it did not find.
@@ -1561,7 +1561,7 @@ The runtime ABI moves to 16.
 - **`x as? T` stops retaining when the source outlives the match.** The Option
   owns what it wraps, so the downcast takes a reference and gives it back when
   the match is done. When the source is a local that holds an owned reference
-  and provably never changes, escapes or is captured, that pair cancels — the
+  and provably never changes, escapes or is captured, that pair cancels - the
   local keeps the object alive across the whole match by itself. A match
   binding counts as such a local, which is the common shape:
   `match get() { some(x) => match x as? T { ... } }`.
@@ -1578,7 +1578,7 @@ The runtime ABI moves to 16.
 
 - **A shared module lost every write made before its first static read.** A
   module built with `--emit shared` has no main, so the static prologue runs on
-  first touch — but only a *read* ran it. A host that called a writing export
+  first touch - but only a *read* ran it. A host that called a writing export
   first stored into globals the prologue had not reached yet; the next read
   found the prologue still unrun, ran it, and overwrote every one of those
   writes with the declared default. The export answered ok and its effect was
@@ -1591,18 +1591,18 @@ The runtime ABI moves to 16.
     neither half, and is covered too.
   - It also leaked: the overwritten store released the null a zeroed global
     holds rather than the default it was about to lose.
-  - The fix is in the emitter, so it is not a wasm fix — it reproduces on a
+  - The fix is in the emitter, so it is not a wasm fix - it reproduces on a
     plain dylib, and was found in a browser only because a browser has no
     refusal cases to check before the interesting one.
 
-- **`super.method(...)` panicked under the interpreter in any nested scope —
+- **`super.method(...)` panicked under the interpreter in any nested scope -
   and here the interpreter was the wrong half.** Inside an `if`, a block, a
   loop, or either kind of match arm, it answered `super.name has no self` at
   run time while the native backend compiled all of them correctly. A lexical
   scope frame did not carry the enclosing function's `self`, and the super call
   read it directly instead of walking up; only the top level of a method body
-  worked. It was reported as a match-arm bug, and the stated workaround —
-  `if` plus a statement-level `return super...` — turned out to fail the same
+  worked. It was reported as a match-arm bug, and the stated workaround -
+  `if` plus a statement-level `return super...` - turned out to fail the same
   way, which is what showed the cause was the scope frame rather than the
   match.
   - This is on the extension path: overriding a lookup and deferring to the
@@ -1623,7 +1623,7 @@ The runtime ABI moves to 16.
   - Both halves moved together, which is why this waited: the checker has an
     end-of-body walk and MIR has its own fallthrough check. Fixing only the
     checker would have made the interpreter accept a program the native
-    backend refuses — the exact bug class the rest of this release removes. A
+    backend refuses - the exact bug class the rest of this release removes. A
     block ending in a panic now takes a new MIR terminator, `unreachable`,
     which LLVM emits directly and which lets the optimizer drop the dead code
     after it.
@@ -1633,7 +1633,7 @@ The runtime ABI moves to 16.
 
 - **Calling a `fn`-typed static said the static did not exist.**
   `Table.seed(1)`, where `Table` declares `static seed: fn(int) -> int`, was
-  refused with `main.Table has no static 'seed'` — a message that was never
+  refused with `main.Table has no static 'seed'` - a message that was never
   true. Reading it into a local and calling that local always worked, and the
   same call through an *instance* field had always been accepted. Only the
   static branch of call resolution lacked the fallback: it looked for a static
@@ -1645,7 +1645,7 @@ The runtime ABI moves to 16.
   `fn make() -> Shape { return new Dot() }` compiled to native code again;
   the interpreter had always accepted it. The MIR verifier walked only
   `extends` when deciding whether a `return` was an ordinary upcast, so any
-  `implements` relation was rejected — as was a subclass reaching an
+  `implements` relation was rejected - as was a subclass reaching an
   interface through its base, and any relation carrying type arguments,
   which the check refused outright. Every other position (argument, list
   element, `some(...)`, a `let` of interface type) had always lowered it.
@@ -1653,7 +1653,7 @@ The runtime ABI moves to 16.
   and fail to build.
 
 - **An interface's `override` default was invisible through a
-  super-interface — and here the interpreter was the wrong half.** The
+  super-interface - and here the interpreter was the wrong half.** The
   interpreter's dynamic lookup walked `extends` relations only, and only the
   first, so a default body an interface supplies could not be reached from a
   class that gets there through `implements`. The call fell back to the
@@ -1671,7 +1671,7 @@ The runtime ABI moves to 16.
 
 - **A module built with `--emit shared` never initialised its statics.** It
   has no `main`, and the static prologue was emitted inside `main`, so every
-  `pub static` read as the zero it was born with — silently, until the guard
+  `pub static` read as the zero it was born with - silently, until the guard
   below turned it into a panic, which is how it was found. The prologue is a
   function of its own now: `main` calls it where there is one, and the first
   static read calls it where there is not. A read from inside an initialiser
@@ -1686,7 +1686,7 @@ The runtime ABI moves to 16.
   fault in an imported package.
 
 - **Reading a static field before its initialiser ran.** Statics initialise
-  eagerly, before `main`, in declaration order — which follows file order.
+  eagerly, before `main`, in declaration order - which follows file order.
   Reading one whose initialiser had not run yet answered the zero it was born
   with in a native build, silently, while the interpreter panicked. Each
   static now carries a flag, with one module-wide flag for whether the
@@ -1699,13 +1699,13 @@ The runtime ABI moves to 16.
   `Option<f32>` came back 8-aligned instead of 4. A struct of two ints and an
   `Option<Inner>` was then computed at 40 bytes where LLVM uses 32, the list
   stride was eight bytes wider than the element, and every element after the
-  first read partly from its neighbour — plausible integers in the `int`
+  first read partly from its neighbour - plausible integers in the `int`
   fields, `none` in the Option fields, no diagnostic.
 
 - **A struct holding a payload-carrying enum compared by address.** A bare
   `a == b` was always right; only an enum sitting in a field took the identity
   path, so equal values were reported different. The payload's own type made
-  no difference — a bare `int` payload failed the same way.
+  no difference - a bare `int` payload failed the same way.
 
 - **A struct holding `Option<S>`, where S also holds Options, failed to
   build**: "PHI node entries do not match predecessors". The payload
@@ -1725,7 +1725,7 @@ The runtime ABI moves to 16.
   the Option itself was a reference and compared two payloads by address:
   `some("bar") == some("bar")` was false in a native build when the two
   strings lived at different allocations, while `beansc run` said true. Every
-  struct carrying such a field compared wrongly too. There was no error — the
+  struct carrying such a field compared wrongly too. There was no error - the
   program simply answered differently depending on how it was run. Present in
   0.1.32.
 
@@ -1733,8 +1733,8 @@ The runtime ABI moves to 16.
   answered it, so a package that parsed input into a list and compared it
   could run but not build. Elements compare the way the interpreter compares
   them: by content for a string, structurally for an inline record, by
-  identity for a class. Element types whose meaning would not match — a
-  nested `List`, for one — still refuse rather than answer a different
+  identity for a class. Element types whose meaning would not match - a
+  nested `List`, for one - still refuse rather than answer a different
   question.
 
 - **`List<T>.is_empty()`.** Refused natively while `len() == 0` compiled,
@@ -1757,7 +1757,7 @@ The runtime ABI moves to 16.
 
 - **A class extending a generic base releases correctly.** Dropping an
   instance of `class IntHolder extends Holder<int>`, where `Holder<T>`
-  declares a `deinit`, jumped to address zero — a segfault, from a program
+  declares a `deinit`, jumped to address zero - a segfault, from a program
   the interpreter ran correctly. A descriptor names one release symbol per
   class, found by walking the chain for `{owner}.deinit`, and a generic base
   is a template with nothing at that name, so the row emitted null. When the
@@ -1777,19 +1777,19 @@ The runtime ABI moves to 16.
     names the loop keyword there is, then parses the `for` it meant, so the
     rest of the function still checks. `while` is still an ordinary
     identifier, and the message only fires where a valid program cannot
-    reach — a bare name followed by the start of another expression.
+    reach - a bare name followed by the start of another expression.
   - `X.y`, where `X` is a type and `y` is not on it, blamed `X`:
     `unknown name 'Gap'` for a class that resolved a line earlier, or
     `package 'style' has no function 'Gap'` across a package boundary, for a
     class that is not a function. It names the type and the missing member
-    now — `Gap has no static field 's2p' — did you mean 's2'?` — and says so
+    now - `Gap has no static field 's2p' — did you mean 's2'?` - and says so
     when the name is a static method rather than a field.
   - A string piece opening with `{` produced three parse errors from inside
     the braces before the one line that explains it. The explanation now
     comes alone.
 
 - **"Cannot find the Beans C runtime" now says where it looked.** Both C
-  sources the driver hands to Clang — the runtime and the WASM host — default
+  sources the driver hands to Clang - the runtime and the WASM host - default
   to a path under the working directory, and only the installed launcher sets
   the environment variables that override them. A compiler built in a source
   tree therefore fails on every package built from any other directory, and
@@ -1804,34 +1804,34 @@ The runtime ABI moves to 16.
 
 - **A runtime value carrying no type names itself in a diagnostic.** It used
   to print as nothing, so `has no initialized field 'tag'` arrived with two
-  spaces where the type should be — legible only to someone who noticed the
+  spaces where the type should be - legible only to someone who noticed the
   gap. It reads `a value with no type` now. The dispatch bug above hid behind
   exactly that whitespace.
 
 - **Interpreter call cost no longer scales with the size of the program.**
   `find_function` and `declaration` walked every function and every
-  declaration on each lookup — twice, exact qualified name then a short-name
-  fallback — so a call cost what the imports cost. On the same loop, with a
+  declaration on each lookup - twice, exact qualified name then a short-name
+  fallback - so a call cost what the imports cost. On the same loop, with a
   project of eight packages loaded: 47.5 microseconds per call before, 10.2
   after, and flat against import count where it used to climb from 7.5.
   Neither list is added to once interpretation begins, so both are indexed
   on first use.
 
 - **Comparing two maps is refused** rather than answered wrongly. The
-  interpreter returned `false` for every pair — two empty maps, and a map
-  against itself — while a native build refused to emit the comparison at
+  interpreter returned `false` for every pair - two empty maps, and a map
+  against itself - while a native build refused to emit the comparison at
   all. It is now a checker error naming the type, on both paths.
 
 - `test/backend_parity.sh` compares construct and release counts, not only
   printed answers. The cases mark each value as it is built and released,
-  and the gate holds both the balance and a pinned total — a value built
+  and the gate holds both the balance and a pinned total - a value built
   twice fails even when both backends build it twice and agree.
 
 - Three struct declarations in `spec/SYNTAX.md` put several fields on one
   line, which is a parse error. They are one per line now.
 
 - `test/emitter_gaps.tsv` inventories every construct the native backend
-  declares it cannot emit — 144 sites, 111 distinct shapes — generated by
+  declares it cannot emit - 144 sites, 111 distinct shapes - generated by
   `tools/emitter_gaps.py` and held current by `test/emitter_gaps.sh`. Most
   are not language limits: the checker accepts the program and the
   interpreter runs it, and only `beansc build` refuses, which is the same
@@ -1844,16 +1844,16 @@ The runtime ABI moves to 16.
   implementing generic interfaces, generic bases at concrete arguments,
   bounds carrying arguments, and interfaces in return position, with the
   oracle checking lifetime totals alongside values. The four families before
-  it kept the two axes apart — interfaces were never generic and generic
-  types implemented nothing — which is where the bugs above lived.
+  it kept the two axes apart - interfaces were never generic and generic
+  types implemented nothing - which is where the bugs above lived.
 
 ## [0.1.32] - 2026-08-25
 
 ### Added
 
 - **Generic interfaces are usable types** (spec/SYNTAX.md). An interface with
-  type parameters can now be implemented at a concrete argument —
-  `class IntBox implements Producer<int>` requires `fn make() -> int` — and
+  type parameters can now be implemented at a concrete argument -
+  `class IntBox implements Producer<int>` requires `fn make() -> int` - and
   the interface itself stands as a type: `Producer<int>` is a variable,
   parameter and element type that dispatches dynamically, and
   `Producer<int>` and `Producer<string>` are unrelated. Chains pin the same
@@ -1870,7 +1870,7 @@ The runtime ABI moves to 16.
 - **Generic bounds carry type arguments.**
   `fn read<P implements Producer<int>>(p: P)` accepts an implementor pinned
   to `int` and refuses one pinned to anything else, and a bound may forward
-  the call's own parameters — `fn twice<U, P implements Producer<U>>` — in
+  the call's own parameters - `fn twice<U, P implements Producer<U>>` - in
   which case it is measured after inference rather than before. The bound
   check had only ever compared the interface's bare name, so the arguments
   were dropped, and a method reached through such a bound answered the
@@ -1880,7 +1880,7 @@ The runtime ABI moves to 16.
   `class IntHolder extends Holder<int>` lays out the base's fields at the
   arguments the `extends` pinned, and both `super.init` and every inherited
   method resolve against them. Two subclasses may pin the same base
-  differently. A generic class still may not extend a base — only implement
+  differently. A generic class still may not extend a base - only implement
   interfaces.
 
 ### Fixed
@@ -1888,13 +1888,13 @@ The runtime ABI moves to 16.
 - **A generic class can implement an interface in native code.** The LLVM
   backend refused to lay out any generic class carrying a relation other
   than the `Send`/`Sync` markers, so `class BoxOf<T> implements Producer<T>`
-  — which the checker had always accepted — ran under `beansc run` and
+  - which the checker had always accepted - ran under `beansc run` and
   failed to build with *cannot form class layout*. Each instantiation now
   mints its own descriptor: a method reachable only through the interface is
   raised with that instantiation's bindings instead of leaving a null row,
   and a default body kept from a generic interface is instantiated under the
   implementing class's own name so the table and a devirtualized call both
-  resolve it. A base class on a generic class is still refused — its fields
+  resolve it. A base class on a generic class is still refused - its fields
   would have to be laid out through the instantiation. Interpreted and
   compiled output are gated against each other in
   `test/generic_interfaces.sh`.
@@ -1903,15 +1903,15 @@ The runtime ABI moves to 16.
 
 ### Added
 
-- **`brew` — child fibers** (spec/CONCURRENCY.md). `brew f(args)` starts the
+- **`brew` - child fibers** (spec/CONCURRENCY.md). `brew f(args)` starts the
   call on a child fiber of the current scope, pinned to the current worker:
   arguments evaluate at the brew, the callee runs when the current fiber
-  parks or the scope ends, and scope exit joins every child — a fiber cannot
+  parks or the scope ends, and scope exit joins every child - a fiber cannot
   leak. `let h: Brew<int> = brew price(order)` keeps the scope-bound handle;
   `h.join()` parks and answers `Result<int>` (`ok`, or `err` of kind
   `panic`, `cancelled`, or `closed` on a second join); `h.cancel()` requests
   cancellation, observed at the child's parks. **A panic ends only the fiber
-  it happened on** — the report is delivered at the join, and an outcome
+  it happened on** - the report is delivered at the join, and an outcome
   nobody joined escalates at the scope exit with both positions. `brew` is
   contextual (a local named `brew` keeps working), refused on freestanding
   and wasm targets, and `beansc run` hosts the same fibers on the same
@@ -1922,36 +1922,36 @@ The runtime ABI moves to 16.
   Every other architecture switches stacks with the POSIX `ucontext`
   family instead, which glibc already provides. musl declares those
   functions without shipping them, so a musl host that is not x86-64 or
-  arm64 — PowerPC64, RISC-V 64, LoongArch64 — links **libucontext**
+  arm64 - PowerPC64, RISC-V 64, LoongArch64 - links **libucontext**
   (`apk add libucontext-dev`) for a native build. See docs/INSTALL.md.
-- `Channel.try_send` and `Channel.try_receive` answer immediately — `false`
-  or `none` — where the blocking forms would wait. `try_send` needs a
+- `Channel.try_send` and `Channel.try_receive` answer immediately - `false`
+  or `none` - where the blocking forms would wait. `try_send` needs a
   copyable element: a refused move-only value would be lost.
-- **std parks fibers.** A fiber that must wait — channel send/receive on a
-  full/empty channel, `time.sleep`, `thread.join` — now parks so every
+- **std parks fibers.** A fiber that must wait - channel send/receive on a
+  full/empty channel, `time.sleep`, `thread.join` - now parks so every
   other fiber of its worker keeps running, instead of blocking the whole
   thread. Two fibers of one worker on opposite ends of a full channel used
   to be an instant deadlock; now they hand values to each other. Thread
   callers keep the blocking behavior they always had.
-- **`Gate`** — a sticky broadcast flag for fibers and threads.
+- **`Gate`** - a sticky broadcast flag for fibers and threads.
   `new Gate()` starts shut; `wait()` parks the calling fiber until the
   gate opens (immediately returning once open, forever); `open()` wakes
   every waiter at once and cannot be undone; `is_open()` peeks. A `Gate`
   is `Send + Sync`: open it from any thread, wait on it from any fiber.
   (The concurrency plan called this `Event`; it shipped as `Gate` because
-  `Event` is everyday user vocabulary — `std.poll` itself already exports
-  a `poll.Event` — and a builtin must not take that name away.)
+  `Event` is everyday user vocabulary - `std.poll` itself already exports
+  a `poll.Event` - and a builtin must not take that name away.)
 - **Deadlock report.** A program whose every fiber is parked with no other
   thread able to wake them prints each fiber's name and state and exits
   with status 3, instead of hanging forever.
 - **The netpoller.** Net waits park the calling fiber in its worker's
-  kernel poller — kqueue on macOS and the BSDs, epoll on Linux — instead
+  kernel poller - kqueue on macOS and the BSDs, epoll on Linux - instead
   of blocking the thread, so both ends of a TCP conversation can run as
   fibers of one worker. A fiber's socket becomes nonblocking for good at
   its first fiber operation; thread-only programs keep blocking sockets
   exactly as before. Socket deadlines (`set_timeouts`, `accept_timeout`,
   connect timeouts) keep firing for parked fibers, and a fiber waiting on
-  a descriptor never counts toward the deadlock report — the kernel can
+  a descriptor never counts toward the deadlock report - the kernel can
   always wake it. On kqueue, a park costs no syscall of its own: interest
   registrations queue in the worker and the poller's next wait submits
   the whole batch as the changelist of that one `kevent` call (a wait
@@ -1963,12 +1963,12 @@ The runtime ABI moves to 16.
   engines agree.
 - **Interim wall: `brew` inside a nested block is refused at check time.**
   The synthesized scope join runs with function-exit defers, after a
-  nested block's handle is gone — natively that was a crash. Brew at the
+  nested block's handle is gone - natively that was a crash. Brew at the
   function's own scope until per-scope joins land with the unwind work.
-- **`TaskGroup<T>`** — a scope-bound fleet of brewed fibers, for when the
+- **`TaskGroup<T>`** - a scope-bound fleet of brewed fibers, for when the
   fiber count is a runtime value. `let group: TaskGroup<int> = new
   TaskGroup<int>()`; `group.brew(f(x))` starts a child exactly as `brew`
-  does (and is legal at any block depth — the group binding itself is
+  does (and is legal at any block depth - the group binding itself is
   pinned to the function's own scope); `next()` parks for the earliest
   unclaimed completion and answers `Option<Result<T>>` in completion
   order, spawn order breaking ties; `try_next()` answers immediately;
@@ -1978,13 +1978,13 @@ The runtime ABI moves to 16.
   A drained group is reusable, a panicked child arrives as an `err` at
   delivery instead of ending the program, and the same scope walls and
   synthesized scope join a `Brew` handle has keep a fleet from outliving
-  its scope — an unseen panic escalates there. A fleet nobody can wake
+  its scope - an unseen panic escalates there. A fleet nobody can wake
   lands in the deadlock report. Both compilers agree byte-for-byte,
   delivery order included.
 - **Fixed: bootstrapping with an installed release.** The released
   launcher exports its package's `BEANS_*` source roots, so `make`
   compiled this tree's compiler against last release's runtime and
-  stdlib — and the link broke the first time `src/` needed a runtime
+  stdlib - and the link broke the first time `src/` needed a runtime
   symbol the release does not ship. The bootstrap recipe now pins every
   source root to the tree it is building.
 - **Fixed: `read_into` and `write_from` on a fiber.** The offset-aware
@@ -1994,7 +1994,7 @@ The runtime ABI moves to 16.
   keep-alive server built on them lost every connection after its first
   response. Both forms now park in the netpoller like every other net
   wait, and the new `TcpStream.read_into_waiting` waits for readability
-  before its first recv — for a caller that just drained the socket and
+  before its first recv - for a caller that just drained the socket and
   knows a speculative recv would only say would-block. The stream caches
   its fiber preparation and configured deadlines so the steady per-request
   cost is the syscalls that move bytes. `try_read_into` and
@@ -2013,8 +2013,8 @@ The runtime ABI moves to 16.
   `beans_set_task_slot`, the `beans_reactor_*` parked-readiness registry)
   are all gone; the runtime ABI is now 10. The lowering was measured at
   roughly four times the CPU cost of the equivalent sync code, which is why
-  it goes: its replacement — pinned fibers with uncolored functions and a
-  structured `brew` spawn — is tracked as ROADMAP P4. Threads, channels,
+  it goes: its replacement - pinned fibers with uncolored functions and a
+  structured `brew` spawn - is tracked as ROADMAP P4. Threads, channels,
   atomics, mutexes, and `std.poll` readiness waits are unchanged and remain
   the way Beans does concurrency today.
 
@@ -2023,7 +2023,7 @@ The runtime ABI moves to 16.
 ### Added
 
 - `enum(u8)`: a payload-free enum can opt into a committed one-byte layout
-  on the declaration — `enum(u8) Display { flex, grid, none }`. The value
+  on the declaration - `enum(u8) Display { flex, grid, none }`. The value
   is the bare tag in declaration order, so behaviour is unchanged, but the
   layout is now fixed: `size_of(Display)` answers 1, a struct holding one
   keeps a fixed inline layout with no pointer bits or ARC bookkeeping, and
@@ -2042,7 +2042,7 @@ The runtime ABI moves to 16.
   their Beans type and an address. Classes, structs and unions carry their
   fields, so an object opens in a debugger instead of showing an address:
   inherited fields included, and a linked `Option<T>` walks. A runtime handle
-  with no Beans declaration behind it — a `List`, a `Map`, a `Channel` — keeps
+  with no Beans declaration behind it - a `List`, a `Map`, a `Channel` - keeps
   its Beans type and an address, because its fields belong to the C runtime.
   The metadata is written only by `--debug`; every other build is
   byte-for-byte what it was.
@@ -2062,8 +2062,8 @@ The runtime ABI moves to 16.
   `self.cells[i] = x` in an `inout fn`, struct fields (`one.cells[0]`),
   nested chains (`outer.inner.grid[1][0]`), class-held arrays, and
   compound operators all store through the original storage in both
-  compilers. Bases with no storage behind them — temporaries, `let`
-  roots, list elements — are refused at check time with a message naming
+  compilers. Bases with no storage behind them - temporaries, `let`
+  roots, list elements - are refused at check time with a message naming
   the fix.
 - Struct fields may declare defaults exactly like class fields, and the
   spec now says so: an all-defaulted struct builds from `Style {}`, and a
@@ -2075,8 +2075,8 @@ The runtime ABI moves to 16.
   cannot be extended, so its static type proves the exact runtime class
   and every call is direct instead of a descriptor dispatch.
 - The spec guarantees `main()` runs on the real process main thread under
-  both compilers — the footing AppKit and dispatch-main-queue programs
-  need — and a suite probes it.
+  both compilers - the footing AppKit and dispatch-main-queue programs
+  need - and a suite probes it.
 
 ### Fixed
 
@@ -2086,8 +2086,8 @@ The runtime ABI moves to 16.
   `io.println("A: \{\} n={n}")` printed `A: 7 n=` under `beansc run` and
   `A: {} n=7` natively. The interpreter now walks the raw literal exactly
   the way the checker and the native emitter do.
-- `"{{}}"` still parses as an interpolation opening on a map literal —
-  `{{` is not an escape — but the error now says so and names `\{` as
+- `"{{}}"` still parses as an interpolation opening on a map literal -
+  `{{` is not an escape - but the error now says so and names `\{` as
   the fix.
 - `List.min()` and `List.max()` answered wrong natively for every element
   type outside `int`, `float`, and `string`: sized integers, unsigned
@@ -2102,8 +2102,8 @@ The runtime ABI moves to 16.
   where the interpreter previously aborted with SIGABRT (exit 134).
 - `examples/poller.b` waited for a signal by counting retries, which on a
   level-triggered poller is not waiting at all. The sockets it is watching
-  stay readable — the data is left unread on purpose, to show that readable
-  and hangup are separate signals — so every `wait` returns instantly and
+  stay readable - the data is left unread on purpose, to show that readable
+  and hangup are separate signals - so every `wait` returns instantly and
   twenty rounds go by in under a millisecond. The peer's FIN, or a third
   client's bytes, then had no time to arrive: measured, the loop's whole
   budget was 0ms rather than the ten seconds its timeouts suggested. Both
@@ -2115,7 +2115,7 @@ The runtime ABI moves to 16.
   Beans functions beside it. `-fno-omit-frame-pointer` reaches Clang, and
   Clang applies it to the C it compiles; a function that arrives as LLVM IR
   carries its own attributes or none. Emitted functions now ask for it, so a
-  frame-pointer walk — a profiler, a crash reporter — no longer loses the
+  frame-pointer walk - a profiler, a crash reporter - no longer loses the
   stack at the first Beans call.
 
 ## [0.1.29] - 2026-08-23
@@ -2123,17 +2123,17 @@ The runtime ABI moves to 16.
 ### Added
 
 - Named imports: `import {name, other as alias} from path` binds exactly
-  the selection — functions, types, enums, interfaces, annotations — and
+  the selection - functions, types, enums, interfaces, annotations - and
   the bare names then work everywhere the qualified names did: calls,
   values, types, `new`, static access, patterns, `@annotations`. When the
   path is a namespace folder rather than a package, the braces select its
   sub-packages: `import {json, xml} from std.encoding` is two module
   imports on one line. Selected names live in the file's one import
-  namespace — collisions with another import or with a declaration of the
+  namespace - collisions with another import or with a declaration of the
   importing package fail at the import line, as does selecting a name the
   target does not declare or does not export. Resolution stays fully
   compile-time, so both import spellings produce identical programs.
-- Calls take explicit type arguments on every form — free functions,
+- Calls take explicit type arguments on every form - free functions,
   package-qualified functions, instance methods and static methods:
   `services.add_transient<Greeter>()`, nested arguments included. With no
   spare symbol for a turbofish, `<` is settled by lookahead: a balanced
@@ -2141,14 +2141,14 @@ The runtime ABI moves to 16.
   else stays less-than, so `check(a < b, c > (d))` is one generic call and
   a comparison keeps its own parentheses. Explicit arguments bind the
   leading generics in declaration order, inference fills what was left
-  unwritten, and both backends instantiate from the written bindings — so
+  unwritten, and both backends instantiate from the written bindings - so
   a type argument can bind a generic the signature never mentions.
 - A generic method now infers its type parameters from a generic
   argument, exactly as a free generic function always has: instance
   methods go through the same inference path as free functions.
 - A package's function is usable as a value: `app.use(pkg.middleware)`
   compiles instead of requiring a wrapping lambda, under the same rules
-  as a local function name — extern C, async and ownership-parameter
+  as a local function name - extern C, async and ownership-parameter
   functions are refused, and visibility is enforced.
 - A paired abstraction proof suite compares generic/specialized functions,
   iterator/index loops, closures/direct calls, interface/direct dispatch,
@@ -2169,7 +2169,7 @@ The runtime ABI moves to 16.
   `.cmd` launcher and installs it.
 - `bindgen --pub` now marks record fields `pub` alongside the record
   itself. C has no private struct members, and a by-value API is unusable
-  from a consumer package that cannot read `Color.r` or `Image.width` —
+  from a consumer package that cannot read `Color.r` or `Image.width` -
   binding raylib.h (598 functions, structs passed by value throughout)
   hit exactly that. Opaque records and the non-`--pub` mode are
   unchanged. `test/bindgen.sh` now has the consumer read a bound struct's
@@ -2177,7 +2177,7 @@ The runtime ABI moves to 16.
 - `beansc run` now loads a manifest `link` library through its versioned
   soname when the plain spelling fails. glibc 2.34+ ships `lib<name>.so`
   as a linker script the dynamic loader refuses, and a bare runtime
-  package carries only `lib<name>.so.<n>` — so `link linux library "m"`
+  package carries only `lib<name>.so.<n>` - so `link linux library "m"`
   failed on Ubuntu 24.04 (found by the sqlite shelf package's first CI
   run). The interpreter now tries `lib<name>.so.0` through `.so.9` after
   the unversioned spellings, which covers libm.so.6, libX11.so.6 and
@@ -2186,7 +2186,7 @@ The runtime ABI moves to 16.
 - Every bindgen skip comment now names the declaration it dropped. A
   type-mapping refusal used to surface as a bare `// skipped: flexible
   arrays are unsupported`, leaving the reader of a large header to find
-  the victim by hand — binding sqlite3.h (306 public functions) produced
+  the victim by hand - binding sqlite3.h (306 public functions) produced
   exactly that. The record, declaration and dependency-closure passes
   stamp their owner onto each diagnostic (`declaration 'sqlite3_version':
   flexible arrays are unsupported`), errors that already carry a location
@@ -2195,7 +2195,7 @@ The runtime ABI moves to 16.
 - A cross-package annotation used bare now fills its defaults correctly:
   a default value is checked once in the annotation's own declaring
   scope and reused at every use site, instead of being re-resolved
-  against the using file's imports — where an unqualified name like an
+  against the using file's imports - where an unqualified name like an
   enum variant did not exist. `test/cases/annotation_defaults_pkg` locks
   the behavior on both backends.
 - Native builds of reflection-heavy programs stopped being quadratic in
@@ -2206,7 +2206,7 @@ The runtime ABI moves to 16.
   in about three seconds.
 - Calling an interface method with no linked implementor now compiles
   and traps at runtime ("no linked implementation") instead of failing
-  the build — a library may call its own extension points without an
+  the build - a library may call its own extension points without an
   implementation linked.
 - `json.encode` and `json.decode` forward through a generic function:
   the struct-shape validation defers to the wrapper's call sites (and
@@ -2218,7 +2218,7 @@ The runtime ABI moves to 16.
 - Each Beans thread trial-deletes its own genuine cycle candidates, so cycles
   created beside a long-lived worker stay bounded without stopping that
   worker. The global fallback collector remains thread-quiescence-only.
-- A counter borrowed before a counted `Slice` loop — an `inout` argument, say —
+- A counter borrowed before a counted `Slice` loop - an `inout` argument, say -
   no longer has its bounds check removed. The callee can store a negative
   index that still satisfies `index < len`, so the entry value is not
   provable and the check stays.
@@ -2231,8 +2231,8 @@ The runtime ABI moves to 16.
   back to walking the owner after the store, rather than silently skipping the
   barrier.
 - `Channel.send` publishes the sent graph only once the send is committed. A
-  send that fails on a closed channel leaves the value — and the caller's whole
-  graph — unmarked, instead of stranding it on the quiescence-only buffer.
+  send that fails on a closed channel leaves the value - and the caller's whole
+  graph - unmarked, instead of stranding it on the quiescence-only buffer.
 - A root parked while the thread-local buffer is being handed off is no longer
   dropped: the buffer is detached before it is published, so a release from the
   husk sweep cannot leave an object parked in a buffer nobody owns.
@@ -2251,7 +2251,7 @@ The runtime ABI moves to 16.
   once per call instead of five times, keeps each callable's parameter rows
   attached to its descriptor, and invokes small arities from stack scratch
   with no allocation. A one-argument `Method.call` drops from ~79µs to
-  ~0.3µs, and cost no longer tracks a symbol's position in the metadata —
+  ~0.3µs, and cost no longer tracks a symbol's position in the metadata -
   a program with 100 types and one with 621 now measure the same.
   `test/reflect_perf.sh` holds both properties.
 - `reflect.Method`, `reflect.Initializer` and `reflect.Function` resolve a
@@ -2274,18 +2274,18 @@ The runtime ABI moves to 16.
 - `http.Headers.clear` empties a collection while keeping its storage, so
   one instance can serve a whole keep-alive connection.
 - `http.RequestParser.feed_range_into` and `finish_into` append events to a
-  caller-owned list — the allocation-free form for a server's read loop.
-- `poll.Poller.wait_into` fills a caller-kept event list in place — the
+  caller-owned list - the allocation-free form for a server's read loop.
+- `poll.Poller.wait_into` fills a caller-kept event list in place - the
   allocation-free form of `wait` for a steady event loop that passes the
   same list every wake.
 - `http.encode_response_append` frames a response after whatever the target
-  already holds — the form for a server that writes each response straight
+  already holds - the form for a server that writes each response straight
   into its connection's output queue instead of staging it in a side
   buffer. Validation failures leave the target untouched.
 - `http.RequestParser.recycle` hands a delivered request head back for
   reuse. The next message fills the shell instead of allocating one, and
   reuses its target and header-value strings when the peer repeats them
-  byte-for-byte — the shape of every keep-alive connection. Only recycle a
+  byte-for-byte - the shape of every keep-alive connection. Only recycle a
   request nothing will read again.
 
 ### Changed
@@ -2302,7 +2302,7 @@ The runtime ABI moves to 16.
   thread-local struct: the hot paths pay one Darwin TLV lookup instead of
   one per variable.
 - The poller's wait reuses per-thread scratch for its token, flag, and
-  kernel event buffers instead of paying four heap allocations per call —
+  kernel event buffers instead of paying four heap allocations per call -
   a busy server waits tens of thousands of times a second.
 - Compact typed JSON encoding writes bytes straight from the record instead
   of building a yyjson document per call, byte-identically: integers have
@@ -2320,7 +2320,7 @@ The runtime ABI moves to 16.
   fresh `Bytes` value on every wake.
 - A program with live worker threads now reclaims dead parked shells from
   the cycle-collector buffer instead of holding every one until the threads
-  exit. A threaded server used to leak roughly 150 bytes per request —
+  exit. A threaded server used to leak roughly 150 bytes per request -
   600 MB within seconds under load; the same server now stays flat. Genuine
   cycle candidates still wait for the collector, which still runs only at
   thread quiescence.
@@ -2405,9 +2405,9 @@ The runtime ABI moves to 16.
   strict: `feed` takes whatever arrived and returns typed events, any
   byte-split of the same input yields the same events, and what llhttp
   rejects this package rejects. Header order and case are preserved,
-  because order is meaning in HTTP. The limits llhttp does not own — header
+  because order is meaning in HTTP. The limits llhttp does not own - header
   count, header bytes, target length, and every other head field llhttp
-  leaves unbounded — live here and report `too_large` rather than
+  leaves unbounded - live here and report `too_large` rather than
   truncating. The write side is held to the same standard: a header
   carrying CR, LF or NUL is refused before it reaches the socket, so an
   application cannot be talked into splicing a second response into the
@@ -2421,14 +2421,14 @@ The runtime ABI moves to 16.
   message), and a protocol violation sends the close frame the RFC requires
   before closing the connection. `max_message` bounds an assembled message
   so a peer cannot make a server allocate by fragmenting forever.
-- `std.compress` does DEFLATE in three formats — `zlib`, `raw` and `gzip`,
+- `std.compress` does DEFLATE in three formats - `zlib`, `raw` and `gzip`,
   multi-member gzip included. Every decompression names the most bytes it
   will produce, and crossing that bound is an error of kind `limit`: a
   decompression bomb is an API-level impossibility rather than a caller's
   afterthought. `Deflater` and `Inflater` stream, with the limit enforced
   across an Inflater's whole life.
 - `std.crypto` provides SHA-1, SHA-256 and HMAC from the platform's own
-  crypto library — CommonCrypto, CNG, or libcrypto loaded at runtime — so
+  crypto library - CommonCrypto, CNG, or libcrypto loaded at runtime - so
   no hash implementation ships here. It is minimal by design: SHA-1 exists
   for the WebSocket handshake and SHA-256 for what comes after.
 - `std.tls` wraps a `TcpStream` as a filter with the platform's TLS:
@@ -2436,7 +2436,7 @@ The runtime ABI moves to 16.
   runtime elsewhere. Chain building and hostname verification always belong
   to the platform verifier; `connect_with_roots` adds anchors for a private
   CA without replacing the system store. A stream cut without
-  `close_notify` is an error, not an end — the truncation attack surfaced
+  `close_notify` is an error, not an end - the truncation attack surfaced
   rather than hidden. One backend difference is worth knowing: macOS
   SecureTransport negotiates TLS 1.2 at most, so a 1.3-only peer is cleanly
   refused there and accepted everywhere else.
@@ -2456,7 +2456,7 @@ The runtime ABI moves to 16.
   WebSocket garbage frames and HTTP/2 glue. Every case replays from its
   seed.
 - Method chains span lines: a chain may break after a trailing `.` or before
-  a leading `.name` — the newline rule already promised the first and now
+  a leading `.name` - the newline rule already promised the first and now
   both work, in the parser and the lexer's lookahead. `..` stays a range
   operator and never continues a line.
 - Function-typed fields are callable through member syntax: `self.handler()`
@@ -2469,13 +2469,13 @@ The runtime ABI moves to 16.
   `Self`, and nothing about layout or ABI changes.
 - Trailing parameter defaults: `fn greet(name: string, punct: string = "!")`.
   Defaults are constant literals (or `none`), only trailing, by-value only,
-  and materialized at each call site by the checker — no ABI change, no
+  and materialized at each call site by the checker - no ABI change, no
   effect on `fn` values. Named arguments and overloading stay out, now as a
   recorded decision.
 - Zeroing `weak` fields for ARC classes: `weak parent: Option<Node> = none`
   holds no count on its referent, reads `some` only while the referent is
   alive (retained for the read), nils before the referent's `deinit` runs,
-  and is never traced by the cycle collector — the declarative way to break
+  and is never traced by the cycle collector - the declarative way to break
   parent/child and callback cycles that previously leaked their deinits.
 - Closure capture by move: `fn() move(sock) -> int { ... }` makes the
   closure own the listed locals; the enclosing bindings are spent and each
@@ -2483,7 +2483,7 @@ The runtime ABI moves to 16.
   can finally live inside callbacks.
 - `StoredCallback.create_same_thread(index, closure)`: the stored callback
   for C libraries that always invoke on the registering thread. Captures are
-  unrestricted — the registering thread is recorded and a call from any
+  unrestricted - the registering thread is recorded and a call from any
   other thread is a checked runtime abort. Same close() discipline.
 - `csrc` manifest rows: `csrc all "native/shim.c"` declares C sources the
   package owns. Native builds compile them with the build's own Clang into
@@ -2492,8 +2492,8 @@ The runtime ABI moves to 16.
   Rows select targets and propagate exactly like `link` rows, so a
   C-wrapping library needs no vendored binaries and no external build step.
 - `partial class` writes one class across several files of a package. Every
-  part says `partial`, exactly one part carries the header — modifiers,
-  generic parameters, `extends` and `implements` — and the members of every
+  part says `partial`, exactly one part carries the header - modifiers,
+  generic parameters, `extends` and `implements` - and the members of every
   part belong to the one class. `partial` is contextual, so it stays available
   as an ordinary name.
 - `make test-fixpoint` requires the compiler to build a compiler byte-identical

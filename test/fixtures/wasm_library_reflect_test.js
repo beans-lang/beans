@@ -1,16 +1,16 @@
-// A library module's own startup.
-//
-// The module has no `main`. Its reflection registry, its static field
-// initializers and its singleton constructors live in `beans_module_start`,
-// and a host has to call it once after instantiating. Before that function
-// existed all three were emitted into `main`'s entry block, so a `--emit
-// shared` module carried them and ran none — every reflective lookup answered
-// "no such type" and nothing reported a failure, because nothing had failed.
-//
-// This checks both halves: that the export is there, and that skipping it
-// really does leave the registry empty. The second is what keeps the test
-// honest — without it a module that registered its types some other way would
-// pass and the gate would be measuring nothing.
+// Verify library reflection registers only after the host calls beans_module_start.
+
+
+
+
+
+
+
+
+
+
+
+
 const fs = require("fs");
 
 const bytes = fs.readFileSync(process.argv[2]);
@@ -46,9 +46,9 @@ function hostFor(instance) {
         env: {
             beans_host_alloc: alloc,
             beans_host_realloc(block, size) {
-                // A bump allocator never knows the old size, so it copies the
-                // new one — which reads past the old block into memory this
-                // host zeroed. Right for a test, wrong for anything else.
+                // Test-only realloc copies the requested new size because old sizes are unknown, potentially reading beyond the old allocation into zeroed host memory.
+
+
                 const moved = alloc(size, 16);
                 view().copyWithin(moved, block, block + Number(size));
                 return moved;
@@ -101,14 +101,14 @@ if (!exports_.includes("beans_module_start")) {
     throw new Error(`the module does not export beans_module_start: ${exports_.join(", ")}`);
 }
 
-// Without the call: no reflection.
-//
-// **Not nothing.** A static field and a singleton each carry their own guard —
-// the first read of either runs its initializer — so 8 and 16 are set here and
-// were before this function existed. Reflection has no such guard and could
-// not have one: nothing reads "the registry", it is read by name and a name
-// that was never registered is indistinguishable from a name that does not
-// exist. That is the whole bug, and this is the line that says so.
+// Without startup, lazy static and singleton values initialize but reflection stays empty.
+
+
+
+
+
+
+
 const cold = instantiate();
 const before = cold.exports.beans_library_reflect();
 const lazy = 8 | 16;

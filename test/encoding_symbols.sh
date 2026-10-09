@@ -3,7 +3,7 @@ set -euo pipefail
 
 # The encoding bridges must reference nothing a Beans program does not
 # already link. Beans links with the plain C driver, so a C++ runtime symbol
-# left undefined is a link failure in someone else's build, not ours — this
+# left undefined is a link failure in someone else's build, not ours, this
 # test fails the moment one appears.
 #
 # The allowlist is libc plus the compiler's own stack-protector helpers. It
@@ -33,7 +33,7 @@ cc=${BEANS_CC:-clang}
 # assert() is pugixml's internal invariant check, and it is libc's back end
 # that lands in the object: __assert_rtn on Darwin, __assert_fail on glibc and
 # musl. Both spellings need the same _?_? the stack-protector entries use,
-# because the strip below removes only Mach-O's one extra underscore — an ELF
+# because the strip below removes only Mach-O's one extra underscore, an ELF
 # __assert_fail arrives here as _assert_fail.
 allowed='^_?(mem(cpy|set|move|cmp|chr)|bcmp|bzero|str(len|cmp|tod|ncmp|toll|toull)|_?isoc23_str(toll|toull)|wcslen|malloc|free|realloc|calloc|abort|getenv|snprintf|__error|_?errno_location|_?_?assert(_rtn|_fail)?|f(open|close|read|write|error|flush|ileno|stat|seek|tell)|_?_?stack_chk_(fail|guard)|__chkstk_darwin|___chkstk_ms|__stack_chk_fail_local)$'
 

@@ -1,6 +1,6 @@
 // std.crypto against published test vectors: SHA-1 and SHA-256 from FIPS
 // 180, HMAC-SHA1/256 from RFC 2202 and RFC 4231, the streaming digest
-// equal to the one-shot, and the WebSocket accept value from RFC 6455 — a
+// equal to the one-shot, and the WebSocket accept value from RFC 6455, a
 // wrong digest fails a real handshake, so this is the interop gate SHA-1
 // exists to serve. Every hash comes from the platform provider; the vectors
 // are what keep three OS backends honest against one contract.

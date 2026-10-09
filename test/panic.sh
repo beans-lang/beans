@@ -50,7 +50,7 @@ echo "panic builtin ok"
 # join at all. The interpreter used to stash the panic and re-raise it at
 # join by setting its failed flag directly: no unwind was armed, so the
 # joining fiber's defers were skipped, and an unjoined thread's panic was
-# lost outright — that run exited 0.
+# lost outright, that run exited 0.
 #
 # Every mode below is one program dying (or standing) one way. `value` and
 # `contained` are the other half of the claim: a thread that returns normally
@@ -178,7 +178,7 @@ BEANS
             ) >"$tmp/fault.$lane.out" 2>"$tmp/fault.$lane.err"
             fault_status=$?
             set -e
-            # 139 is SIGSEGV, 138 SIGBUS — which one a guard page raises is the
+            # 139 is SIGSEGV, 138 SIGBUS, which one a guard page raises is the
             # platform's business, and both come back through the handler.
             if test "$fault_status" -ne 139 && test "$fault_status" -ne 138; then
                 echo "$lane: stack overflow exited $fault_status, not a fault" >&2

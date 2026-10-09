@@ -60,17 +60,7 @@ for script in test/*.sh; do
 done
 
 echo "checking the shell gates run on the oldest bash they are given"
-# macOS ships bash 3.2, and CI's macOS runners use it. Under `set -u` that bash
-# treats "${arr[@]}" on an EMPTY array as an unbound variable and dies, where
-# bash 4.4 and later expand it to nothing. A developer with Homebrew bash 5 on
-# their PATH cannot see the difference, so this lands green locally and fails
-# only on the runner -- which is exactly how test/json_typed_decode.sh reached
-# main's CI and killed the macOS differential gate mid-run.
-#
-# The safe spelling is ${arr+"${arr[@]}"}: identical when the array has
-# elements, empty when it does not, on every bash. This refuses the unsafe one
-# wherever an array is emptied with `=()` in a script that sets -u, because
-# such an array can always reach the expansion empty.
+# Check that scripts using `set -u` handle empty arrays safely on Bash 3.2.
 unsafe=0
 for script in test/*.sh bench/*.sh; do
     [[ -f "$script" ]] || continue

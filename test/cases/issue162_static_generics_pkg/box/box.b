@@ -1,6 +1,6 @@
 // #162 across a package boundary. The receiver of a static call written
 // `box.Holder.wrap(3)` is a package-qualified name, which reaches the checker
-// through a different path than the bare `Holder.wrap(3)` of a single file —
+// through a different path than the bare `Holder.wrap(3)` of a single file,
 // and the type it names was lowered while a different file was being checked.
 // A promoted owner parameter has to bind the same way through both.
 package box

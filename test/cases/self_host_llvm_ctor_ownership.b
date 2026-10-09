@@ -1,7 +1,7 @@
 // a consumed constructor operand's reference dies with the init
 // call: the initializer borrows and retains what it stores, so
 // the caller must release its own count right after. Skipping
-// that release leaked every owned argument — a Tracer passed
+// that release leaked every owned argument, a Tracer passed
 // into new Holder<T> never saw its deinit. Immortal string
 // literals hid the same hole in every earlier test. A borrowed
 // call site (the argument is used again afterwards) must keep

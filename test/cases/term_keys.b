@@ -60,7 +60,7 @@ fn main() {
     io.println("split:")
     var s: term.KeyDecoder = new term.KeyDecoder()
     s.feed(bytes_of([27, 91]))
-    drain(s)                                        // nothing — incomplete
+    drain(s)                                        // nothing (incomplete)
     s.feed(bytes_of([49, 59, 53, 66]))              // ...1;5 B    ctrl+down
     drain(s)
 
@@ -68,7 +68,7 @@ fn main() {
     io.println("split-utf8:")
     var u: term.KeyDecoder = new term.KeyDecoder()
     u.feed(bytes_of([226, 152]))
-    drain(u)                                        // nothing — incomplete
+    drain(u)                                        // nothing (incomplete)
     u.feed(bytes_of([131]))
     drain(u)
 
@@ -76,7 +76,7 @@ fn main() {
     io.println("lone-esc:")
     var e: term.KeyDecoder = new term.KeyDecoder()
     e.feed(bytes_of([27]))
-    drain(e)                                        // nothing — incomplete
+    drain(e)                                        // nothing (incomplete)
     match e.flush() {
         some(key) => { io.println("  flush {key}") }
         none => { io.println("  flush none") }

@@ -1,4 +1,4 @@
-// bun trees.js — mirror of trees.b / trees.go (binary-trees)
+// Bun mirror of trees.b and trees.go (binary trees).
 function build(depth, seed) {
     const n = { left: null, right: null, value: depth + seed };
     if (depth > 0) {

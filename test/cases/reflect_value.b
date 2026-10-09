@@ -47,7 +47,7 @@ class Panel {
 
 // #163: two more branches of the same rule. An interface-typed member names
 // no class at all in its declaration, and a free generic function's parameter
-// type is whatever T was bound to after monomorphisation — both reach the same
+// type is whatever T was bound to after monomorphisation, both reach the same
 // box sites as a plain class binding.
 class Easel {
     pub art: Paints

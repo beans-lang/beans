@@ -1,5 +1,5 @@
 // mandelbrot: f64 arithmetic in a tight loop, zero allocation. There is no
-// sqrt in the stdlib and none is needed — the escape test squares instead.
+// The stdlib provides sqrt, but the escape test only squares.
 // Pure IEEE doubles, so every language must land on the same count.
 import std.io
 import std.os

@@ -11,15 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # What kind of change is this? Editor tooling reads a checked program and
-  # prints JSON — it cannot reach codegen, the runtime or a target model — so
-  # a change confined to it does not need the platform matrix underneath. It
-  # does need the LSP gate, and it still gets every preflight, which is what
-  # actually catches a compile break.
-  #
-  # Anything outside that set, including main.b, is a compiler change and runs
-  # the lot. The `full-ci` label forces the lot regardless, for when the
-  # judgement above turns out to be wrong.
+  # Editor-only changes affect checked-program tooling and run LSP plus preflight gates; all other changes and `full-ci` run the full matrix.
   scope:
     name: scope
     runs-on: ubuntu-latest
@@ -83,7 +75,7 @@ jobs:
           # one. GitHub does not: it refuses the whole file and the run fails
           # with no jobs and no log. A second `if:` on a job that already had
           # one got through this check exactly that way, so parsing is not
-          # enough — the loader has to object.
+          # The loader must reject duplicate keys instead of silently keeping the last value.
           class Strict(yaml.SafeLoader):
               pass
 
@@ -242,12 +234,7 @@ jobs:
             build/compiler-discovery/
           if-no-files-found: ignore
 
-  # Native Linux/x86-64 is split by failure area too. The compiler build is
-  # cheap compared with the gates, and three parallel jobs report a frontend,
-  # The editor gate. Every LSP and DAP suite, over the real protocol wire,
-  # on every change — an editor-only change skips the platform matrix but
-  # never skips this. It waits only on the two cheap preflights, so a broken
-  # server reports in minutes rather than after the full chain.
+  # Split Linux checks by failure area; run LSP and DAP suites on every change after the two preflights.
   lsp-gate:
     name: lsp gate (editor tooling)
     needs: [preflight-validate, preflight-check]

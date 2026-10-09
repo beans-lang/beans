@@ -4,7 +4,7 @@
 #
 # Most of these are not language limits. The checker accepts the program, the
 # interpreter runs it and prints the right answer, and only `beansc build`
-# refuses — the same shape as the class-to-interface return upcast this tree
+# refuses, the same shape as the class-to-interface return upcast this tree
 # fixed. A program that runs but will not build is a bug, and every untriaged
 # line in test/emitter_gaps.tsv is a candidate for one.
 #
@@ -13,7 +13,7 @@
 #   1. holds the inventory current, so adding or removing an emitter refusal
 #      has to be recorded, and the count cannot drift unnoticed
 #   2. runs a probe for each gap triaged `interpreter-ok` and checks the claim
-#      still holds — the interpreter runs it, the build refuses with the
+#      still holds, the interpreter runs it, the build refuses with the
 #      recorded message
 #
 # A probe that starts building is good news, and it fails this gate on

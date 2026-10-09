@@ -30,13 +30,7 @@ partial class LlvmTextEmitter {
             kind = "niche"
         } else if name == "List" &&
                   type.args.len() == 1 {
-            // Not identity. The interpreter's tree_value_total_equal walks a
-            // list element by element wherever it meets one, so a List one
-            // level down — a struct field, an Option payload, a Result arm —
-            // compared by address here answered `false` for two values equal
-            // in every field, in a built binary, with no diagnostic anywhere.
-            // A bare `a == b` never had it because that goes through
-            // emit_list_equal; this is the same call, for the same reason.
+            // Compare nested list elements structurally, matching the interpreter's `tree_value_total_equal` behavior.
             kind = "list"
         } else if name == "Map" ||
                   name == "OrderedMap" {
@@ -292,11 +286,7 @@ partial class LlvmTextEmitter {
             // through the aggregate's own LLVM type rather than by a computed
             // byte offset, so the two can never drift.
             //
-            // Without this the type had no shape here at all and the answer
-            // was the empty string — which map_key_eq handed straight to the
-            // runtime call, writing `ptr , ptr )` into the module. That is not
-            // a refusal; it is output clang rejects, so `Map<Result<T, E>, V>`
-            // failed the build talking about a .ll file.
+            // An empty comparator body would produce invalid LLVM IR for `Map<Result<T, E>, V>` instead of a clean capability refusal.
             let llvm: string = self.type_text(type)
             let failed: HirType =
                 self.result_error_type(type)
@@ -440,7 +430,7 @@ partial class LlvmTextEmitter {
                 "{body}{field.setup}  ret i64 {field.value}\nnone:\n  ret i64 %seed\n"
         } else if name == "Result" &&
                   self.result_is_inline(type) {
-            // Hash the tag, then the live arm only — the dead arm is zeroed
+            // Hash the tag, then the live arm only: the dead arm is zeroed
             // and hashing a zeroed reference slot dereferences null. Equality
             // above reads the same two arms, so two keys that compare equal
             // hash alike, which is the whole contract a map key owes.
@@ -522,7 +512,7 @@ partial class LlvmTextEmitter {
     // slots in, the closure's typed answer out: the runtime hands
     // the comparator thunk two raw slots, the thunk rebuilds the
     // element type through from_slot (narrow ints were
-    // sign-extended in, so they truncate back — production's
+    // sign-extended in, so they truncate back: production's
     // thunk skips that and would feed a comparator raw slots),
     // and asks the closure. Decimals arrive by address instead.
     // Structural equality for an inline record, as a standalone function the
@@ -553,14 +543,14 @@ partial class LlvmTextEmitter {
             return symbol
         }
         // Unlike every other request_* here, the body is built before the
-        // symbol is memoized — emit_inline_equal may refuse, and a memoized
+        // symbol is memoized: emit_inline_equal may refuse, and a memoized
         // symbol for a body that was never emitted is a dangling call. That
         // leaves re-entry to guard: a record reaching itself through a List
         // field would build its own comparator forever. An empty memo marks
         // the build as in progress, and an empty memo is what every caller
         // already reads as a refusal, so the re-entrant call refuses and the
-        // outer one refuses with it. (No such record can be laid out today —
-        // the emitter has no local type for one — so this is the guard and
+        // outer one refuses with it. (No such record can be laid out today:
+        // the emitter has no local type for one, so this is the guard and
         // not the fix for that shape.)
         self.record_eq_thunks[key] = ""
         // emit_inline_equal spills a decimal field through the enclosing
@@ -578,7 +568,7 @@ partial class LlvmTextEmitter {
         // Numbered from the emitter's own counter, not from this map's
         // length: the in-progress marker above is already an entry, and a
         // record whose field needs another record's thunk builds that one
-        // first — so two different types read the same length and minted the
+        // first, so two different types read the same length and minted the
         // same name, and the module carried the definition twice.
         let symbol: string =
             ".next.recordeq{self.fresh()}"
@@ -598,7 +588,7 @@ partial class LlvmTextEmitter {
     // value is stored by the list's own stride, so an `Option<int>`, an
     // inline `Result`, a fixed array and a decimal all arrive the same way a
     // struct does. Naming only decimal and a struct here is what made
-    // `sort_by` refuse `List<Option<int>>` while `List<Point>` sorted — an
+    // `sort_by` refuse `List<Option<int>>` while `List<Point>` sorted: an
     // arbitrary line from the program's side, since the comparator arrives
     // with the call and nothing about the element type is needed to run it.
     // A union is wider than a slot too and keeps its place, even though
@@ -768,7 +758,7 @@ partial class LlvmTextEmitter {
             body = built
         } else if self.declaration_is_struct(type) {
             // A struct is a value, so it crosses by address and cannot be a
-            // reference cycle — no path marking, just its fields in
+            // reference cycle: no path marking, just its fields in
             // declaration order read from the address the driver handed us.
             match self.record_layout(type) {
                 some(layout) => {
@@ -873,7 +863,7 @@ partial class LlvmTextEmitter {
             body =
                 "  %show.text = inttoptr i64 %v to ptr\n  call void @beans_show_append(ptr %c, ptr %show.text)\n  ret void\n"
         } else if name == "Error" {
-            // Error prints as its message — the string a caller passed to
+            // Error prints as its message: the string a caller passed to
             // err(...). The message pointer sits at the Error object's msg
             // offset, moving with the target pointer width.
             let offset: int = self.error_field_offset("msg")
@@ -964,15 +954,15 @@ partial class LlvmTextEmitter {
                   !self.result_is_inline(type) {
             // A boxed result: {i64 tag, payload}. Read the tag, append
             // ok( / err(, and push the live arm's payload from the box's
-            // payload slot — the same offset a match reads it from.
+            // payload slot: the same offset a match reads it from.
             body =
                 self.request_result_show_body(
                     type, "%v", false)
         } else if (name == "Map" || name == "OrderedMap") &&
                   type.args.len() == 2 {
             // A map prints as {k: v, k: v}. The runtime driver walks the
-            // entry storage in insertion order — the order keys() and a
-            // direct `for k, v in m` walk — and pushes each key and value
+            // entry storage in insertion order: the order keys() and a
+            // direct `for k, v in m` walk, and pushes each key and value
             // onto the same stack as a list's elements. Keys cross as a
             // runtime slot; a wide value crosses by address, the way every
             // other wide inline value reaches a show step.
@@ -980,7 +970,7 @@ partial class LlvmTextEmitter {
             let value_type: HirType = type.args[1]
             // A wide key is not stored inline: the map boxes it and keeps
             // the box pointer in the key slot, so the slot the driver hands
-            // the step is already the value's address — the same thing a
+            // the step is already the value's address: the same thing a
             // wide step reads. Refusing it here left the checker admitting
             // Map<Point, int> that no backend could emit.
             var key_step: string = ""
@@ -1122,12 +1112,7 @@ partial class LlvmTextEmitter {
         return symbol
     }
 
-    // The fields of a struct or class object at `base` pushed onto the
-    // driver's stack as `{ f0: v0, f1: v1 }` — the open text appended, the
-    // closing brace pushed first so it comes back out last, then each field
-    // pushed in reverse so they pop in declaration order. `base` is a ptr
-    // register already pointing at the object. Returns "" when a field type
-    // has no show step, which makes the whole object unshowable.
+    // Push object fields onto the render stack in declaration order; return "" if any field type has no show step.
     fn request_record_fields(
         fields: List<HirField>,
         field_offsets: Map<string, int>,
@@ -1158,7 +1143,7 @@ partial class LlvmTextEmitter {
             let label: string =
                 self.string_pointer("{field.name}: ")
             if field.is_weak {
-                // A weak field is a non-owning reference — the one edge the
+                // A weak field is a non-owning reference: the one edge the
                 // cycle collector refuses to trace. The printer refuses it
                 // too: it prints <weak> without loading the pointer, which a
                 // cleared weak has zeroed and a live one may loop back
@@ -1262,7 +1247,7 @@ partial class LlvmTextEmitter {
         declaration: HirDeclaration) -> string {
         // A class that spells out its own string form renders through it:
         // call to_string, append what it returned, release it. No cycle
-        // guard — the user's method owns its own recursion.
+        // guard: the user's method owns its own recursion.
         //
         // The checker admits such a class without asking whether its fields
         // are printable, so there is no derived form to fall back on here:
@@ -1298,7 +1283,7 @@ partial class LlvmTextEmitter {
                     "void @beans_show_push_leave(ptr, i64)")
                 var body: string =
                     "  %show.obj{id} = inttoptr i64 %v to ptr\n  %show.onpath{id} = call i64 @beans_show_enter(ptr %c, i64 %v)\n  %show.cyc{id} = icmp ne i64 %show.onpath{id}, 0\n  br i1 %show.cyc{id}, label %show.cycle{id}, label %show.fresh{id}\nshow.cycle{id}:\n  call void @beans_show_append(ptr %c, ptr {cycle})\n  ret void\nshow.fresh{id}:\n  call void @beans_show_push_leave(ptr %c, i64 %v)\n"
-                // Declaration order, the order the interpreter walks too —
+                // Declaration order, the order the interpreter walks too:
                 // the checker admits only a leaf standalone class, so the
                 // declared fields are the whole instance and inherited ones
                 // never enter.
@@ -1317,7 +1302,7 @@ partial class LlvmTextEmitter {
         }
     }
 
-    // The iterative show step body for a result — ok(x) / err(e). Reads the
+    // The iterative show step body for a result: ok(x) / err(e). Reads the
     // arm the discriminant selects and pushes its payload, exactly how a
     // match reads it. `is_wide` distinguishes the inline aggregate
     // {is_error, okay, failed}, whose slot is the value's address, from the

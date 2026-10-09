@@ -1,7 +1,7 @@
-# beans language contract — 1.0 candidate
+# beans language contract - 1.0 candidate
 
 Language: **beans** · extension: **.b** · status: frozen 1.0 design, implementation stabilization in progress
-Toolchain status: **self-hosted lexer + parser + loader + checker + MIR + interpreter + native backend implemented** — including multi-file modules, git imports, and selectable build targets. The default `beansc` is written in Beans and is the only compiler: a released `beansc` builds the next one, and stage 2 and stage 3 must come out byte-identical.
+Toolchain status: **self-hosted lexer + parser + loader + checker + MIR + interpreter + native backend implemented** - including multi-file modules, git imports, and selectable build targets. The default `beansc` is written in Beans and is the only compiler: a released `beansc` builds the next one, and stage 2 and stage 3 must come out byte-identical.
 
 ## What beans is for
 
@@ -15,9 +15,9 @@ Two target jobs, and the design serves both:
 1. Small grammar. Every keyword must remove more complexity than it adds.
 2. Everything is an object. `5.abs()` works. Primitives are unboxed under the hood.
 3. No null. No exceptions. `Option<T>` and `Result<T>` only.
-4. **Every new name states its type.** No inference. Applies to `let`/`var`, params, fields, loop variables. One exception: match bindings — the matched value already pins the type, so `some(u) =>` is fine (`some(u: User) =>` allowed if you want it).
+4. **Every new name states its type.** No inference. Applies to `let`/`var`, params, fields, loop variables. One exception: match bindings - the matched value already pins the type, so `some(u) =>` is fine (`some(u: User) =>` allowed if you want it).
 5. snake_case for functions, methods, variables, packages, enum variants. PascalCase for types. lowercase for primitives.
-6. Package-private by default — classes, interfaces, enums, functions, methods,
+6. Package-private by default - classes, interfaces, enums, functions, methods,
    and fields. `pub` exposes a name outside its package. `priv` makes a field or
    method visible only inside its declaring class or struct.
 7. If two designs work, pick the one with less syntax.
@@ -74,17 +74,17 @@ type such a descriptor reports is the one the source declared:
 `Grid<T>`. Only `qualified_name()` and `type_arguments()` carry the arguments.
 `declaring_type()` names the link the queried type reaches the member through,
 so a member declared by a generic type reports one that carries type arguments
-and a member inherited from a plain base does not — which is how a program
+and a member inherited from a plain base does not - which is how a program
 tests for the erasure from the descriptor alone.
 
 A reflective operation on a closed generic is a target when its signature
 mentions no type parameter of the declaring type **and** the call carries a
-receiver that names the instantiation. A class receiver names it — the object
-carries its class — while a struct or union receiver is bare bytes and names
+receiver that names the instantiation. A class receiver names it - the object
+carries its class - while a struct or union receiver is bare bytes and names
 nothing, so a field of a generic struct is refused on the same ground as a
 receiver-less operation. A member whose declared type mentions a type parameter
 cannot be checked against a value, and a receiver-less operation on a generic
-declaration — an initializer, a `static fn`, an enum variant — cannot name
+declaration - an initializer, a `static fn`, an enum variant - cannot name
 which instantiation to run, because the row records none. All of these are
 refused. Lifting the limits means recording the declaration's type-parameter
 names in the registry, so arguments can be substituted, and carrying the
@@ -127,7 +127,7 @@ are in [`docs/JSON_STRUCT_DECODING.md`](../docs/JSON_STRUCT_DECODING.md) and
 
 ### Why `Option` is uppercase but `some` is lowercase
 
-The case tells you what a thing is: PascalCase = type, snake_case = value. `Option<User>` is a type. `some(u)` is a value. And they're not special — Option and Result are just built-in enums, and beans enum variants are snake_case:
+The case tells you what a thing is: PascalCase = type, snake_case = value. `Option<User>` is a type. `some(u)` is a value. And they're not special - Option and Result are just built-in enums, and beans enum variants are snake_case:
 
 ```
 enum Option<T> {
@@ -150,11 +150,11 @@ Four separate things, and it pays to keep them apart:
 | | example | what it is |
 |---|---|---|
 | module path | `shop` | the `beans.pot` unit: one dependency, one lock row |
-| import path | `shop.money` | a **package's identity** — globally unique |
+| import path | `shop.money` | a **package's identity** - globally unique |
 | package name | `money` | what the package calls itself, in its `package` clause |
 | import binding | `cash` in `import shop.money as cash` | a name, in one file only |
 
-- One folder = one package. `.b` files in it share the package — no import needed between them.
+- One folder = one package. `.b` files in it share the package - no import needed between them.
 - Everything is private to its package unless marked `pub`. Private means
   *same import path*, never *same package name*.
 - A field or method marked `priv` is stricter: only code inside its declaring
@@ -187,7 +187,7 @@ pub class Money {
 - The name is a lowercase snake_case identifier.
 - It need not match the directory. `shop/transport_v2/` may declare
   `package transport`, which is what versioned or internal directory names are
-  for — the import path stays `shop.transport_v2`.
+  for - the import path stays `shop.transport_v2`.
 - An application's module root declares `package main`. A library root declares
   a normal name, usually the last segment of its module path. An importable
   package never declares `main`.
@@ -235,7 +235,7 @@ and ARC layouts are compiled with the consuming program rather than frozen into
 an unstable binary ABI. Native archives and shared libraries expose only the
 C-safe functions explicitly declared `pub extern "C"`.
 
-Imports are Go-style — std by dot path, local packages by module path, libraries straight from a git host:
+Imports are Go-style - std by dot path, local packages by module path, libraries straight from a git host:
 
 ```
 import std.io
@@ -254,7 +254,7 @@ import gitlab.com/tools/csv as csvlib
   qualifies nothing in its siblings.
 - Two imports with the same local name in one file are an error; `as` separates
   them.
-- Cross-package access: `util.some_fn()`, `util.User`, `new util.User(...)`, `util.color.red` — anything `pub`. Methods of a `pub interface` travel with it (an interface is its method set).
+- Cross-package access: `util.some_fn()`, `util.User`, `new util.User(...)`, `util.color.red` - anything `pub`. Methods of a `pub interface` travel with it (an interface is its method set).
 - `pub fn init(...)` controls class construction across package lines. Struct field literals still enforce field visibility.
 - A git import needs `host/owner/repo`; the repo must carry its own `beans.pot`.
   `beansc pot tidy` resolves it and writes `beans.lock`. Each lock row stores the
@@ -289,8 +289,8 @@ import gitlab.com/tools/csv as csvlib
 
 ### Named imports
 
-`import {…} from path` binds exactly the names it selects — no module
-name — and resolves at compile time like the module-qualified form, so
+`import {…} from path` binds exactly the names it selects - no module
+name - and resolves at compile time like the module-qualified form, so
 the two spellings produce identical programs:
 
 ```beans
@@ -307,7 +307,7 @@ fn main() {
 
 - A selection names anything `pub` in the target: functions, classes,
   structs, enums, interfaces, annotations. The bare name then works
-  everywhere the qualified name did — calls, values, types, `new`,
+  everywhere the qualified name did - calls, values, types, `new`,
   static access, patterns, `@annotations`.
 - `as` renames one selection inside the braces
   (`{encode as to_json}`); the list itself takes no trailing `as`.
@@ -321,7 +321,7 @@ fn main() {
 - The import line also checks the selection: a name the target does not
   declare, or one that is not `pub`, fails where it is written.
 
-  They stay separate everywhere — separate types, separate private methods,
+  They stay separate everywhere - separate types, separate private methods,
   separate generated symbols. A declared name and an alias are source-facing
   only; neither decides visibility.
 - Packages form a directed graph. A package importing itself, or a cycle
@@ -348,7 +348,7 @@ fn main() {
   dependencies, so a consumer does not repeat a native-backed library's rows.
 - `csrc <selector> "<file.c>"` declares a C source the package owns; the
   toolchain compiles it, so a C-wrapping library vendors no prebuilt
-  binaries and pushes no make step onto consumers — `import
+  binaries and pushes no make step onto consumers - `import
   github.com/owner/lib` just works. Selectors and propagation follow `link`.
   Native builds compile each selected file with the build's own Clang and
   flags into a content-hash-cached object that rides every emit path (linked
@@ -363,10 +363,10 @@ fn main() {
   define its author never saw. Flags are separate words rather than one quoted
   string, so a path with a space stays one argument. Every flag is part of the
   object's cache key: changing one recompiles instead of reusing the object
-  built with the old set. `-o` and `-c` are refused — the object path belongs
+  built with the old set. `-o` and `-c` are refused - the object path belongs
   to the build.
-  A flag that names a **directory** — `-I`, `-iquote`, `-isystem`,
-  `-idirafter`, `-F` — resolves a relative value against the declaring
+  A flag that names a **directory** - `-I`, `-iquote`, `-isystem`,
+  `-idirafter`, `-F` - resolves a relative value against the declaring
   package, exactly as a `csrc` path does; an absolute value passes through
   untouched. `-include` and `-imacros` are not rewritten, because they name a
   file the include search looks up rather than a directory to search.
@@ -404,7 +404,7 @@ fn main() {
   `+ 2)` is refused, while `(1 +` followed by a newline and `2)` continues.
 - A member chain may break at a `.` on either side: a line ending in `.`
   continues (the dot can never end a statement), and a newline is not a
-  terminator when the next line begins with `.name` — so fluent chains write
+  terminator when the next line begins with `.name` - so fluent chains write
   trailing-dot or leading-dot style. `..` stays a range operator and never
   continues a line. `...` is one token and means only the C variadic tail in
   an `extern "C" fn` signature.
@@ -443,7 +443,7 @@ fn main() {
 - Interpolation with `{}`: `"hi {name}, total {price * (qty as decimal)}"`.
 - Format specs ride after a `:` in the braces: `{x:8}` pads to width 8 (right-aligned),
   `{x:-8}` left-aligns, `{pi:.2}` fixes decimals (float/decimal only), `{pi:8.2}` both.
-  Width pads anything printable — `{xs:12}` pads a whole list. Same rendering as `std.fmt`.
+  Width pads anything printable - `{xs:12}` pads a whole list. Same rendering as `std.fmt`.
   An empty format spec, `{x:}`, renders exactly as `{x}`.
 - **Width is measured in display columns, not bytes.** `{s:12}` fills until the
   rendered value occupies twelve terminal columns, so `"café 東京 🍜"` (17 bytes,
@@ -451,8 +451,8 @@ fn main() {
   padding lined up only ASCII; there is no caller that wanted it for anything
   else. `s.width()` is the same measure, spelled out.
 - **A `{}` piece is an ordinary expression, scoped to the file that wrote the
-  string.** Every name in it is bound by that file's own imports — a local, a
-  function, a constant, and a **type** — exactly as the same words are bound one
+  string.** Every name in it is bound by that file's own imports - a local, a
+  function, a constant, and a **type** - exactly as the same words are bound one
   character outside the quotes. So `new T()`, `x as T`, `x as? T`, an explicit
   type argument `f<T>(x)`, a closure parameter's `fn(x: T)`, `type_of(T)` and
   `size_of(T)` inside a piece all reach the `T` that file's
@@ -462,12 +462,12 @@ fn main() {
 - **There is no `+` for strings.** To render *one* string, use interpolation
   (`"hi {name}"`) or `std.fmt` (sprintf-style: padding, precision, alignment).
   To *accumulate* a string across a loop, use `fmt.StringBuilder` (push the
-  pieces, `to_string()` once) or `list.join(sep)` — never `text = "{text}piece"`
+  pieces, `to_string()` once) or `list.join(sep)` - never `text = "{text}piece"`
   in a loop, which rebuilds the whole string every turn and so costs O(n²) in
   the total length. Interpolation is the readable tool for a single value and
   the wrong one for a growing buffer; a builder is the other way round.
 - Escapes: `\n \t \r \0 \\ \" \{ \} \xNN \u{...}`. Anything else after a
-  backslash is an error, not the character itself — `"C:\Users"` says so
+  backslash is an error, not the character itself - `"C:\Users"` says so
   instead of quietly becoming `C:Users`. The backslash forms are the *only*
   brace escapes: `{{` is not one. A `{` right after another `{` begins an
   interpolation whose expression starts with a map literal, so `"{{}}"` is an
@@ -499,8 +499,8 @@ r##"…"#…"##              // more hashes when the body holds `"#`
 
 A raw literal is bytes, not syntax. Nothing in it is an escape and nothing in
 it opens an interpolation, so a literal meant to be read by something other
-than Beans — a route template, a regex, a Windows path, a printf format, a
-JSON fixture — is written the way its own reader spells it. The opener is `r`
+than Beans - a route template, a regex, a Windows path, a printf format, a
+JSON fixture - is written the way its own reader spells it. The opener is `r`
 followed by any number of `#`, then `"`; the terminator is `"` followed by the
 same number of `#`. A raw literal may span lines: the terminator is explicit,
 so there is no end of line to guess at.
@@ -513,14 +513,14 @@ are the same type, they compare equal, and below the checker there is one
 spelling: a raw literal used as a match pattern or folded into a `const` is
 rewritten with ordinary escapes, so nothing downstream ever meets a second
 shape. A raw literal is a compile-time constant, so it works where one is
-required — an annotation argument most of all:
+required - an annotation argument most of all:
 
 ```
 @route(path: r"/users/{id}")
 pub fn show(id: int) -> int { return id }
 ```
 
-**Methods (v0.5, implemented, byte-based — unicode arrives later as explicit `chars()`, `len` stays bytes forever):**
+**Methods (v0.5, implemented, byte-based - unicode arrives later as explicit `chars()`, `len` stays bytes forever):**
 `len`, `is_empty`, `first(n)`, `last(n)`, `slice(from, to)` (half-open, panics out of range),
 `byte_at(i)` (panics), `contains`, `starts_with`, `ends_with`, `find`/`rfind -> Option<int>`
 (empty needle: `find` says 0, `rfind` says len), `trim`/`trim_start`/`trim_end` (ASCII whitespace),
@@ -555,7 +555,7 @@ Character Database (`tools/gen_width_table.py` regenerates the tables in
 - Invalid UTF-8 counts one column per bad byte, which is what a terminal draws
   for the replacement character it substitutes. A byte is bad when it does not
   start a well-formed sequence, when its sequence is truncated, and when the
-  bytes are well formed but spell what UTF-8 does not encode — an overlong
+  bytes are well formed but spell what UTF-8 does not encode - an overlong
   form, half a surrogate pair, a scalar past the last plane. A bad byte also
   stands between whatever was joining or pairing across it.
 
@@ -564,7 +564,7 @@ caret and counts one, and no normalization happens first.
 
 ## Bytes (v0.5, implemented)
 
-The binary buffer — strings stay text; anything binary is `Bytes`. `Bytes` is a
+The binary buffer - strings stay text; anything binary is `Bytes`. `Bytes` is a
 move-only `Send` owner, not `Sync`: one thread may mutate it, and ownership may
 move to another thread, but aliases cannot race. Mutating methods return
 `unit`; write page-building steps as separate statements. `slice` makes an
@@ -580,18 +580,18 @@ explicit deep copy.
   value stays alive and is not resized, reserved, appended to, or pushed to.
   Do not free the borrowed pointer.
 - `len()`, `reserve(n)`, `resize(n)` (regrown range reads zero), `fill(v)`
-- `get(i)` / `set(i, v)` — one byte, panics out of range; `push(v)` appends one
+- `get(i)` / `set(i, v)` - one byte, panics out of range; `push(v)` appends one
   byte. These are low-level storage operations used by Beans-written formats.
-- `get_u8/u16/u32/u64/i64(pos)` / `put_...(pos, v)` — fixed width, little-endian, panics out of range
+- `get_u8/u16/u32/u64/i64(pos)` / `put_...(pos, v)` - fixed width, little-endian, panics out of range
 - `slice(from, to)`, `copy_from(src, at)`, `append(other)`, `append_string(s)`,
   `append_int_text(v)`, `append_i64(v)` (little-endian),
   `append_range(src, from, to)` (no slice allocation)
-- `to_string()` — every byte, NUL included (used by binary-safe source packages
+- `to_string()` - every byte, NUL included (used by binary-safe source packages
   such as `std.reader`); `to_string_until_nul()` stops at an embedded NUL
 - `==` / `!=` compare by value: length, then contents
-- `append_uvarint(v)` / `get_uvarint(pos)` — unsigned LEB128 over the 64-bit pattern
+- `append_uvarint(v)` / `get_uvarint(pos)` - unsigned LEB128 over the 64-bit pattern
   (negatives take 10 bytes); `Bytes.uvarint_size(v)` says how far to advance
-- `crc32(from, to)` — IEEE crc32 of a range, panics out of range
+- `crc32(from, to)` - IEEE crc32 of a range, panics out of range
 
 ## Files and the OS (v0.5, implemented)
 
@@ -603,7 +603,7 @@ Class-first, like everything builtin. Errors are `Result<T>`; `Error.kind` carri
   `open(path, mode)` → `Result<File>` with modes `"r"`, `"rw"`,
   `"create"`, `"append"`.
 - **std.fs**: the whole life of a file named by its path. Beans-written `read`,
-  `read_bytes`, `write`/`append`, `write_bytes`/`append_bytes`, and `copy` —
+  `read_bytes`, `write`/`append`, `write_bytes`/`append_bytes`, and `copy` -
   these compose `File.open`, positional/cursor I/O, truncate, close, and exact
   byte-to-string conversion; only that low-level layer stays native. The old
   native `File.read(path)` helper is gone. Beside them, `exists(path)`,
@@ -611,34 +611,34 @@ Class-first, like everything builtin. Errors are `Result<T>`; `Error.kind` carri
   path-taking `File` static has an `fs` spelling, because a package that can
   create a file it cannot release is worse than one that cannot create it.
   `remove` answers `ok(true)` when the entry was there and is gone and
-  `ok(false)` when nothing was there — a `deinit` releasing a spooled temp file
+  `ok(false)` when nothing was there - a `deinit` releasing a spooled temp file
   cannot propagate a result, and "already gone" is the state it wanted; every
   other failure is still `err` with its kind. It never asks `exists` first, so
   there is no check-then-act window. Directories keep their own surface on
   `Dir`.
-- **File methods**: positional I/O first — `read_at(pos, n)` → `Result<Bytes>` (short read at
+- **File methods**: positional I/O first - `read_at(pos, n)` → `Result<Bytes>` (short read at
   EOF returns what's there), `write_at(pos, b)`; cursor `read(n)`/`write(b)`; `seek`/`seek_from_end`
-  (return the new position, panic on a closed file), `tell`, `size`, `truncate`, `sync` (fsync —
+  (return the new position, panic on a closed file), `tell`, `size`, `truncate`, `sync` (fsync -
   the durability call), `close` (double close is an error result). `File` is a
   move-only `Send` owner, not `Sync`. Dropping the owner closes the fd as a
   safety net; `close()` is still the API.
 - **File locks**: `lock()` (blocking, exclusive), `try_lock()` (`ok(false)` means someone else
-  holds it), `unlock()` — advisory flock, owned by the open file description, so two handles on
+  holds it), `unlock()` - advisory flock, owned by the open file description, so two handles on
   one file contend. Single-writer databases.
 - Every owned file descriptor is close-on-exec, so running a child cannot leak a live
   `File` into it.
 - **Dir statics**: `create`, `create_all`, `list` → `Result<List<string>>` (sorted), `remove`
-  (empty only), `remove_all` (recursive), `exists`, `temp_path`, `sync` — fsync a directory, the
-  rename-commit pattern's second half; `walk(path)` → `Result<List<string>>` — recursive,
+  (empty only), `remove_all` (recursive), `exists`, `temp_path`, `sync` - fsync a directory, the
+  rename-commit pattern's second half; `walk(path)` → `Result<List<string>>` - recursive,
   files and symlinks only (never follows a link), paths relative to the argument, sorted.
   `temp_path` (`fs.temp_dir()` is the same answer) reads `TMPDIR`, then `TMP`
-  and `TEMP` on Windows, then the platform default — `GetTempPath` there,
+  and `TEMP` on Windows, then the platform default - `GetTempPath` there,
   `/tmp` elsewhere. It never answers `/tmp` on Windows, where that names
   nothing. No trailing separator, either kind.
 - **std.path** (pure Beans string math, no fs access): `join(a, b)` (absolute `b` wins),
   `parent`, `base`, `ext` (with the dot; a leading dot is a dotfile, not an extension),
   and `stem`. Import it with `import std.path`; the old native `Path.*` copy is gone.
-- **std.reader**: `new reader.Reader(move f)` then `read_line()` → `Result<Option<string>>` —
+- **std.reader**: `new reader.Reader(move f)` then `read_line()` → `Result<Option<string>>` -
   `ok(some(line))` without its newline, a partial last line, then `ok(none)` at EOF.
   The reader owns the file and reads at its own offset (pread), so the file's
   cursor never moves. `file_position()` reports that offset and `close()` closes
@@ -660,7 +660,7 @@ provides instance methods `map`, `and_then`, and `recover`. There are no
 `std.option` or `std.result` packages. `std.math`
 provides integer `clamp` and `gcd`, the float helpers `fmax`, `fmin`, `fclamp`,
 `rem_euclid`, `is_finite`, `infinity`, `sqrt` and `hypot`, and the
-transcendentals `exp`, `sin` and `cos` — each with an `f32` twin named with a
+transcendentals `exp`, `sin` and `cos` - each with an `f32` twin named with a
 `32` suffix, the convention `std.intrinsic` sets with `sqrt`/`sqrt32`. They are
 written in Beans rather than bound to the platform's libm, because a
 freestanding or `wasm32-unknown-unknown` build has no libm and a std module
@@ -684,33 +684,33 @@ atomics, and thread entry while more of `core` and `std` move to `.b` files.
 **What prints** (same rule for `io.println` and `{x}` interpolation): numbers, bools, strings;
 enums, as `variant` or `variant(payload, ...)`; options as `some(x)` / `none` and results as
 `ok(x)` / `err(e)`; lists of printable things, as `[a, b, c]`; maps of printable keys and
-values, as `{k: v, k: v}`; and structs and class instances, as `Name { field: value, ... }` —
+values, as `{k: v, k: v}`; and structs and class instances, as `Name { field: value, ... }` -
 nesting included, and `join(sep)` renders the same way. A result's default `err` payload is an
 `Error`, which prints as the message a caller passed to `err(...)`; a custom err type prints
 as itself. A map renders its entries in the order `keys()` walks. For a map only inserted into and
-updated in place that is **insertion order** — an updated key keeps the place it was first
-given — and both backends impose the same one, so a golden file can pin it. A **removal** is
+updated in place that is **insertion order** - an updated key keeps the place it was first
+given - and both backends impose the same one, so a golden file can pin it. A **removal** is
 the exception: a plain `Map` swap-removes, and the two engines do not agree today on the order
 that leaves behind, so nothing should pin the rendering of a `Map` a key has been removed
 from. `OrderedMap` keeps its order across a removal, on both. Strings render without quotes,
 the same as inside a list.
 
 A struct or class instance renders its fields **in declaration order**, using the bare type
-name (`Point { x: 1, y: 2 }`, `Empty {}`). A **class** that declares its own string form —
-a `to_string() -> string` method taking no argument — renders through it instead: `{obj}` and
+name (`Point { x: 1, y: 2 }`, `Empty {}`). A **class** that declares its own string form -
+a `to_string() -> string` method taking no argument - renders through it instead: `{obj}` and
 every nested position (a list element, a map key or value, another object's field, `join`)
 print what `to_string` returns, so a class's own form wins over the derived one everywhere,
 a generic class included. A class with a `to_string` is printable even when a field of it is
 not, since the derived form is never used. A **struct** does not take this path: its
-`to_string` is an ordinary method you can call, and `{p}` still renders the derived form —
+`to_string` is an ordinary method you can call, and `{p}` still renders the derived form -
 both backends agree on that, and widening it to structs is a separate change.
 When there is no `to_string`, the derived form is the compiler's own view of the value, so:
 
-- A **private** field is shown like any other — hiding half the object would make the debug
+- A **private** field is shown like any other - hiding half the object would make the debug
   form lie.
 - A **move-only** field is shown by borrowing it; rendering never moves or consumes a value.
 - A **weak** field prints as `<weak>` and is **not followed**. It is the one edge the cycle
-  collector refuses to trace, and the printer refuses it too — so a cleared weak cannot fault
+  collector refuses to trace, and the printer refuses it too - so a cleared weak cannot fault
   the printer and a back-reference cannot loop it. Its type need not be printable.
 - Static fields belong to the type, not the instance, and never appear.
 - A **reference cycle** prints `<cycle>` where it closes; a shared value that is not on the
@@ -718,13 +718,13 @@ When there is no `to_string`, the derived form is the compiler's own view of the
 
 Only a class whose declared type is the one concrete type a value of it can carry prints this
 way: a **leaf, standalone class** (not an interface, not `abstract`, not a base another class
-`extends`, and — until inherited fields render — not itself extending one). A base, an
+`extends`, and - until inherited fields render - not itself extending one). A base, an
 interface or an abstract class is refused, because its value's real type is not knowable from
 its declared one and the two backends would render different fields; give it a string form
 first, or match on it.
 
-A key or an element too wide for one runtime slot — a struct, a `decimal`, an inline
-`Option` — is rendered from where it really lives rather than refused, so `{m}` on a
+A key or an element too wide for one runtime slot - a struct, a `decimal`, an inline
+`Option` - is rendered from where it really lives rather than refused, so `{m}` on a
 `Map<Point, string>` and `xs.join(", ")` on a `List<Point>` print what `{xs}` prints.
 `join` refuses exactly what interpolation refuses, at check time and with the same message
 on both backends.
@@ -734,57 +734,57 @@ durable compaction (write temp, sync, rename over, sync the parent dir).
 
 ## MMap (v0.5, implemented)
 
-A shared mapping of a whole file — the page-cache path a database wants. `MMap`
+A shared mapping of a whole file - the page-cache path a database wants. `MMap`
 is a move-only `Send` owner, not `Sync`. The mapped region is not Beans heap;
 one owner may move between threads, but concurrent aliases are forbidden.
 
-- `MMap.open(path, writable)` → `Result<MMap>` — maps the entire file (`MAP_SHARED`); the
-  handle keeps its fd for `resize`, and the mapping outlives the path — unlink while mapped
+- `MMap.open(path, writable)` → `Result<MMap>` - maps the entire file (`MAP_SHARED`); the
+  handle keeps its fd for `resize`, and the mapping outlives the path - unlink while mapped
   is fine. An empty file maps with `len() == 0`.
-- `len()`; `get_u8/u16/u32/u64/i64(pos)` and `put_...(pos, v)` — little-endian,
+- `len()`; `get_u8/u16/u32/u64/i64(pos)` and `put_...(pos, v)` - little-endian,
   bounds-checked panics; `put` panics on a read-only map; `put`/`write` return
   `unit`.
-- `read(pos, n)` → `Bytes` (copy out), `write(pos, b)` — panics out of range.
-- `flush()` / `flush_range(pos, n)` → `Result<bool>` (msync — the durability call),
+- `read(pos, n)` → `Bytes` (copy out), `write(pos, b)` - panics out of range.
+- `flush()` / `flush_range(pos, n)` → `Result<bool>` (msync - the durability call),
   `close()` → `Result<bool>` (double close is an error; access after close panics).
-- `resize(n)` → `Result<bool>` — ftruncate + remap in place, grow or shrink; read-only
+- `resize(n)` → `Result<bool>` - ftruncate + remap in place, grow or shrink; read-only
   maps refuse with a `permission` error. On a remap failure the handle stays open but empty.
 - Dropping the owner unmaps (and closes the fd) as a safety net.
 - The backing descriptor is close-on-exec while the mapping owns it.
 
 ## std.fmt (v0.5, implemented)
 
-Interpolation assembles, fmt formats. No printf — the language has no varargs.
+Interpolation assembles, fmt formats. No printf - the language has no varargs.
 
-- `pad_left(s, width)` / `pad_right(s, width)` — spaces, **display columns**
+- `pad_left(s, width)` / `pad_right(s, width)` - spaces, **display columns**
   (`string.width()`, not `len()`); already-wide input comes back unchanged.
-- `float(x, places)` — fixed decimals (`3.14`), places clamped to 0..100.
-- `decimal(d, places)` — exact decimals: rounds half-even when narrowing, zero-pads
+- `float(x, places)` - fixed decimals (`3.14`), places clamped to 0..100.
+- `decimal(d, places)` - exact decimals: rounds half-even when narrowing, zero-pads
   when widening. `fmt.decimal(19.995, 2)` is `"20.00"`.
-- `hex(n)` / `binary(n)` — the 64-bit two's-complement pattern, lowercase, no prefix:
+- `hex(n)` / `binary(n)` - the 64-bit two's-complement pattern, lowercase, no prefix:
   `hex(-1)` is 16 f's.
-- `group_digits(n, sep)` — thousands grouping: `group_digits(1234567, ",")` is `"1,234,567"`.
-- `StringBuilder` — accumulate a string across a loop into one growing buffer:
+- `group_digits(n, sep)` - thousands grouping: `group_digits(1234567, ",")` is `"1,234,567"`.
+- `StringBuilder` - accumulate a string across a loop into one growing buffer:
   `push(text)`, `push_int`, `push_bool`, `push_line`, `push_byte`, then
   `to_string()` (or `to_bytes()`) once. `text = "{text}piece"` in a loop rebuilds
-  the whole string every turn — O(n²) in the length; a builder is O(n).
+  the whole string every turn - O(n²) in the length; a builder is O(n).
 
 ## std.encoding (v0.9, implemented)
 
 Four shipped packages for wire formats. Three wrap pinned, vendored native
-libraries behind ordinary Beans APIs — no C functions, pointers, or upstream
-types are visible — and one is pure Beans:
+libraries behind ordinary Beans APIs - no C functions, pointers, or upstream
+types are visible - and one is pure Beans:
 
 | package | underneath | license |
 |---|---|---|
 | `std.encoding.json` | yyjson 0.12.0 | MIT |
 | `std.encoding.xml` | pugixml 1.16 | MIT |
 | `std.encoding.base64` | simdutf 9.0.0 | MIT (upstream offers MIT or Apache-2.0) |
-| `std.encoding.binary` | Beans source over `Bytes` | — |
+| `std.encoding.binary` | Beans source over `Bytes` | - |
 
 Payload marshalling is not written as a Beans byte loop in native code: the
-packages call four private helpers — two bulk copies and two payload-address
-borrows — that the native backend lowers to `@llvm.memcpy`, a pointer load,
+packages call four private helpers - two bulk copies and two payload-address
+borrows - that the native backend lowers to `@llvm.memcpy`, a pointer load,
 and overflow-safe bounds checks. Eligibility is validated, not assumed: a
 helper qualifies only when its source file sits under the compiler-shipped
 stdlib root, its package is one of the three shipped encoding packages, and
@@ -838,7 +838,7 @@ io.println(json.encode(user)?)
   whole input must be one document, trailing content is an error, and every
   parse error carries a kind (`invalid`, `eof`, `memory`) and a byte
   position.
-- `Options` opts into exactly three named extensions — `allow_comments`,
+- `Options` opts into exactly three named extensions - `allow_comments`,
   `allow_trailing_commas`, `allow_inf_nan`. That is a subset of JSON5,
   deliberately not called JSON5; unquoted keys and single quotes stay
   errors.
@@ -859,15 +859,15 @@ io.println(json.encode(user)?)
   `io.println(json.encode(value)?)` to print a struct as JSON. NaN and infinity
   are rejected, and so is a string whose bytes are not valid UTF-8. A value
   that carries more than one such fault is reported by the first one the
-  writer reaches in document order — a field that is omitted from the document
+  writer reaches in document order - a field that is omitted from the document
   cannot be the one reported.
 - `encode_into<T>(value, target)` appends that same compact encoding to the
-  caller's `Bytes` — after whatever it already holds — and returns
+  caller's `Bytes` - after whatever it already holds - and returns
   `Result<int>`, the number of bytes appended. `T` is validated exactly as for
   `encode`, and the bytes it writes equal `encode(value)` byte for byte; it
   exists so a body can be serialized straight into an output buffer without a
   fresh string and its copy. A refused `T` refuses identically to `encode`, and
-  a refusal at run time leaves `target` exactly as it was — every byte it held
+  a refusal at run time leaves `target` exactly as it was - every byte it held
   before the call, and nothing appended.
 - Typed JSON currently supports bool, integer, float, string, nested struct,
   list, and option fields. Struct and `List<struct>` are the only root shapes.
@@ -877,7 +877,7 @@ io.println(json.encode(user)?)
 - `Value.kind()` reports `null`, `boolean`, `integer`, `unsigned_integer`,
   `floating`, `text`, `array`, or `object`. Numbers keep their parsed kind:
   a non-negative integer is `unsigned_integer`, a negative one `integer`
-  (yyjson's classification), a decimal-point or exponent form `floating` —
+  (yyjson's classification), a decimal-point or exponent form `floating` -
   nothing is silently collapsed to f64. An integer beyond u64 parses as
   `floating`, the reading every RFC 8259 parser gives it.
 - Typed access returns `Result`: `to_bool`, `to_int` (signed, or unsigned
@@ -889,7 +889,7 @@ io.println(json.encode(user)?)
   reports every entry; `get` returns the first match for a duplicated key.
 - **Ownership**: a `Value` is a cheap view holding a shared reference to its
   document; the yyjson document is freed when the last `Value` over it
-  drops. Nothing is eagerly copied into Beans collections — this is a DOM
+  drops. Nothing is eagerly copied into Beans collections - this is a DOM
   API over yyjson's tree. Typed decoding is a separate generated compiler
   path and does not build `Value` wrappers or scan reflection metadata.
 - Building: `Value.null/from_bool/from_int/from_uint/from_float/from_string`,
@@ -916,9 +916,9 @@ let out: string = xml.stringify_pretty(doc, "  ")?
 
 - `parse(text)`, `parse_bytes(data)` → `Result<Document>`. UTF-8, UTF-16 and
   UTF-32 byte-order marks are honoured, and a BOM-less input is read as
-  UTF-8. A document must have **exactly one** root element: zero — which
+  UTF-8. A document must have **exactly one** root element: zero - which
   covers empty, whitespace-only, declaration-only, comment-only,
-  processing-instruction-only and DOCTYPE-only inputs — and two or more are
+  processing-instruction-only and DOCTYPE-only inputs - and two or more are
   both errors. Trailing comments and processing instructions after the root
   are well-formed and accepted.
 - `decode<T>`, `decode_bytes<T>`, and `decode_with_options<T>` build a concrete
@@ -935,7 +935,7 @@ let out: string = xml.stringify_pretty(doc, "  ")?
   number that means nothing.
 - Node kinds: `element`, `text`, `cdata`, `comment`,
   `processing_instruction`, `declaration`, `doctype`. `children()` and
-  `attributes()` preserve document order — mixed content included.
+  `attributes()` preserve document order - mixed content included.
   `name()` is the raw qualified name; `prefix()`/`local_name()` split it at
   the colon. The DOM API does not resolve namespace URIs. The typed decoder
   does resolve `xmlns` declarations and matches namespace URI plus local name,
@@ -946,7 +946,7 @@ let out: string = xml.stringify_pretty(doc, "  ")?
 - **Security defaults**: DOCTYPE is rejected by default with its byte
   offset; `Options.allow_doctype` keeps the declaration as an inert node
   only. pugixml expands nothing beyond the five built-in entities and
-  numeric character references — there is no external-entity mechanism, and
+  numeric character references - there is no external-entity mechanism, and
   parsing never touches the filesystem or network.
 - **Ownership**: `Document` and `Node` share one owner; a child node stays
   valid after the binding that held its document is gone, and the native
@@ -976,14 +976,14 @@ let raw: string = base64.Encoding.url_safe_no_pad.encode(Bytes.from("x"))
 - Strict decoding (`decode`) is RFC 4648 for the chosen encoding: padded
   encodings need exact padding, unpadded ones refuse `=` entirely,
   non-zero trailing padding bits are an error, and any byte outside the
-  alphabet — whitespace included — is an error with kind and position
+  alphabet - whitespace included - is an error with kind and position
   (`invalid`, `length`, `padding`, `bits`, `whitespace`).
 - `decode_forgiving` is the WHATWG forgiving-base64 shape, named so the
   relaxation is visible: ASCII whitespace skipped, partial final group
   accepted with or without padding, non-zero trailing bits ignored;
   alphabet violations still fail.
 - Output buffers are allocated at the exact encoded size and simdutf writes
-  into them directly — SIMD kernels where the target has them, upstream's
+  into them directly - SIMD kernels where the target has them, upstream's
   scalar fallback elsewhere (including the big-endian and 32-bit targets).
   There is no streaming API: Beans has no generic Reader/Writer abstraction
   yet, and inventing one here would freeze a bad shape.
@@ -991,7 +991,7 @@ let raw: string = base64.Encoding.url_safe_no_pad.encode(Bytes.from("x"))
   references no C++ runtime symbol at all. pugixml still needs `operator
   delete` and `__cxa_pure_virtual` for its writer vtable; those are defined
   weak inside its own object for the Itanium C++ ABI, which every supported
-  target uses — including Windows, where MinGW and GNullVM are Itanium-ABI
+  target uses - including Windows, where MinGW and GNullVM are Itanium-ABI
   toolchains. `test/encoding_symbols.sh` fails the build if either object
   grows a symbol outside libc, and `test/encoding_windows.sh` checks the same
   thing with the Windows toolchain.
@@ -1011,14 +1011,14 @@ let value: u32 = binary.read_u32(wire, 0, binary.ByteOrder.big)?
   target's order, folded at compile time through `std.target`).
 - Positional `read_`/`write_` and appending `append_` forms for
   `u8/i8/u16/i16/u32/i32/u64/i64`, plus `f32`/`f64` through bit-preserving
-  conversion — infinities, quiet-NaN payloads, and negative zero survive
+  conversion - infinities, quiet-NaN payloads, and negative zero survive
   the round trip. Reads and writes are checked: truncated input is kind
-  `eof`, a bad write position kind `range` — never a panic, and never a
+  `eof`, a bad write position kind `range` - never a panic, and never a
   read past the buffer.
 - Byte swaps use the machine's byte-swap instruction through
   `std.intrinsic`, and float conversion borrows one scoped stack slot
   (`RawPtr.with_local`) rather than allocating.
-- Varints: `append_uvarint`/`read_uvarint` are unsigned LEB128 — the same
+- Varints: `append_uvarint`/`read_uvarint` are unsigned LEB128 - the same
   wire format as `Bytes.append_uvarint`, whose raw two's-complement
   behaviour is unchanged. `append_uvarint`/`read_varint` are the signed
   zigzag form matching Go's `PutVarint`. Reads report the value and its
@@ -1035,10 +1035,10 @@ let x: int = 5              // can't be reassigned (like Java final)
 var total: decimal = 0.0    // can be reassigned
 ```
 
-`let` means the *variable* can't be rebound. The object it points to can still change inside (Java-style — no borrow checker, no `mut` markers).
+`let` means the *variable* can't be rebound. The object it points to can still change inside (Java-style - no borrow checker, no `mut` markers).
 
 `_` in a binding position is a **discard**, not a name. It works wherever a name
-is bound — `let`, `var`, function and closure parameters, loop bindings, and the
+is bound - `let`, `var`, function and closure parameters, loop bindings, and the
 payload bindings of a match pattern:
 
 ```
@@ -1054,7 +1054,7 @@ so, not "unknown name". A bare `_` arm of a match is the same character used as
 a wildcard pattern and is unaffected.
 
 The value is still owned. A discard takes the value it is given and drops it at
-the end of its scope, exactly like a named binding — once, and never twice — so
+the end of its scope, exactly like a named binding - once, and never twice - so
 `let _: Packet = open()` and `fn eat(move _: Packet)` release what they take at
 the same point a named `let` or `move` parameter would. `_` removes the name,
 not the ownership.
@@ -1073,7 +1073,7 @@ pub const MAX_FRAME: int = 1 << 20      // pub, for a library package
 ```
 
 A `const` has **no storage and no address**. The checker folds the initializer
-once, and every use is that value written where the use is — so a constant
+once, and every use is that value written where the use is - so a constant
 costs exactly what typing the literal there would cost, in both backends. It
 cannot be assigned to, and `&`-style address-taking never applied to it.
 
@@ -1084,7 +1084,7 @@ cannot be assigned to, and `&`-style address-taking never applied to it.
   including ones declared further down the file or in another package
   (`pkg.NAME`, or selected with `import {NAME} from pkg`); unary `-`, `!`, `~`;
   and the binary operators `+ - * / % & | ^ << >> && || == != < <= > >=`.
-  Anything else is refused with a message that names what was not constant —
+  Anything else is refused with a message that names what was not constant -
   a call, a local, a field read, an `as` cast, a `{}` piece in a string.
 - Integer folding answers what the same expression answers at run time: every
   result is narrowed to its own type, so `const X: i32 = 1 << 31` is `i32`'s
@@ -1092,7 +1092,7 @@ cannot be assigned to, and `&`-style address-taking never applied to it.
   outside `0..bits-1`, and dividing a signed minimum by `-1` are refused. `u64`
   is the one type the fold cannot carry whole: a `u64` value at or above
   `2^63` may be **declared** and used like any other constant, but no
-  operator may fold with one — arithmetic, shifts and comparisons alike are
+  operator may fold with one - arithmetic, shifts and comparisons alike are
   refused, because the fold computes in signed 64 bits and would otherwise
   answer with signed order for a number the program never holds.
 - Floats and decimals fold a literal and unary minus, and no arithmetic. The
@@ -1115,7 +1115,7 @@ match n {
   are answered after layout, which runs later than a constant is folded, so
   they cannot appear in a `const` initializer.
 - A constant may **size a fixed array**, in every position a type is written
-  — a local, a field, a parameter, a result, and nested inside another fixed
+  - a local, a field, a parameter, a result, and nested inside another fixed
   array. Constants are folded at the end of signature checking, before any
   type is laid out, so the length is the folded value:
 
@@ -1130,11 +1130,11 @@ fn widen(row: [int; LIMIT]) -> [[int; LIMIT]; 2] { … }
   The constant is reached the way one is reached anywhere: bare in its own
   package, qualified through a package alias (`[int; limits.SLOTS]`), or
   selected with `import {SLOTS} from pkg`. A name that is not a constant is
-  refused for what it is, and a constant that cannot supply a length — not an
-  integer, or outside `1..4096` — is refused at the name and says which
+  refused for what it is, and a constant that cannot supply a length - not an
+  integer, or outside `1..4096` - is refused at the name and says which
   constant it is and what it holds.
 
-- A `const` **cannot be a parameter default** — a default is read while the
+- A `const` **cannot be a parameter default** - a default is read while the
   signature holding it is lowered, and the fold runs at the end of that stage
   (`fn f(n: int = 128)`, not `= LIMIT`). It is refused where it is written,
   with a message that names the name and says why an array length differs.
@@ -1162,12 +1162,12 @@ now `move` names a whole local; field and index moves need consuming accessors
 such as List `remove`.
 
 **A move hands the value over where it is written, not where the spent binding's
-scope ends.** From the `move` on, the value belongs to whatever took it — a
+scope ends.** From the `move` on, the value belongs to whatever took it - a
 `let` or `var`, a `move` parameter, a field, an element of a literal, a map
-entry — and it is released when *that* owner is released, wherever that is. The
+entry - and it is released when *that* owner is released, wherever that is. The
 spent binding is not a second owner and adds nothing to the lifetime: it holds
 nothing at all until it is reinitialized. So the packet below is released where
-`taken` goes out of scope — the end of the `if` — and not at the end of the
+`taken` goes out of scope - the end of the `if` - and not at the end of the
 function where `held` was declared:
 
 ```
@@ -1198,7 +1198,7 @@ Ownership arrives at the call, so how the caller produced the argument makes no
 difference to when the value dies: `enqueue(make_batch())` and
 `enqueue(move batch)` both release the batch when `enqueue` returns, and if
 `enqueue` hands it to a further call it dies with *that* callee instead. A
-borrowed parameter is the other half of the same rule — it owns nothing, so its
+borrowed parameter is the other half of the same rule - it owns nothing, so its
 argument outlives the call under whatever the caller's own scope says.
 
 A function's parameters are bound before its first local, and a frame releases
@@ -1297,7 +1297,7 @@ fields); the local-class cycle collector does
 not trace through explicit Shared control blocks. `Shared<T>` and `Weak<T>` are
 `Send` and `Sync` only when `T` is both. `Mutex<T>` is the explicit lock-based
 synchronization boundary: it is `Send` and `Sync` when `T` is `Send`, and also
-when the mutex owns `T` outright — a move-only `T` whose own state cannot be
+when the mutex owns `T` outright - a move-only `T` whose own state cannot be
 reached any other way. An ordinary `class` is not that, because it is an
 aliasable handle and the move into the mutex takes nothing away from whoever
 else holds it; a `unique class` is, so long as every field is `Send` or owned
@@ -1339,7 +1339,7 @@ Primitives (all unboxed in codegen):
 
 - `int` (64-bit), `i8 i16 i32 i64`, `u8 u16 u32 u64`
 - `float` (= `f64`), `f32 f64`
-- `decimal` — base-10 exact number for money. See below.
+- `decimal` - base-10 exact number for money. See below.
 - `bool`, `string` (immutable), `byte` (= `u8`)
 
 ### decimal
@@ -1356,7 +1356,7 @@ Primitives (all unboxed in codegen):
 - **Scale is part of the answer.** `a + b` and `a - b` carry
   `max(scale(a), scale(b))`; `a * b` carries `scale(a) + scale(b)`; `a / b`
   carries the smallest scale that represents the exact quotient, and when the
-  quotient is zero it carries `max(0, scale(a) - scale(b))` — so `1.25 + 1.25`
+  quotient is zero it carries `max(0, scale(a) - scale(b))` - so `1.25 + 1.25`
   is `2.50`, `123.45 * 10000000` is `1234500000.00`, and `0.000 / 0.7` is
   `0.00`. Growing toward that scale stops at 38 significant digits, because the
   appended zeros are significant; a zero coefficient has none to protect and
@@ -1386,7 +1386,7 @@ Primitives (all unboxed in codegen):
   -19.99. It reaches through nothing else: `rate as decimal` where `rate` is a
   `float` variable still says exactly what that float is, because the operand is
   a value and not a spelling. Integer targets are excluded so the wrapping rule
-  below keeps its meaning — `300 as i8` is still `44`.
+  below keeps its meaning - `300 as i8` is still `44`.
 - A hex or binary literal is the integer it spells, in `float`, `f32` and
   `decimal` as much as in an integer type, and there it must be an `int` value:
   `0xffffffffffffffff` is a bit pattern, which `u64` has a rule for and a
@@ -1401,14 +1401,14 @@ Primitives (all unboxed in codegen):
   truncates toward zero as usual. The bound is the target's, not `int`'s and
   then narrowed: `1e300 as i32` is `2147483647`, never `-1`. `float.round()`
   and `f32.round()` answer the same way. The rule holds for every width from
-  both `f32` and `f64`, in the interpreter and the native backend alike — the
+  both `f32` and `f64`, in the interpreter and the native backend alike - the
   native one emits `llvm.fptosi.sat` / `llvm.fptoui.sat`, because a bare
   `fptosi` is *poison* for exactly these inputs and the same expression
   answered a different number on every build. Saturation is the rule and
   not a panic, deliberately: the interpreter already answered this way, so
   making the two backends agree meant giving the native one that same rule,
-  not turning a shipped total conversion into a fault. It maps every float —
-  NaN and both infinities included — to a defined value at no codegen cost
+  not turning a shipped total conversion into a fault. It maps every float -
+  NaN and both infinities included - to a defined value at no codegen cost
   (one saturating instruction), and it is what the nearest neighbours do (a
   Rust `as` from float to integer, WebAssembly's `trunc_sat`). The cost is
   named here rather than hidden: a magnitude past the target's range becomes
@@ -1421,14 +1421,14 @@ Primitives (all unboxed in codegen):
 - Float comparisons are IEEE-754: a NaN operand makes `==`, `<`, `<=`, `>`, and
   `>=` false and `!=` true, in the interpreter and the native backend alike.
   (Decided after an audit found the interpreter collapsing NaN to "equal" while
-  the native backend answered `!=` with an ordered compare — every implementation
+  the native backend answered `!=` with an ordered compare - every implementation
   now agrees.) Casting NaN or an infinity to `decimal` panics as `decimal
   overflow`, the same as any float whose magnitude exceeds 38 digits.
 - **`Order` and `Eq` on a float are total, and the operators above are not.**
   IEEE comparison is not an order: NaN is unordered with everything, so
   `[3.0, 1.0, nan, 2.0].sort()` answered `[1, 3, nan, 2]`, a map read `nan`
-  as equal to no key including itself — every re-insert appended and no read
-  could ever find it — and anything that binary-searches read "neither less
+  as equal to no key including itself - every re-insert appended and no read
+  could ever find it - and anything that binary-searches read "neither less
   nor greater" as "found it" and overwrote an unrelated key. `float` and
   `f32` therefore order by IEEE 754 **totalOrder** wherever the comparing is
   done by the `Order` or `Eq` interface rather than by an operator:
@@ -1439,12 +1439,12 @@ Primitives (all unboxed in codegen):
 
   The equality that belongs with that order is **bit equality**. Two NaNs are
   one value when their sign and payload match, and `-0.0` and `+0.0` are two
-  values — so they are two map keys, they do not find each other, and a sort
+  values - so they are two map keys, they do not find each other, and a sort
   puts `-0.0` first. This is the same split Java draws between `a < b` on a
   `double` and `Double.compare`/`Double.equals`, and it reaches:
 
   - `List.sort`, `max`, `min`, `contains`, `index_of`, and `List == List`;
-  - `Map` and `OrderedMap` keys — lookup, replacement, removal and hashing;
+  - `Map` and `OrderedMap` keys - lookup, replacement, removal and hashing;
   - the structural `==` of a struct, fixed array, `Option` or enum that holds
     a float, and the same value used as a wide map key;
   - `<`, `<=`, `>`, `>=`, `==` and `!=` applied to a value whose type is a
@@ -1453,7 +1453,7 @@ Primitives (all unboxed in codegen):
     { return a < b }` answers `true` for `less(1.0, nan)`, while a bare
     `1.0 < nan` in the same program answers `false`: one is the interface,
     the other is the operator. Only `float` and `f32` read differently
-    between the two — every other `Order` type has one order.
+    between the two - every other `Order` type has one order.
 
   A bare `float == float` or `float < float` stays IEEE in every one of those
   spots. Which NaN an operation produces is the platform's business, as it is
@@ -1461,7 +1461,7 @@ Primitives (all unboxed in codegen):
   given.
 
   `decimal` needs none of this and gets none: it has no NaN and no negative
-  zero (see *decimal* above — a scale below 0 is 0, and `-0` and `0` are one
+  zero (see *decimal* above - a scale below 0 is 0, and `-0` and `0` are one
   value), so its order is already total and its comparison is unchanged.
 
 The native backend uses exact LLVM integer, float, and decimal types for locals,
@@ -1488,23 +1488,23 @@ let n: Option<int> = m.get("a")     // no null, no panic
 
 **List methods (v0.5, implemented):** `clone`, `push`, `reserve(capacity)`,
 `pop`/`first`/`last`/`get(i)` → `Option<T>`,
-`len`, `max`/`min` → `Option<T>` (ordered elements: numbers, strings, bools — or a generic
+`len`, `max`/`min` → `Option<T>` (ordered elements: numbers, strings, bools - or a generic
 param, trusting its constraint), `contains`, `index_of` → `Option<int>`, `insert(i, v)` and
 `remove(i) -> T` (panic out of range), `reverse`, `clear`, `slice(from, to)` (copy, half-open,
 panics), `sort` (ordered elements), `sort_by(fn(a: T, b: T) -> bool)` (any `T`; the predicate
-is strict less-than), `sort_by_key(fn(T) -> int)` (one key call per item — including the
+is strict less-than), `sort_by_key(fn(T) -> int)` (one key call per item - including the
 one item a one-element list holds, which nothing sorts), `join(sep)`.
 Sorts are **stable**. The native backend uses a stable radix path for integers and integer
 keys, and the shared merge semantics for other values and custom predicates. Both backends
 run the same bottom-up stable merge for a custom predicate, so they produce the same order
 even for a predicate that is not a strict weak ordering; a comparator that reads the list
-it is sorting (through a captured reference) sees the same intermediate states on both —
+it is sorting (through a captured reference) sees the same intermediate states on both -
 each merged block is committed to the list when it completes; and a comparator or key
 function that panics (contained, spec/CONCURRENCY.md) leaves the list exactly as it was
 before the call, on both backends. Reading is as far as it goes: a callback that
-*structurally changes* the list mid-sort (push, remove, clear — anything that moves its
+*structurally changes* the list mid-sort (push, remove, clear - anything that moves its
 length or storage) is refused with `list changed during sort (length A -> B)` at the first
-callback return after the change, on both backends — the sort would otherwise permute
+callback return after the change, on both backends - the sort would otherwise permute
 stale storage. The list stays as the mutation left it; there is nothing coherent to
 restore. Writing an element in place (`l[i] = v`) moves nothing and stays allowed.
 `reserve(capacity)` on a List, `Map` or `OrderedMap` asks for room, never for less:
@@ -1548,7 +1548,7 @@ walking.
 A **structural** change is one that alters the list's length or moves an
 element to a different index: `push`, `pop`, `insert`, `remove`, `clear`,
 `reverse`, `sort`, `sort_by` and `sort_by_key`. Any of them invalidates the
-iterator, and the loop panics before it reads another element — the same rule a
+iterator, and the loop panics before it reads another element - the same rule a
 map follows, and the same rule whether the change came from the loop body, from
 a function the body called, or from a closure it invoked. The message names the
 operation that last changed the list and what its length did:
@@ -1563,7 +1563,7 @@ for x: int in xs {
 Everything else is allowed and the loop keeps running:
 
 - `xs[i] = v` at an index the list already has. The loop sees the replacement
-  when it reaches that index — exactly as replacing an existing map key's value
+  when it reaches that index - exactly as replacing an existing map key's value
   is allowed and read live. Writing an index the list does not have still
   panics as an out-of-range write, iteration or no iteration.
 - `reserve(n)` on a List changes only its capacity and moves no element, so it
@@ -1575,7 +1575,7 @@ Everything else is allowed and the loop keeps running:
   `max`, `slice`, `clone`, `join`.
 - Mutating a *different* list, including one built from this one by `clone` or
   `slice`.
-- Mutating the *element* — a class element's fields are its own value, not the
+- Mutating the *element* - a class element's fields are its own value, not the
   list's shape.
 - Leaving the loop with `break` or `return` immediately after a structural
   change. The check happens before the next element is read, so a loop that
@@ -1586,7 +1586,7 @@ overlap: that one is a *sort callback* changing the list its own sort is
 permuting, and it fires inside the sort whether or not a loop is running. This
 one is a *loop* reading a list something changed, and it fires on the loop's
 next turn. A `sort_by` whose comparator pushes, called from inside a `for` loop
-over that same list, hits the sort's refusal first — the sort never returns to
+over that same list, hits the sort's refusal first - the sort never returns to
 the loop.
 
 `xs.slice(from, to)` answers a copy, so `for x: T in xs.slice(from, to)` walks
@@ -1613,8 +1613,8 @@ outside the list, and `map[key]` panics when the key is missing. Use
 Bracket assignment stays `list[i] = value` and `map[key] = value`; List and
 Map bracket assignment does not have compound forms. Fixed arrays support
 numeric compound element assignment because their element is a real inline
-place. Every assignment evaluates left to right — receiver, then index or
-key, then the right-hand side — and a compound form evaluates its receiver
+place. Every assignment evaluates left to right - receiver, then index or
+key, then the right-hand side - and a compound form evaluates its receiver
 and its index once, not once to read and again to store. A field target
 follows the same rule as a bracket target. Both backends run this order; a
 side-effecting receiver, key and value observe it.
@@ -1626,8 +1626,8 @@ propagated value and never runs `next()`.
 A `Map` or `OrderedMap` **key must be copyable**, so a move-only type cannot be
 one: the map owns a copy of every key it stores, and `keys()` hands copies back.
 The type this rule is usually met with is `Bytes`, and the answer is `string`: a
-Beans string is binary-safe — it keeps NULs and every other byte, and
-`Bytes.to_string()` is every byte — so a byte-keyed map is a `Map<string, V>`
+Beans string is binary-safe - it keeps NULs and every other byte, and
+`Bytes.to_string()` is every byte - so a byte-keyed map is a `Map<string, V>`
 and nothing is lost in the conversion.
 
 Map values may be wide structs, fixed arrays, SIMD vectors, slices, inline
@@ -1646,7 +1646,7 @@ because that needs a type-specialized deep clone. Likewise, `get`/index reads
 cannot copy a move-only element; List `pop`/`remove` are consuming reads.
 
 `Map.get` on a move-only value type is the one read that answers the
-collection's own value rather than a copy — which is why the index forms are
+collection's own value rather than a copy - which is why the index forms are
 refused there, and why the binding it lands in cannot be moved out. That makes
 it a borrow of the map, and a move-only value has one live reader at a time:
 reading the same map again while an earlier read is still in scope is refused,
@@ -1655,8 +1655,8 @@ do not overlap, reads of a different map, and reads of a value type that is not
 move-only are all unaffected.
 
 Writing one is a different question and has always had an answer. `m[k] = v`
-takes a move-only value the same way `m.set(k, v)` does — it moves the value in,
-drops whatever the key held before, and lowers to the same instruction — so the
+takes a move-only value the same way `m.set(k, v)` does - it moves the value in,
+drops whatever the key held before, and lowers to the same instruction - so the
 read rule above applies to reads only. An existing move-only local still needs
 `move`: `m[k] = move packet`.
 
@@ -1681,7 +1681,7 @@ pub fn log_line(msg: string) {      // no -> means no return value
 }
 ```
 
-**There is no implicit tail return.** A trailing expression is a statement like any other — its
+**There is no implicit tail return.** A trailing expression is a statement like any other - its
 value is discarded, not returned. A function with a `->` must say `return`, on every path:
 
 ```
@@ -1696,14 +1696,14 @@ The checker rejects a body that can finish without returning. A path counts as r
 ends in `return`, an `if`/`else` where both sides return, a statement `match` whose arms all
 return, or a `for { }` with no `break` (which never finishes at all).
 
-**Trailing parameter defaults.** A parameter may declare a constant default —
-a literal, a negated numeric literal, or `none` — and every parameter after a
+**Trailing parameter defaults.** A parameter may declare a constant default -
+a literal, a negated numeric literal, or `none` - and every parameter after a
 defaulted one needs a default too. A call that leaves trailing arguments out
 gets the declared constants, materialized at the call site by the checker, so
 no ABI or backend knows defaults exist. Defaults are by-value only (`move` and
 `inout` parameters cannot have them), never on `extern "C"` signatures, and a
 function used as a value keeps its full arity. There are **no named
-arguments** and **no overloading** — one name, one signature; a defaulted
+arguments** and **no overloading** - one name, one signature; a defaulted
 tail is the one sanctioned way to make an argument optional.
 
 ```
@@ -1723,7 +1723,7 @@ let double: fn(int) -> int = fn(x: int) -> int { return x * 2 }
 xs.map(fn(x: int) -> int { return x * 2 })
 ```
 
-The result may be left off, and `fn(int)` is exactly `fn(int) -> unit` — one
+The result may be left off, and `fn(int)` is exactly `fn(int) -> unit` - one
 type, two spellings. Either stands wherever the other does: a closure written
 `fn(x: int) { ... }` is a `fn(int)`, a value annotated `fn(int)` is passed to a
 parameter written `fn(int) -> unit`, and a generic binds `T` from `fn(T)`
@@ -1744,7 +1744,7 @@ silently converts to `send fn`.
 enclosing locals by move: the closure owns them, the enclosing bindings are
 spent (using one afterward is a use-after-move error), and each owned capture
 is released exactly once when the closure value dies. This is how a move-only
-value — a socket, a `Box`, a `List` — lives inside a callback and is torn
+value - a socket, a `Box`, a `List` - lives inside a callback and is torn
 down with it. Each listed name must be an enclosing local the body actually
 uses; `inout` parameters cannot be move-captured. The closure takes the
 value's storage with it, so a spent `var` that is assigned again holds a new
@@ -1754,7 +1754,7 @@ reads, or a capture of the closure around this one, is borrowed and cannot be
 listed. Plain closure values stay shared `fn` values: copying one shares the
 same closure and captures rather than duplicating them. A `send fn` is
 move-only instead. Inside the body a
-move capture still reads as a borrowed binding — it cannot be moved out again,
+move capture still reads as a borrowed binding - it cannot be moved out again,
 because the closure may be called more than once.
 
 **What `move(...)` can take.** Only a binding the function owns: a `let` or
@@ -1805,12 +1805,12 @@ let u: User = new("jul")
 - `static fn` is required for class statics. A static method has no `self`, is
   not inherited, and is not dispatched: it is called on the type that declares
   it, as `User.guest()`, and `u.guest()` on a value is refused. See
-  *Inheritance and interfaces* for the rule that follows from it — one name in
+  *Inheritance and interfaces* for the rule that follows from it - one name in
   a class family is a static or an instance method, never both.
 - A static on a **generic** type carries its owner's type parameters. Because a
-  static has no receiver, nothing at the call site holds the owner's arguments —
+  static has no receiver, nothing at the call site holds the owner's arguments -
   there is no `self` to read them off and no receiver position to write them in
-  — so the owner parameters a static's own signature names are type parameters
+  - so the owner parameters a static's own signature names are type parameters
   *of the static*, listed before the ones it declares itself. They are inferred
   at the call from the arguments and from the expected result, exactly as a
   method's own are, and may be written out in the same place:
@@ -1836,7 +1836,7 @@ let u: User = new("jul")
   ```
 
   Only the owner parameters the signature names are carried: a static that
-  names none — `static fn tag() -> string` on `Holder<T>` — needs none, and
+  names none - `static fn tag() -> string` on `Holder<T>` - needs none, and
   asks for none. The owner's bounds travel with the parameters they constrain,
   so `class Sorted<K implements Order>` refuses `Sorted.between(a, b)` for a
   `K` with no order. An owner parameter that only the *body* names is refused
@@ -1852,13 +1852,13 @@ let u: User = new("jul")
   written through its declaring type, such as `User.created += 1`. Static
   fields are initialized once before `main`, in declaration order, and are not
   inherited. Generic classes cannot declare static fields.
-- A static field — and a singleton's fields with it — lives for the whole
+- A static field - and a singleton's fields with it - lives for the whole
   process and is **never torn down**. What a static still owns when `main`
   returns is not released, so no `deinit` runs for it. The reverse of `init`
   at exit has no order to run in that the rest of the language would honour
   (unwind order is newest-first, but statics initialize oldest-first across
   files), and it would have to be skipped anyway for the two exits that
-  matter most — `os.exit` and a panic. A process-lifetime resource that must
+  matter most - `os.exit` and a panic. A process-lifetime resource that must
   be released closes itself explicitly; `deinit` is for values with owners.
 - `new Class(...)` and target-typed `new(...)` are the class-construction forms.
   Both follow the class's `init` rules. `new(...)` gets its class from the
@@ -1874,7 +1874,7 @@ let u: User = new("jul")
   `UdpSocket.bind`, `Address.resolve`, and every SIMD family's `splat`, `of`, `load`
   and `load_unaligned`.
 - **Anything that produces an object belongs on that object's class**, as `new` or as a
-  named static — never as a module function. A module function is for work that yields
+  named static - never as a module function. A module function is for work that yields
   no object: `io.println`, `os.args`, `time.monotonic_nanos`, `random.below`,
   `cpu.has`, `intrinsic.popcount`, `fmt.pad_left`. So it is `TcpListener.bind(...)`,
   not `net.listen(...)`, and `MMap.open_shared_memory(...)`, not `shm.open(...)`. This is the
@@ -1912,7 +1912,7 @@ partial class Shape {
 }
 ```
 
-- **Exactly one part may carry the header** — modifiers (`pub`, `abstract`,
+- **Exactly one part may carry the header** - modifiers (`pub`, `abstract`,
   `singleton`, `unique`), generic parameters, `extends` and `implements`.
   Every other part is written bare, as `partial class Name {`. Two parts
   carrying a header is an error: there would be no single answer to what the
@@ -1955,25 +1955,25 @@ let c: Conn = new Conn("db1")
 
 - `init` returns nothing and runs on a fresh object: fields with defaults start at them, the
   rest start unassigned. Every default in the class chain is evaluated before any `init` body
-  runs, in declaration order with the base class's fields first — so a default whose
+  runs, in declaration order with the base class's fields first - so a default whose
   expression has an effect (a call that prints, a counter) has one order, not one per
   backend. **The checker proves every field is assigned before the object can be read**, so no
   path through the constructor reaches code that reads a field the constructor has not set yet.
   It is a definite-assignment proof, so branches count: a field assigned on every arm of an
   `if` or of an exhaustive `match` is assigned after it, one assigned in only some arms is not,
-  and one assigned inside a loop is not (the loop may run zero times — a loop body never
+  and one assigned inside a loop is not (the loop may run zero times - a loop body never
   credits a field, so a value it computes has to be hoisted out to be assigned once); an arm
   that `panic`s or `return`s, and an unconditional `for {}` with no `break`, drop out of the
   merge because nothing after them runs. Two rules follow. A field cannot be read until it is
-  assigned — not through `self.f`, not through a method that would read it, not in a string
+  assigned - not through `self.f`, not through a method that would read it, not in a string
   interpolation (`"{self.f}"` reads `f` and is checked exactly as `self.f` is). And until
   **every** field is assigned, `self` itself cannot escape: no method call on `self` (including
   `super.m(...)`, which runs the base method on this object), no passing `self` on, no
-  `return`, no interpolating `self` whole — each could read a field that is not there yet. A
+  `return`, no interpolating `self` whole - each could read a field that is not there yet. A
   field with a default counts as assigned from the start, and a `weak` field always does (its
   slot starts `none`); after the last field, anything goes.
 - The proof is about the paths the checker can see, and a `panic` mid-`init` is not one of
-  them — so the guarantee is held at that boundary by a release rule instead. **An object
+  them - so the guarantee is held at that boundary by a release rule instead. **An object
   whose `init` has not returned is released without running its `deinit` body.** The fields it
   did assign are still released, in the ordinary order; only the class's own `deinit` chain is
   skipped, so nothing hands user code a `self` whose fields the initializer never reached.
@@ -1981,13 +1981,13 @@ let c: Conn = new Conn("db1")
   field's default expression (evaluated before any body runs), or in a base `init` reached
   through `super.init`, and it covers a `deinit` the class inherits as much as one it declares.
   It is about that one object: everything it had already built and stored dies normally, and
-  a reference the initializer handed out — possible only once every field is assigned — keeps
+  a reference the initializer handed out - possible only once every field is assigned - keeps
   the object alive, so its eventual death is an ordinary one that does run `deinit`. Both
   backends pick the same moments (#120). Note the language gives construction no other way to
   fail partway: `init` returns nothing, so `?` cannot leave it, and construction that can fail
   is a named static returning `Result<T>`.
 - A class whose fields all have defaults receives an implicit zero-argument
-  initializer. A class with any required field must declare `init` — the implicit
+  initializer. A class with any required field must declare `init` - the implicit
   initializer assigns nothing, so a required field left to it would never be assigned. Every
   `init` must leave every field assigned on every path that returns, the implicit return at
   the end included.
@@ -1995,9 +1995,9 @@ let c: Conn = new Conn("db1")
   `static fn open(...) -> Result<Conn>`; it may call `new Conn(...)` after validation.
 - Generic classes take type arguments from the declared spot or an explicit
   constructor type: `let a: Stack<int> = new()` or `new Stack<int>()`.
-- `pub fn init` is what lets another package write `new Conn(...)` — the usual visibility rule.
+- `pub fn init` is what lets another package write `new Conn(...)` - the usual visibility rule.
 
-**init and inheritance** work through `super.init(...)`, in Swift's order — own fields first:
+**init and inheritance** work through `super.init(...)`, in Swift's order - own fields first:
 
 ```
 class Dog extends Animal {
@@ -2012,8 +2012,8 @@ class Dog extends Animal {
 
 - The order is what makes construction safe, not taste: a parent's init may call a method the
   subclass overrides, and by then the subclass's fields are already assigned. No vtable
-  switching, no half-built reads — the checker just proves the order.
-- Before `super.init`, parent fields don't exist yet — not even defaulted ones (the parent's
+  switching, no half-built reads - the checker just proves the order.
+- Before `super.init`, parent fields don't exist yet - not even defaulted ones (the parent's
   init may be about to overwrite them). Assigning one is an error; `super.init` owns them.
 - `super.init` runs exactly once, as a top-level statement, only inside `init`, and it is
   mandatory whenever a class above declares an init. `return` before it is an error.
@@ -2023,22 +2023,22 @@ class Dog extends Animal {
   Interfaces are not searched. `init` keeps the stricter constructor rules
   above, and `deinit` is always automatic.
 - A subclass whose added fields all have defaults inherits the nearest ancestor
-  initializer — `new Pup(args)` runs it on a Pup. A subclass that adds a required
+  initializer - `new Pup(args)` runs it on a Pup. A subclass that adds a required
   field must declare its own init.
 - A class whose parent has *no* init may still declare one; its prefix then covers the
   inherited fields too, under normal field visibility rules.
 
 `deinit` is the destructor. It runs exactly once, on whichever thread drops the last
-reference, the moment the count hits zero — and before the fields are released, so the body
+reference, the moment the count hits zero - and before the fields are released, so the body
 can still read them. Deterministic, like C++/Swift: no GC pause, no "sometime later".
 
 - No parameters, no return value, never called by hand: construction calls `init`, death
   calls `deinit`.
-- A subclass `deinit` runs first, then its parent's, automatically — no `override`, ever.
+- A subclass `deinit` runs first, then its parent's, automatically - no `override`, ever.
 - Once the whole `deinit` chain has run, the object's fields are released in **reverse
   declaration order**: the object's own class first, then each base class up the chain, and
-  within each class the last-declared field goes first. Each field's release finishes — its
-  own `deinit`, its own fields, the whole subtree it owned — before the next field is
+  within each class the last-declared field goes first. Each field's release finishes - its
+  own `deinit`, its own fields, the whole subtree it owned - before the next field is
   touched. The declared *type* of a field does not change this: a field holding a class
   directly, one holding `Option<C>`, `Result<C, E>`, `List<C>`, `Map<K, C>`, a struct with a
   class inside, or a generic parameter bound to a class all release at their declared
@@ -2049,13 +2049,13 @@ can still read them. Deterministic, like C++/Swift: no GC pause, no "sometime la
   is use-after-free by definition.
 - A panic inside `deinit` is the same rule as one inside a `defer`: uncontained it ends
   the process; contained by `brew`/`join` or by a `contained` call
-  (spec/CONCURRENCY.md) the boundary reports it —
+  (spec/CONCURRENCY.md) the boundary reports it -
   **without stopping the destruction that was running it**. The `deinit` is not run again,
   but the object's fields are still released and its memory still returned, and everything
   else the release was going to destroy is still destroyed: the remaining elements of a
   container being cleared, the rest of a dying object graph, the rest of a cycle the
   collector killed. A container is empty and usable either way. A *second* `deinit` (or
-  `defer`) panicking before the first has been delivered is the one unrecoverable case —
+  `defer`) panicking before the first has been delivered is the one unrecoverable case -
   both reports go out and the process stops.
 - `deinit` runs when the last reference dies, which is a thing that happens
   *while the program runs*. Leaving the program is not a death: a value a
@@ -2080,8 +2080,8 @@ class Node {
 ```
 
 - A weak field holds **no ownership count** on its referent. Reads produce the
-  declared `Option<C>`: `some` while the referent is alive — the loaded value
-  is retained for the read, so it cannot die mid-use — and `none` from the
+  declared `Option<C>`: `some` while the referent is alive - the loaded value
+  is retained for the read, so it cannot die mid-use - and `none` from the
   first moment of the referent's death, **before** its `deinit` body runs, so
   a destructor can never resurrect itself through a weak slot.
 - The cycle collector never traces through a weak field, so parent/child
@@ -2092,7 +2092,7 @@ class Node {
 - The slot's storage is a zeroing handle, not the object, so weak fields are
   invisible to reflection, and a weak field's default must be `none`.
 - `weak` is for instance fields of classes only: no statics, no structs, no
-  locals — a local strong reference is what keeps an object alive while you
+  locals - a local strong reference is what keeps an object alive while you
   work with it.
 
 ## Inheritance and interfaces
@@ -2155,7 +2155,7 @@ cannot declare private methods. Beans has no `final` yet.
 
 A subclass field may not reuse the name of a field it inherits. Every field of
 every class in the chain takes its own slot, laid out base class first, so one
-name shared by two classes in a chain would be two slots — an inherited field
+name shared by two classes in a chain would be two slots - an inherited field
 is storage the base already owns, and the subclass has to pick a different
 name. This holds whatever the redeclared field's type or visibility, and
 across the parts of a `partial class`. Fields have no counterpart to the
@@ -2172,7 +2172,7 @@ an object whose first word is its descriptor, and a value type has none.
 Only an instance method is dispatched. A `static fn` declares no `self`, so no
 receiver picks it: it is called on its type, `value.some_static()` is refused,
 and it holds no row in any class's method table. Within one class family a
-name is therefore either a static or an instance method, never both — a
+name is therefore either a static or an instance method, never both - a
 `static fn` beside an instance method the class inherits, and an instance
 method beside a static a base declares, are each refused at the declaration
 naming the other. A `priv` method is outside this rule in both directions: it
@@ -2184,8 +2184,8 @@ class declares, and a static is never one of those.
 **Generic interfaces.** An interface may take type parameters, and an
 implementor binds them at the `implements` site: `class IntBox implements
 Producer<int>` requires `fn make() -> int`, not the interface's own `T`. A
-generic class may pass its own parameter through instead — `class BoxOf<T>
-implements Producer<T>` — and each instantiation binds the interface at that
+generic class may pass its own parameter through instead - `class BoxOf<T>
+implements Producer<T>` - and each instantiation binds the interface at that
 instantiation's argument. Either way the interface stands as a type of its
 own: `Producer<int>` is a variable, parameter and element type that
 dispatches dynamically, and `Producer<int>` and `Producer<string>` are two
@@ -2198,18 +2198,18 @@ instantiation and there is no single body a method table could hold. The
 checker refuses every form that exists only to be reached through one: an
 interface may not declare such a method, with or without a default body; an
 `abstract fn` may not declare one; and a subclass may not replace one, nor
-replace a plain method with one — each is refused at the declaration naming
+replace a plain method with one - each is refused at the declaration naming
 the method it collides with. What stays is the ordinary case: the receiver's
 static type picks the body, walking its base chain the way any other name
 lookup does, so a subclass inherits its base's generic method and a base
-pinned at an argument — `class IntHolder extends Holder<int>` — raises the
+pinned at an argument - `class IntHolder extends Holder<int>` - raises the
 instantiation that argument names.
 
 A generic bound carries type arguments the same way: `fn read<P implements
 Producer<int>>(p: P)` accepts only implementors pinned to `int`, and a bound
 may forward the call's own parameters, as in `fn twice<U, P implements
 Producer<U>>`. A class may also extend a generic base at a concrete
-argument — `class IntHolder extends Holder<int>` — and two subclasses may
+argument - `class IntHolder extends Holder<int>` - and two subclasses may
 pin the same base differently.
 
 **A generic class inherits like any other.** It may extend a plain class, a
@@ -2221,11 +2221,11 @@ field typed at the parameter is a traced reference in one instantiation and a
 plain word in the other, and subclasses of the two are unrelated types. A
 method a generic class overrides wins over the base's for every receiver,
 including one written at the base. A class chain is bounded only by the number
-of classes in the program — a cycle is refused at the declaration, and nothing
+of classes in the program - a cycle is refused at the declaration, and nothing
 else caps its depth.
 
 **`as?` cannot name an instantiation.** `b as? Sub<int>` is refused, and not
-because the relation is missing — `Sub<int>` really is a child of `Base<int>`.
+because the relation is missing - `Sub<int>` really is a child of `Base<int>`.
 A downcast is decided at run time from the object's own class, and an object
 does not carry its type arguments, so `Sub<int>` and `Sub<string>` cannot be
 told apart there. The same holds for an instantiated *interface*: `x as?
@@ -2238,7 +2238,7 @@ One source is exempt: **a `std.reflect.Value` may be downcast to an
 instantiation.** A boxed value carries its own full type, arguments included,
 so the ambiguity the rule exists to prevent does not arise, and the checker
 skips the refusal when the source is a reflect value. This is what makes
-`resolve<T>()`-shaped reflective APIs possible at all — a container that hands
+`resolve<T>()`-shaped reflective APIs possible at all - a container that hands
 back a `Producer<int>` has no other way to spell the cast.
 
 ```
@@ -2299,7 +2299,7 @@ let c: Producer<string> = new BoxOf<string>("box")
 `-> Self`: at every call site the result has the receiver expression's own
 static type, so a fluent chain inherited from a base class keeps the
 subclass's type instead of degrading mid-chain. The guarantee is enforced in
-the body — a Self-returning method must `return self` (or a chain of
+the body - a Self-returning method must `return self` (or a chain of
 Self-returning calls on `self`, which provably evaluates to the receiver).
 `Self` matches only `Self` in overrides and interface conformance, carries
 the owner's own type parameters on a generic class, changes no layout or ABI
@@ -2317,7 +2317,7 @@ new Special().tune(1).only_here()   // tune returns Special here
 
 ### Downcast
 
-`as?` checks and returns an Option — never crashes:
+`as?` checks and returns an Option - never crashes:
 
 ```
 let s: Shape = pick_a_shape()
@@ -2328,7 +2328,7 @@ match s as? Circle {
 ```
 
 The target may be a **class or an interface**, and must be narrower than the
-source — a downcast goes from a parent to a child, never sideways between two
+source - a downcast goes from a parent to a child, never sideways between two
 unrelated types and never up. Testing for an interface asks whether the
 object's own class reaches it: directly through `implements`, through a base
 class that implements it, or through an interface that `extends` it.
@@ -2383,16 +2383,16 @@ An enum has no base type and cannot implement an interface: the checker refuses
 `enum Colour implements Shows` and `enum Colour extends Base` at the
 declaration, naming the enum and the relation. An enum satisfies the `Clone`,
 `Eq` and `Hash` bounds and works as a map key without ever naming them. A
-**payload-free** enum also satisfies `Order`, by its declaration-order tag —
+**payload-free** enum also satisfies `Order`, by its declaration-order tag -
 the same numbering `enum(u8)` exposes as its `u8` and the same shape as
-`bool`'s false-before-true — so `sort`, `max`, `min` and a generic
+`bool`'s false-before-true - so `sort`, `max`, `min` and a generic
 `T implements Order` body work on it with no representation change. A bare
 `a < b` on two enum values is still refused as an unordered operand, exactly as
 it is for `bool`; the comparison can only be written inside a generic `Order`
 body. A **payload** enum does **not** satisfy `Order` even when its payload
 types happen to: ordering it would mean tag-then-payload, which needs every
 payload type to be `Order` and a deep compare in both backends' sort path, and
-that is not offered — it still satisfies `Clone`, `Eq` and `Hash`.
+that is not offered - it still satisfies `Clone`, `Eq` and `Hash`.
 
 ### Fixed representation: `enum(u8)`
 
@@ -2403,7 +2403,7 @@ declaration:
 enum(u8) Display { flex, grid, none }
 ```
 
-The value is then the bare `u8` tag, variants numbered in declaration order —
+The value is then the bare `u8` tag, variants numbered in declaration order -
 the same numbering an ordinary enum's tags use, so behaviour is unchanged.
 What changes is layout: `size_of` answers 1, `align_of` answers 1, a struct
 holding one keeps a fixed inline layout with no pointer bits or ARC
@@ -2414,8 +2414,8 @@ without the marker, and the two compilers agree on every observable behaviour.
 The checker refuses the marker, naming the rule, on enums with payload
 variants, on generic enums, on more than 256 variants, and on any
 representation other than `u8` (wider ones can follow the same path). An
-`enum(u8)` stays a distinct nominal type — there is no implicit conversion to
-or from integers — and it is still not a C ABI type: an `extern "C"` record
+`enum(u8)` stays a distinct nominal type - there is no implicit conversion to
+or from integers - and it is still not a C ABI type: an `extern "C"` record
 field or typed JSON keeps its existing refusal.
 
 ## Option and Result
@@ -2445,9 +2445,9 @@ fn parse_age(s: string) -> Result<int> {
 - `panic(message: string) -> unit` is a prelude function. It reports the call
   location and message, then exits with status 3. It never returns and does not
   run defers.
-- `Result<T>` means `Result<T, Error>` — `Error` is a built-in class (msg, kind, cause). Custom error types via `Result<T, MyError>`.
+- `Result<T>` means `Result<T, Error>` - `Error` is a built-in class (msg, kind, cause). Custom error types via `Result<T, MyError>`.
 - **There is no `Result<unit>`, and no value of type `unit` at any depth.**
-  `unit` is what a function that returns nothing answers with — it *names* a
+  `unit` is what a function that returns nothing answers with - it *names* a
   result, it is not a value. It is legal exactly where a result is named: a
   function's or closure's declared result (`fn f()`, `-> unit`, `fn() -> unit`),
   and the payload of `Thread<T>`, `Brew<T>` and `TaskGroup<T>`, which is the
@@ -2457,20 +2457,20 @@ fn parse_age(s: string) -> Result<int> {
   element of any container (`List<unit>`, `Map<K, unit>`, `Option<unit>`,
   `Channel<unit>`, `Box<unit>`, …), and above all a `Result` payload, because
   `ok` takes a value. The rule is on the **slot**, not the spelling: a generic
-  whose `T` binds to `unit` through a function result — `produce(fn() { })` —
+  whose `T` binds to `unit` through a function result - `produce(fn() { })` -
   is fine, and the same `T` reaching an argument or a `Result` payload is not.
   `Thread<unit>.join()` answers `unit` and is legal; `Brew<unit>.join()` would
   have to answer `Result<unit>` and is refused, as are `TaskGroup<unit>`'s
   `next`, `try_next` and `wait_all`. The way through is to give the called
-  function a result to return, or to use the form that answers no `Result` —
+  function a result to return, or to use the form that answers no `Result` -
   a statement `brew`, a kept handle nobody joins, `cancel()`, `cancel_all()`.
 - **`err(message, kind)`** sets the `kind` slug as well as the message:
-  `return err("closed after 3 of 8 bytes", "eof")`. Only for the built-in `Error` —
+  `return err("closed after 3 of 8 bytes", "eof")`. Only for the built-in `Error` -
   a custom error type carries its own fields, so `err(value)` is the form there. Without
   this a Beans-written package could not produce the slugs the stdlib convention is
   built on; only native builtins could.
 - **`new Error(message)`** and **`new Error(message, kind)`** build the built-in
-  error object itself — the same value `err(message, kind)` wraps, without the
+  error object itself - the same value `err(message, kind)` wraps, without the
   `Result` around it. This is what a `to_error` hook (below) returns; before it,
   no Beans code could name an `Error`, only a `Result` carrying one.
 - `?` propagates. `match` handles. Helpers for the rest:
@@ -2504,7 +2504,7 @@ not change.
 
 **`?` over an `Option` carries nothing.** In a function returning
 `Option<U>`, `x?` on an `x: Option<T>` answers this function's `none` when `x`
-is `none` — `none` is `none` whatever `T` and `U` are, and no payload crosses.
+is `none` - `none` is `none` whatever `T` and `U` are, and no payload crosses.
 `?` never crosses between the two kinds: an `Option` cannot propagate out of a
 `Result` function or the other way, and each is refused at the `?`.
 
@@ -2512,11 +2512,11 @@ is `none` — `none` is `none` whatever `T` and `U` are, and no payload crosses.
 on an `x: Result<T, E>` requires `E` to *reach* `F`. There are exactly three
 ways, checked at the `?` itself:
 
-1. `E` is `F` — nothing happens, the error propagates unchanged.
-2. `E` is a subtype of `F` (it `implements`/`extends` it) — the reference
+1. `E` is `F` - nothing happens, the error propagates unchanged.
+2. `E` is a subtype of `F` (it `implements`/`extends` it) - the reference
    widens to `F`, the same object read as the wider type. No code runs and
    nothing is lost, exactly as a plain assignment to an `F` binding would.
-3. `E` declares `fn to_error() -> F` — on the error path `?` calls it on the
+3. `E` declares `fn to_error() -> F` - on the error path `?` calls it on the
    error and propagates the `F` it returns.
 
 ```
@@ -2529,7 +2529,7 @@ fn service() -> Result<int> {        // Result<int, Error>
 
 Any other `E` is refused at the `?`, naming both `E` and `F` and the method
 that would let them meet. The conversion runs only on the error path, only
-once — a `to_error` result is never itself put through a second `to_error`.
+once - a `to_error` result is never itself put through a second `to_error`.
 Each `?` negotiates its own boundary: `x??` on an
 `x: Result<Result<T, E1>, E2>` crosses `E2` at the first `?` and `E1` at the
 second, each by whichever of the three ways applies to it.
@@ -2541,7 +2541,7 @@ Still refused, deliberately:
 
 - The built-in `Error` as the *source* `E`. It cannot carry a `to_error`
   method, so `Error → some custom F` has no hook; unpack it with `match`.
-- A `to_error` that is `static`, takes any parameter, or has type parameters —
+- A `to_error` that is `static`, takes any parameter, or has type parameters -
   `?` calls it with no arguments on the error, so it must be a plain instance
   method taking none. A method that misses this is reported, not silently
   skipped.
@@ -2588,7 +2588,7 @@ for k: string, v: int in map { } // direct map key/value iteration
 let grade: string = if score >= 90 { "a" } else { "b" }
 ```
 
-No `return` in there — and that's on purpose, not an inconsistency. `return` always means exactly one thing in beans: *leave the function*. If that branch said `return "a"`, it would exit the whole function, not produce a value. So the rule is:
+No `return` in there - and that's on purpose, not an inconsistency. `return` always means exactly one thing in beans: *leave the function*. If that branch said `return "a"`, it would exit the whole function, not produce a value. So the rule is:
 
 - **Statement position:** branches hold statements, `return` works as usual.
 - **Value position:** each branch is exactly one expression, and that expression is the value. It's a ternary that reads like an if. Need multiple statements in a branch? Use a `var` and the statement form.
@@ -2612,9 +2612,9 @@ match code {
 
 A variant's payload binds by position, and a payload the arm does not need
 binds to `_`, as many times as there are fields to ignore: `line(_, _) =>
-"line"`. Those are discards, not names — see Variables.
+"line"`. Those are discards, not names - see Variables.
 
-**Statement position** additionally allows block arms — several statements, no value (v0.4):
+**Statement position** additionally allows block arms - several statements, no value (v0.4):
 
 ```
 match ch.receive() {
@@ -2626,11 +2626,11 @@ match ch.receive() {
 }
 ```
 
-The `{` must follow `=>` on the same line. A block arm in value position is an error — same rule as if. (Corner case: a map literal as an arm *value* needs parens, `x => ({"a": 1})`.)
+The `{` must follow `=>` on the same line. A block arm in value position is an error - same rule as if. (Corner case: a map literal as an arm *value* needs parens, `x => ({"a": 1})`.)
 
 ## Generics
 
-Monomorphized (a real copy per type, like C++ templates — this is a speed feature):
+Monomorphized (a real copy per type, like C++ templates - this is a speed feature):
 
 ```
 class Stack<T> {
@@ -2655,14 +2655,14 @@ type parameters: `fn f<>() {}` has the same generic arity as `fn f() {}`.
 
 A `static fn` on a generic type has no receiver to read the owner's arguments
 off, so the owner parameters its signature names become type parameters of the
-static itself and are inferred — or written — at the call. See *Classes* for
+static itself and are inferred - or written - at the call. See *Classes* for
 the rule and its refusals.
 
 The compiler-known interfaces are `Clone`, `Eq`, `Hash`, `Order`, `Send`, and `Sync`.
 Bounds are checked when a generic function or type is used, and generic bodies
 can only use operations promised by their bounds. `Order` also promises `Eq`.
 **`Order` is a total order and `Eq` is the equality that goes with it**, for
-every type that has them — which for `float` and `f32` means IEEE 754
+every type that has them - which for `float` and `f32` means IEEE 754
 totalOrder and bit equality, not the IEEE operators (see *Number rules*).
 User interfaces, including imported interfaces, may also be bounds. Generic
 code may call the instance methods promised by those interfaces.
@@ -2679,15 +2679,15 @@ not ignored notes.
 ## Concurrency
 
 Direction: **OS threads, not green threads.** Reason: green threads make every
-C/C++ call expensive (Go's cgo problem — stack switching at the boundary).
+C/C++ call expensive (Go's cgo problem - stack switching at the boundary).
 Beans lives on C++ interop and wants to write databases, so real threads it is.
 Closures plus `std.thread` do the whole job.
 
-**`main()` runs on the real process main thread — guaranteed.** A built binary
+**`main()` runs on the real process main thread - guaranteed.** A built binary
 starts `main()` on the thread the OS handed the process, and `beansc run`
 executes `main()` on its own process main thread (`pthread_main_np()` answers 1
-there on macOS). Frameworks that insist on the first thread — AppKit, the
-dispatch main queue, most GUI event loops — can be driven from `main()` under
+there on macOS). Frameworks that insist on the first thread - AppKit, the
+dispatch main queue, most GUI event loops - can be driven from `main()` under
 either compiler. Spawned threads make no such promise.
 
 ```
@@ -2721,7 +2721,7 @@ let hits: AtomicInt = new AtomicInt(0)
 hits.add(1)
 ```
 
-- `Mutex<T>` holds the value inside it — `with_lock` locks, runs your closure, unlocks on any exit path. No forgotten unlocks.
+- `Mutex<T>` holds the value inside it - `with_lock` locks, runs your closure, unlocks on any exit path. No forgotten unlocks.
 - `thread.spawn` consumes a zero-argument `send fn` and its result must be
   `Send`. A direct closure literal is inferred as `send fn`. An existing
   sendable function local needs `move` at the call. Plain class references
@@ -2734,7 +2734,7 @@ hits.add(1)
   without letting the body keep it, so the lock is the only way in as long as
   every field of `T` is itself `Send` or owned the same way. This makes
   `class` a local ARC reference by default; wrap shared mutable data in a
-  `Mutex` — as a `unique class`, so the mutex really owns it — instead of
+  `Mutex` - as a `unique class`, so the mutex really owns it - instead of
   silently racing it.
 - A `unique class` may explicitly implement `Send` to promise that transferring
   its sole owner is safe. This does not make it `Sync`, copyable, or shared.
@@ -2746,15 +2746,15 @@ hits.add(1)
 - `Thread<T>.join()` is called **once**, and the value it answers **moves** out
   of the handle. The handle keeps no reference to what it handed over, so the
   value dies with the binding that took it, not with the handle. Joining a
-  handle a second time — or joining one that was detached — is a panic
+  handle a second time - or joining one that was detached - is a panic
   ("thread already joined"), not a second copy of the answer.
 
-### brew — child fibers (spec/CONCURRENCY.md)
+### brew - child fibers (spec/CONCURRENCY.md)
 
 `brew f(args)` starts the call on a **child fiber of the current scope**, on
 the current worker, pinned there for life. Arguments are evaluated at the
 brew; the callee runs when the current fiber parks or reaches the scope's
-end. There are no colored functions — any function may park, and its caller
+end. There are no colored functions - any function may park, and its caller
 neither knows nor cares.
 
 ```
@@ -2775,24 +2775,24 @@ fn handle(order: Order) -> Result<Receipt> {
   returned, passed, captured, stored in a field, or nested in another type.
   It lives and dies a local of the scope that brewed it.
 - `join()` borrows the handle and answers `Result<T>`: `ok(value)`, or an
-  `err` whose kind is `panic` (the child panicked — message and position
+  `err` whose kind is `panic` (the child panicked - message and position
   carried), `cancelled`, or `closed` (a second join). The joined flag, not a
   move, is what makes a second join answer `closed`.
 - **A panic ends only the fiber it happened on.** An outcome nobody joined
   escalates at the scope exit: the parent panics at the brew's position with
   the child's report. A cancelled child stays quiet.
-- Method calls brew through a **reference** receiver — a class or an
-  interface — only: a value receiver would run on the fiber's own copy.
+- Method calls brew through a **reference** receiver - a class or an
+  interface - only: a value receiver would run on the fiber's own copy.
   `inout` arguments cannot cross to a fiber.
 - Fibers need the thread runtime: `--runtime freestanding` and wasm targets
   refuse `brew` at check time.
 
-### contained — a catch frame at a call (spec/CONCURRENCY.md)
+### contained - a catch frame at a call (spec/CONCURRENCY.md)
 
 `contained f(args)` runs the call **on the current fiber, in place**, under a
 catch frame, and answers `Result<T>` where `T` is `f`'s declared result type.
 A panic raised anywhere under that call unwinds the frames between it and the
-boundary — defers newest-first, owned values dropped — and arrives here as an
+boundary - defers newest-first, owned values dropped - and arrives here as an
 `err` of kind `panic` carrying the panic's message and position. No fiber is
 spawned, nothing switches, nothing is joined.
 
@@ -2808,16 +2808,16 @@ fn shielded(request: Request) -> Response {
 - `contained` is contextual, like `brew`, `unique` and `packed`: it opens a
   catch frame only before a call to a user function or method; a local named
   `contained` stays an ordinary name.
-- Unlike `brew` it is an ordinary expression, legal wherever one is — inside a
+- Unlike `brew` it is an ordinary expression, legal wherever one is - inside a
   loop, an `if`, a match arm, a `let` initializer, a match scrutinee.
 - The **arguments are evaluated outside** the frame, as a `brew`'s are: a
   panic while evaluating one is not this call's to catch.
 - The **innermost** `contained` between a panic and the top of the stack is
   the one that answers. The caller's own frame is not unwound.
-- A **cancel is not caught** — it does not unwind — and a panic raised while
+- A **cancel is not caught** - it does not unwind - and a panic raised while
   the fiber is already unwinding is still the fatal double panic.
-- Method calls contain through a **reference** receiver — a class or an
-  interface — only, and `inout` arguments cannot ride through the hoist: the
+- Method calls contain through a **reference** receiver - a class or an
+  interface - only, and `inout` arguments cannot ride through the hoist: the
   same two walls `brew` has, for the same reason, since the call is packaged
   as a fabricated closure over hoisted bindings. A value receiver would run on
   the hoisted copy; an interface value is an object, so it is not one.
@@ -2833,8 +2833,8 @@ fn shielded(request: Request) -> Response {
 Earlier versions carried an `async`/`await` effect system (v0.9). It was
 removed: `async` and `await` are ordinary identifiers with no grammar rule
 behind them, and no function is a different color from any other. The
-replacement is the fiber model above — uncolored functions that may park on
-one pinned worker — whose contract lives in spec/CONCURRENCY.md.
+replacement is the fiber model above - uncolored functions that may park on
+one pinned worker - whose contract lives in spec/CONCURRENCY.md.
 
 ## Targets and the build (v0.8, implemented)
 
@@ -2881,8 +2881,8 @@ builtins and the libunwind for those triples ship with the NDK, and without
 them the link fails looking for a `libclang_rt.builtins.a` that never existed.
 The NDK is named rather than searched for, because several are usually
 installed side by side and guessing which is newest is how a build's minimum
-API level changes between machines. The API level rides in the LLVM triple —
-`aarch64-linux-android24` — which is how the NDK picks which bionic headers and
+API level changes between machines. The API level rides in the LLVM triple -
+`aarch64-linux-android24` - which is how the NDK picks which bionic headers and
 stubs to link.
 
 Android is Linux with a different libc, and one thing genuinely is not there:
@@ -2895,14 +2895,14 @@ lifetime and visibility rules.
 The two iOS targets need Xcode, not just the Command Line Tools: the SDK is
 found through `xcrun --sdk iphoneos --show-sdk-path`, and the path carries its
 version, so it is asked for rather than guessed. They differ only in which SDK
-and which LLVM triple — `arm64-apple-ios` versus `arm64-apple-ios-simulator` —
+and which LLVM triple - `arm64-apple-ios` versus `arm64-apple-ios-simulator` -
 and that is enough to matter: a binary built for the device does not load in
 the simulator, and the failure arrives from dyld rather than from the build.
 
 `riscv64-unknown-linux-gnu` (rv64gc/LP64D) and `powerpc64le-unknown-linux-gnu`
 (64-bit little-endian POWER) are **hosts**. Beans compiles for them, the binaries
-run byte-for-byte against the interpreter under qemu, and `beansc` *itself* —
-cross-built to the target and run under `qemu-user` — reaches its own self-compile
+run byte-for-byte against the interpreter under qemu, and `beansc` *itself* -
+cross-built to the target and run under `qemu-user` - reaches its own self-compile
 fixed point and drives the example loop byte-identical, which is the bar for
 hosting the compiler. The hosted gate also checks that the cross-built compiler's
 no-`--target` default selects the real host and uses it to build a program;
@@ -2921,11 +2921,11 @@ while still promising 64-bit atomics, would describe two different targets.
 
 ppc64le is the target that forced one layout fact into the open. The compiler
 emits textual IR with a `target triple` but no `target datalayout`, so LLVM lays
-out `i128` from the triple's default — and the ppc64le default drops `i128:128`,
+out `i128` from the triple's default - and the ppc64le default drops `i128:128`,
 aligning a stack `decimal` to 8 where the C runtime, compiled
 through Clang's frontend, assumes 16. A decimal spilled to the stack and handed to
 the runtime was accessed half-off, silently zeroing its i128 coefficient while the
-i64 scale survived — `20.00` read back as `0.00`. Codegen now states `align 16` on
+i64 scale survived - `20.00` read back as `0.00`. Codegen now states `align 16` on
 every decimal stack slot and emits its `{i128, i64, i64}` value as the same
 32-byte size as the C `BDec`. The spare word is an `i64`, not an equivalent byte
 array: LLVM's s390x ABI lowering reads a trailing byte array from wrong offsets
@@ -2940,13 +2940,13 @@ which is why only POWER surfaced it.
 old frontend-`__int128` blocker; the program and compiler fixed-point sweeps run
 under `qemu-i386` / `qemu-arm` (`test/linux_arch.sh` and `test/linux_hosted.sh`). Two
 32-bit facts had to be stated rather than assumed. The i386 SysV ABI caps every
-fundamental scalar at 4-byte alignment — `long long` and `double` included, where
-the ARM EABI and RV32 keep 8 — so `Error`'s i64 field sits at offset 4, not 8, and
+fundamental scalar at 4-byte alignment - `long long` and `double` included, where
+the ARM EABI and RV32 keep 8 - so `Error`'s i64 field sits at offset 4, not 8, and
 codegen that assumed 8 read `kind` one slot past the object and faulted the instant
 an error printed; the scalar cap is now a target fact honoured by both layout
 paths. And the runtime needs `_FILE_OFFSET_BITS=64` on 32-bit Linux, or glibc's
-`readdir` overflows an inode past 2^32 — routine on the overlay/tmpfs filesystems
-containers use — and returns nothing, so `Dir.list` came back empty. ARMv7 does
+`readdir` overflows an inode past 2^32 - routine on the overlay/tmpfs filesystems
+containers use - and returns nothing, so `Dir.list` came back empty. ARMv7 does
 have lock-free 64-bit atomics through LDREXD/STREXD, so its atomic example runs;
 SIMD is the main capability ARMv7 still refuses.
 
@@ -2963,7 +2963,7 @@ uses Clang's accepted `riscv64-unknown-linux-musl`.
 The registered 32-bit targets are not a detail: a pointer
 is four bytes, so `size_of(RawPtr<T>)` folds to 4 and every object's pointer-slot
 stride follows. Three have no operating system, and **a target with no OS requires
-`--runtime freestanding`** — asking for a hosted runtime there is refused with a
+`--runtime freestanding`** - asking for a hosted runtime there is refused with a
 message rather than an undefined `pthread_create` at link time.
 
 ### The seven Windows targets
@@ -3007,14 +3007,14 @@ directly and does not require winpthreads.
   being present says nothing about it.
 - **Signals are refusing stubs on every Windows target.** Windows has no
   `signalfd` and no `kqueue`, and the language's contract is that a watched
-  signal is blocked and read from a descriptor rather than handled — which
+  signal is blocked and read from a descriptor rather than handled - which
   Windows cannot express. Every `std.signal` operation reports the gap in a
   sentence; the symbols still link because the compiler's own interpreter
   imports `std.sig`.
 - **CPU feature detection on Windows/ARM uses `IsProcessorFeaturePresent`,**
   the documented API. It answers for `crc`, `aes`, `sha2`, `lse` and
   `dotprod`. `fp16` and `sha3` are reported **absent** rather than guessed,
-  because Windows exposes no flag for either — claiming a feature the OS will
+  because Windows exposes no flag for either - claiming a feature the OS will
   not confirm is how a program ends up trapping on an instruction the machine
   does not have.
 
@@ -3027,7 +3027,7 @@ Build options:
 | `--features <+f,-f,...>` | enable or disable CPU features |
 | `--sysroot <path>` | target sysroot for a cross link |
 | `--cc <path>` | C driver to use, default `clang` |
-| `--linker <name\|path>` | passed through as `-fuse-ld=<value>`. A full path works, which is how a linker that is not on `PATH` is reached — `--linker /path/to/wasm-ld` links a wasm target without touching `PATH` |
+| `--linker <name\|path>` | passed through as `-fuse-ld=<value>`. A full path works, which is how a linker that is not on `PATH` is reached - `--linker /path/to/wasm-ld` links a wasm target without touching `PATH` |
 | `--emit <bin\|obj\|static\|shared\|ir>` | choose a binary, object, archive, shared library, or `.ll` |
 | `--ar <path>` | static archive tool, default `ar` |
 | `--header <path>` | write a C header for `pub extern "C"` library exports |
@@ -3079,7 +3079,7 @@ fn main() {
 `pointer_bits`, `pointer_size`, `stack_align` and `max_simd_bits` give ints. They
 describe the **selected** target, so `beansc build --target X` reports X. Under
 `beansc run` the selected target is always the host, because interpretation
-happens here — that is why the two backends still agree byte for byte.
+happens here - that is why the two backends still agree byte for byte.
 
 `max_simd_bits` follows `--cpu` and `--features`: generic `x86_64` reports 128,
 `--features +avx2` reports 256, `--features +avx512f` reports 512, and
@@ -3089,7 +3089,7 @@ happens here — that is why the two backends still agree byte for byte.
 ### size_of, align_of, offset_of (v0.8, implemented)
 
 Three compile-time layout queries. Their argument is a **type**, which is why
-they are their own form rather than an ordinary call — Beans has no `f<T>()`, so
+they are their own form rather than an ordinary call - Beans has no `f<T>()`, so
 `size_of([f32; 4])` would otherwise be unwritable:
 
 ```beans
@@ -3112,8 +3112,8 @@ let at: int = offset_of(Packet, count)
   what the object costs are different questions, and this answers the first.
 - Rejected, with a specific message: a type parameter (`size_of(T)` inside a
   generic body), `Option`/`Result`/user enums without a declared
-  representation — they choose between a null niche, an inline aggregate and a
-  boxed form depending on payload, so there is no single number to report —
+  representation - they choose between a null niche, an inline aggregate and a
+  boxed form depending on payload, so there is no single number to report -
   and a size that would overflow. A payload-free enum opts out of that
   rejection by declaring `enum(u8)`.
 - `offset_of` needs a `struct` or `union` and an actual field name; both
@@ -3126,7 +3126,7 @@ let at: int = offset_of(Packet, count)
 
 Two contextual layout modifiers, in the same modifier chain as `extern "C"`.
 `packed` removes every byte of padding between fields; `align(N)` raises a
-record's — or a single field's — alignment:
+record's - or a single field's - alignment:
 
 ```beans
 pub extern "C" packed struct Header {
@@ -3157,7 +3157,7 @@ extern "C" struct Slot {
 - Alignment raises size the same way C does: `align(64) struct Counter` holding
   one `u32` is 64 bytes, and an over-aligned record used as a *field* starts on
   the next multiple of its alignment.
-- Semantics are C's, verified against Clang for every supported target — both by
+- Semantics are C's, verified against Clang for every supported target - both by
   running a printing fixture on the host and by `_Static_assert` on triples that
   cannot be run here. `extern "C"` signatures carry the modifiers into the
   generated C, so Clang keeps classifying the aggregate for the target ABI.
@@ -3181,7 +3181,7 @@ unsafe {
   runtime value so `align_of(T) * 2` works, and is checked when the allocation
   runs: it must be a power of two, and never weaker than the element's own
   alignment. Either failure panics with the same message in both backends rather
-  than being silently upgraded — a silent upgrade would hide the caller's mistake.
+  than being silently upgraded - a silent upgrade would hide the caller's mistake.
 - Memory from either call is released with the same `free()`.
 
 ### Atomic&lt;T&gt; and MemoryOrder (v0.8, implemented)
@@ -3208,7 +3208,7 @@ Atomic.fence(MemoryOrder.seq_cst)
 - **The order is written at the call site and cannot be a variable.** LLVM puts
   the ordering inside the instruction, so one call site is one instruction; a
   runtime order would mean a switch over every order. `MemoryOrder` is therefore
-  not a type you can declare and not a value you can store — both are rejected by
+  not a type you can declare and not a value you can store - both are rejected by
   name, pointing at the call-site form.
 - Combinations that mean nothing are compile errors, not weaker barriers: a load
   cannot `release` or `acq_rel`, a store cannot `acquire` or `acq_rel`, and a
@@ -3218,7 +3218,7 @@ Atomic.fence(MemoryOrder.seq_cst)
 - A narrow cell wraps inside its own width in both backends: `Atomic<u8>` holding
   250 plus 10 is 4. `Atomic<bool>` is a one-byte cell holding 0 or 1, because LLVM
   cannot do an atomic on a type that is not byte-sized.
-- `AtomicInt` stays as it was — sequentially consistent, `load`/`store`/`add_and_get` — and is
+- `AtomicInt` stays as it was - sequentially consistent, `load`/`store`/`add_and_get` - and is
   unaffected.
 
 `wait` and `notify` park and wake threads instead of spinning:
@@ -3234,7 +3234,7 @@ let in_time: bool = gate.wait_timeout(9, 2000000, MemoryOrder.acquire)
 
 - `wait(expected, order)` blocks while the cell holds `expected`. If it already
   holds something else it returns at once.
-- **A wakeup is a hint, not a guarantee** — check in a loop. The value may have
+- **A wakeup is a hint, not a guarantee** - check in a loop. The value may have
   moved and moved back, and a waiter can be woken on another cell's behalf. This is
   the contract, not a limitation, and it matches C++20's `notify_one` being defined
   as "at least one".
@@ -3259,12 +3259,12 @@ fn mix(seed: int) -> int {
 
 - `cpu.has(CpuFeature.x)` asks the machine that is **running**, not the one the
   program was compiled for. The feature is named at the call site, like a memory
-  order, because it selects which detection bit is read — so `CpuFeature` is neither
+  order, because it selects which detection bit is read - so `CpuFeature` is neither
   a declarable type nor a storable value.
 - The name is validated against the **selected target's** feature set, so asking
   about `avx2` while targeting arm64 is a compile error listing that target's
   features, not a permanent `false`.
-- x86 names two features with a dot — `sse4.1` and `sse4.2` — and those are written
+- x86 names two features with a dot - `sse4.1` and `sse4.2` - and those are written
   with an **underscore**: `CpuFeature.sse4_2`. `CpuFeature.sse4.2` would parse as a
   field of a field, so without this the two were unguardable and the compiler's own
   suggestion could not be typed. `--features` and `feature "x" fn` take strings, so
@@ -3284,7 +3284,7 @@ fn mix(seed: int) -> int {
   function that requires the same feature, or in a build given `--features +x`.
   Function types do not carry a feature requirement, so checking when the value is
   made is what prevents an indirect call from erasing the safety rule. The check is
-  deliberately syntactic — the guard has to be visible at the use.
+  deliberately syntactic - the guard has to be visible at the use.
 - `BEANS_CPU_FEATURES` is an allowlist intersected with detection, so it can only
   hide features. A test may force the generic path; it can never claim hardware the
   machine lacks, which would make the test pass on a CPU that traps.
@@ -3324,7 +3324,7 @@ unsafe {
   CRC32C are the same polynomial; it is the *instruction's* raw accumulator step, so
   a complete CRC32C still needs its own pre- and post-inversion.
 - An intrinsic that exists on only one architecture is a compile error elsewhere,
-  never a silent software fallback — a fallback would make code that looks like one
+  never a silent software fallback - a fallback would make code that looks like one
   instruction quietly run a loop.
 - Every entry has an exact software definition in the interpreter, so intrinsics are
   differential-tested like everything else.
@@ -3363,17 +3363,17 @@ match random.below(6) { ok(roll) => ..., err(e) => ... }
 - **Two clocks with separate names**, because choosing the wrong one is a real bug.
   `time.monotonic_nanos()` never goes backwards and is unaffected by anyone setting
   the date; it has no meaning as a moment, only differences do, and it is the only
-  correct way to measure a duration. `time.wall_nanos()` names a moment —
-  nanoseconds since 1970 — and can jump in either direction when the clock is
+  correct way to measure a duration. `time.wall_nanos()` names a moment -
+  nanoseconds since 1970 - and can jump in either direction when the clock is
   adjusted, so measuring elapsed time with it is the mistake the two names prevent.
 - `time.sleep_nanos(n)` sleeps **at least** `n`: a signal that cuts it short is
   retried with the remaining time, so it is a floor rather than an estimate.
-- `std.random` is the **OS CSPRNG only** — `arc4random_buf` on macOS,
+- `std.random` is the **OS CSPRNG only** - `arc4random_buf` on macOS,
   `getrandom` on Linux. There is deliberately no pseudo-random fallback: a caller
   asking for random bytes is usually making a key, a token or a nonce, and quietly
   handing over a predictable sequence is worse than failing. Every entry point
   returns a `Result`, and an unavailable source is an error.
-- `random.below(limit)` is uniform by **rejection sampling**, not `% limit` — modulo
+- `random.below(limit)` is uniform by **rejection sampling**, not `% limit` - modulo
   is biased unless the limit divides 2^64, and for a shuffle or a token that bias is
   the whole problem.
 - Invalid input (a negative count, a non-positive bound) is a `Result` with kind
@@ -3390,8 +3390,8 @@ match MMap.open_shared_memory("/name", 128, false) { ok(r) => r.get_u64(0), err(
 match MMap.unlink_shared_memory("/name") { ok(gone) => ..., err(e) => ... }
 ```
 
-- A POSIX shared-memory object comes back as an ordinary **`MMap`** — shared memory is
-  a source of a mapping, not a new kind of thing — so it has MMap's accessors and its
+- A POSIX shared-memory object comes back as an ordinary **`MMap`** - shared memory is
+  a source of a mapping, not a new kind of thing - so it has MMap's accessors and its
   deterministic unmap. That is also why it is **named construction on `MMap`** beside
   `MMap.open`, rather than a module function in a package of its own.
 - **The size is given on every open**, creating or not. `fstat` reports a page-rounded
@@ -3400,7 +3400,7 @@ match MMap.unlink_shared_memory("/name") { ok(gone) => ..., err(e) => ... }
   refused, because mapping past the real end faults on first touch rather than failing
   at map time. A size of zero or less is refused.
 - The mapping is always readable and writable, and the descriptor is closed once the
-  mapping exists — so `resize()` is not available on a shm mapping, which is correct:
+  mapping exists - so `resize()` is not available on a shm mapping, which is correct:
   the size is fixed when the object is created.
 - `MMap.unlink_shared_memory(name)` removes the **name**. Mappings that already exist keep working
   until their last user drops them, exactly like unlinking an open file. Opening the
@@ -3428,7 +3428,7 @@ match cmd.run() {
   two different things wearing one name.
 - **A program that could not be started is `err`; a program that ran and failed is
   `ok` with a non-zero status.** Telling those apart needs a close-on-exec pipe in the
-  runtime — without it "no such file" and "exited 127" are the same observation.
+  runtime - without it "no such file" and "exited 127" are the same observation.
 - `Output` carries `status`, `out` and `err` as `Bytes`, with `succeeded()`,
   `terminated_by_signal()`, `stdout_text()` and `stderr_text()`. A signal reports the
   **negative** signal number, so a clean exit and a kill stay distinguishable without
@@ -3454,7 +3454,7 @@ match cmd.run() {
 - The child's signal mask is cleared before `exec` for both `run()` and `start()`.
   A parent watching signals has them blocked, and that mask must not leak into a child.
 
-**A child that outlives the call** — `Command.start()` gives a `Child` instead of waiting:
+**A child that outlives the call** - `Command.start()` gives a `Child` instead of waiting:
 
 ```beans
 let child: process.Child = cmd.start()?
@@ -3466,19 +3466,19 @@ let status: int = child.stop(2000)?        // ask, then insist
 ```
 
 - `Child` is a `unique class`, and **a dropped one is asked to stop, killed if it refuses,
-  and reaped.** Not left running — an orphan outliving its parent is a bug found days
-  later — and not left as a zombie. Call `wait()` for it to finish on its own terms.
+  and reaped.** Not left running - an orphan outliving its parent is a bug found days
+  later - and not left as a zombie. Call `wait()` for it to finish on its own terms.
 - **`wait_timeout` reports "still running" as `none`, not an error**, because escalating
   from polite to forceful is the normal path. `stop(grace_ms)` is that escalation in one
   call: `SIGTERM`, wait, then `SIGKILL`.
 - `stdin`/`stdout`/`stderr` are `Stream` values with partial `read`/`write`, the looping
   `write_all`/`read_to_end`, and `close`. An empty `read` means the other end closed.
-  They are not `unique`, because the `Child` owns all three — closing one twice is an
+  They are not `unique`, because the `Child` owns all three - closing one twice is an
   error, and the child closes whatever is left.
 - **The child's signal mask is cleared before `exec`.** A mask is inherited, and a parent
   watching signals has them blocked, so without this a child would start with `SIGTERM`
   blocked and be unstoppable by anyone.
-- `wait()` twice, or signalling after it finished, is an `err` — the status was already
+- `wait()` twice, or signalling after it finished, is an `err` - the status was already
   collected and the pid may belong to something else by now.
 - `waitpid` has no timeout, so a bounded wait polls `WNOHANG` against a monotonic deadline
   with a sleep that grows to 20 ms. The test asserts a 600 ms wait costs under 200 ms of
@@ -3512,10 +3512,10 @@ match net.Address.resolve("localhost", 80) {
 ```
 
 - **Sockets are made the way every other resource is made**: `TcpListener.bind`,
-  `TcpStream.connect`, `UdpSocket.bind`, `Address.resolve` — named statics on the class
+  `TcpStream.connect`, `UdpSocket.bind`, `Address.resolve` - named statics on the class
   each produces, the same shape as `File.open` and `MMap.open`, because construction
   that can fail cannot be a constructor. `std.net` has **no module-level functions**.
-- **`TcpListener`, `TcpStream` and `UdpSocket` are `unique class`** — move-only, closed by
+- **`TcpListener`, `TcpStream` and `UdpSocket` are `unique class`** - move-only, closed by
   `deinit`. One owner, one close, and a double close is impossible to write. They
   explicitly implement `Send`, so an explicit closure move can transfer that one
   owner to a worker thread. A plain capture is refused. A socket still cannot be
@@ -3527,7 +3527,7 @@ match net.Address.resolve("localhost", 80) {
   point resolves the host through `getaddrinfo` and tries each candidate in turn, so
   `"localhost"`, `"127.0.0.1"` and `"::1"` all work with no flag to get wrong. Failure
   reports the last address's error.
-- **Reads and writes are partial by contract.** `read(max)` returns what has arrived —
+- **Reads and writes are partial by contract.** `read(max)` returns what has arrived -
   and an **empty `Bytes` means EOF**, the one thing a byte count cannot express;
   `write(data)` returns how much went out. `write_all` and `read_exact` are the looping
   forms, and `read_exact` fails with kind `eof` if the peer closes early.
@@ -3549,7 +3549,7 @@ match net.Address.resolve("localhost", 80) {
   `TcpListener.bind_reuse_port` opts into `SO_REUSEPORT`, letting independent
   accept loops bind one port on macOS and Linux; Windows reports `unsupported`.
 - The low-level primitive is `std.sock`, the same split as `std.proc` versus
-  `std.process`. It is the syscall layer over plain descriptors and is not the API —
+  `std.process`. It is the syscall layer over plain descriptors and is not the API -
   callers use the handles.
 
 ### std.poll (v0.8, implemented)
@@ -3572,20 +3572,20 @@ poll.wake(signal)?                                        // from a worker
 ```
 
 - One poller over **`epoll` on Linux and `kqueue` on macOS**, and it is
-  **level-triggered** — while a socket has data, every `wait` reports it. That is the
+  **level-triggered** - while a socket has data, every `wait` reports it. That is the
   default on both, and it is the mode you can use incorrectly and still be right:
   edge-triggered requires reading until `EAGAIN` every single time or the connection
   silently stalls.
 - **`add(fd, token, interest)`** takes the caller's own `token`, which is what comes
   back in each event. The poller never hands back an fd to key on, because an fd is
-  reused the moment it is closed — a token is yours and means what you decided.
+  reused the moment it is closed - a token is yours and means what you decided.
   Different descriptors may use the same token; they still produce separate events.
 - `Interest` is a value: `new poll.Interest(read, write)`, or the presets
   `Interest.read_only()`, `Interest.write_only()`, `Interest.both()`. `modify` replaces the
   interest for a token, `remove` unregisters.
 - `wait(max_events, timeout_ms)` returns a `List<Event>`, **capped at `max_events`** so
   one call cannot allocate without bound. A negative timeout waits indefinitely; 0 is a
-  non-blocking check; running out returns an **empty list, not an error** — nothing being
+  non-blocking check; running out returns an **empty list, not an error** - nothing being
   ready is not a failure.
 - `Event` carries `token`, `readable`, `writable`, `hangup` and `error`. `hangup` means
   the peer is gone; a socket can be both readable and hung up, and the buffered data is
@@ -3595,8 +3595,8 @@ poll.wake(signal)?                                        // from a worker
 - **`wake()` makes a blocking `wait` return promptly**, and repeated wakes collapse into
   one: it writes one byte to an internal pipe the poller registered with itself, and the
   wake is never reported as an event.
-- **To wake from another thread, pass `wake_handle()`** — a plain `int`, so the poller
-  itself stays with its owner — and call
+- **To wake from another thread, pass `wake_handle()`** - a plain `int`, so the poller
+  itself stays with its owner - and call
   `poll.wake(signal)` there. The handle is deliberately **not the descriptor**: after the
   poller closes that number belongs to something else, and a late wake would write a stray
   byte into an unrelated file. It names a slot and a generation, so a wake to a closed
@@ -3605,7 +3605,7 @@ poll.wake(signal)?                                        // from a worker
 - **`remove` before `close`.** Closing a registered descriptor does drop it from the
   kernel's set, but events already queued in the current batch still name its token, and
   by then the number may belong to something else. Removing first is the only way to be
-  sure — and it is why the token is not an fd.
+  sure - and it is why the token is not an fd.
 - Every blocking wait retries `EINTR` with the deadline recomputed from the monotonic
   clock, so a signal never shortens a wait and a stream of signals cannot extend one.
 - `Poller` is a `unique class`, closed by `deinit`, like every other resource. The
@@ -3645,14 +3645,14 @@ for going {
   platform's: `struct termios` is 72 bytes on macOS and 60 on Linux, and `struct
   winsize` and the Windows console have no portable Beans spelling. `is_tty`, `size`,
   and raw mode set/restore are four `beans_term_*` entry points; everything with a
-  portable shape — the ANSI writers, the CSI decoder — is Beans.
-- **`RawMode.enter(fd)`** puts a terminal into raw mode — no echo, no line buffering, no
+  portable shape - the ANSI writers, the CSI decoder - is Beans.
+- **`RawMode.enter(fd)`** puts a terminal into raw mode - no echo, no line buffering, no
   signal generation (`Ctrl-C` is delivered as the byte `0x03`, not `SIGINT`), no input or
-  output translation — and hands back a `unique class` guard. `err` with kind `invalid`
+  output translation - and hands back a `unique class` guard. `err` with kind `invalid`
   when `fd` is not a terminal, kind `unsupported` where raw mode is not offered.
 - **Restore is guaranteed on three paths and honest about the fourth.** The guard
-  restores cooked mode on `restore()`, on going out of scope (`deinit`), and — because the
-  runtime registers the restore with `atexit` — on a normal exit and on a **panic**, which
+  restores cooked mode on `restore()`, on going out of scope (`deinit`), and - because the
+  runtime registers the restore with `atexit` - on a normal exit and on a **panic**, which
   reaches `exit()` without unwinding on both backends. What it does **not** cover is a
   crash by `SIGSEGV`/`SIGBUS`: only the runtime's fault reporter runs then, and it is
   fenced to flushing output (adding a second signal disposition is what `test/signals.sh`
@@ -3661,18 +3661,18 @@ for going {
 - **`Frame`** builds a screen's worth of escapes and text and writes it whole:
   `clear`, `clear_line`, `move_to(row, col)`, `home`, `hide_cursor`/`show_cursor`,
   `enter_alt_screen`/`leave_alt_screen`, `reset_style`, `bold`, `fg`/`bg` (256-colour),
-  `fg_rgb`/`bg_rgb` (24-bit), `text`, `byte`, then `flush(fd)` — one unbuffered `write(2)`,
+  `fg_rgb`/`bg_rgb` (24-bit), `text`, `byte`, then `flush(fd)` - one unbuffered `write(2)`,
   because `io.print` goes through stdio and a frame with no trailing newline would sit in
   the buffer. `reset` empties it for reuse.
 - **`KeyDecoder`** turns bytes into `Key`s and buffers an incomplete escape sequence
   across `feed`s, so a sequence **split across two reads** is one key, not two wrong ones.
   `next()` returns `none` while what is buffered is only a prefix; a lone `ESC` is held as
-  ambiguous and `flush()` — called once input has settled — resolves it to the Escape key.
+  ambiguous and `flush()` - called once input has settled - resolves it to the Escape key.
   It decodes arrows, Home/End, Page-Up/Down, Insert/Delete, F1–F12, printable characters
   (UTF-8), `Alt`+key, `Ctrl`+key, Enter, Tab and Backspace, with the xterm modifier mask
   read back through `has_shift`/`has_alt`/`has_ctrl`.
-- **Platform.** `std.term` needs the **full** runtime — its calls live in the full-profile
-  runtime — so `import std.term` is **refused by the checker** on the minimal and
+- **Platform.** `std.term` needs the **full** runtime - its calls live in the full-profile
+  runtime - so `import std.term` is **refused by the checker** on the minimal and
   freestanding profiles, with a message naming the program (`'std.term' needs terminal
   control, which the minimal runtime does not have`), never a link error about a missing
   symbol. macOS and Linux are complete. On Windows `is_tty` and `size` work through the
@@ -3788,7 +3788,7 @@ secure_h2.send_data(id, last_chunk, true)?
   arrived before it, so a pipelined buffer whose third message is malformed
   still yields the first two.
 - **The limits llhttp does not own live here.** `Limits` bounds header count,
-  total header bytes, target length, and — through `max_head_span_bytes` — every
+  total header bytes, target length, and - through `max_head_span_bytes` - every
   other head field llhttp leaves unbounded, namely the status reason phrase and
   the chunk-extension name and value. Crossing one is kind `too_large`, never a
   truncation. `Client` and `ServerConn` bound the buffered body the same way,
@@ -3894,7 +3894,7 @@ let secure = websocket_tls.connect("example.test", 443, "/chat")?
   parameters, or `none` for a connection carrying no extension.
 - A server takes the first offer it can honour out of `Sec-WebSocket-Extensions`
   and echoes exactly what it agreed to. An offer naming an extension, a
-  parameter or a value it cannot honour is *declined* — the next offer gets its
+  parameter or a value it cannot honour is *declined* - the next offer gets its
   turn, and a client whose offers are all declined simply gets an uncompressed
   connection. A client reads the server's answer strictly instead: an answer it
   cannot honour fails the handshake, because a client that guessed would be
@@ -3907,11 +3907,11 @@ let secure = websocket_tls.connect("example.test", 443, "/chat")?
 - **A server may answer with fewer parameters than the offer asked for**, which
   is how it buys compression for less than a third of a megabyte per direction.
   `prefer` on `accept`, `accept_websocket` and `websocket_tls.accept` carries
-  those parameters as a `Deflate`, and it only ever narrows — RFC 7692 §7.1,
+  those parameters as a `Deflate`, and it only ever narrows - RFC 7692 §7.1,
   one rule per knob:
   - `server_no_context_takeover` and `client_no_context_takeover` may be set by
     a server the offer never asked them of (§7.1.1.1, §7.1.1.2), and the second
-    binds the client — "By including the `client_no_context_takeover` extension
+    binds the client - "By including the `client_no_context_takeover` extension
     parameter in an extension negotiation response, a server prevents the peer
     client from using context takeover." Neither can be turned *off* by a
     preference. For `server_no_context_takeover` that is §7.1.1.1's rule, which
@@ -3927,7 +3927,7 @@ let secure = websocket_tls.connect("example.test", 443, "/chat")?
     include" it.
   - `client_max_window_bits` is the same, with one condition: §7.1.2.2 forbids
     naming it in a response when the offer did not name it, so a preference for
-    the client's window applies only to an offer that mentioned the parameter —
+    the client's window applies only to an offer that mentioned the parameter -
     bare, as every browser sends it, or with a value. Against an offer that did
     not, the preference is ignored and the client keeps its 32 KiB window; the
     offer is still honoured, just uncapped in that one direction.
@@ -3961,7 +3961,7 @@ wire.append(press.finish()?)
 ```
 
 - **Decompression limits are mandatory.** Every inflate names the most bytes it
-  will produce, and crossing that bound is kind `limit` — never an allocation
+  will produce, and crossing that bound is kind `limit` - never an allocation
   racing a hostile ratio. A tiny input claiming gigabytes gets a bounded amount
   of honest effort and an error.
 - **Three formats, spelled out**: `zlib` (RFC 1950), `raw` (RFC 1951) and
@@ -4051,9 +4051,9 @@ watch.close()?
 ```
 
 - **There is no signal handler.** A watched signal is *blocked* and the fact that it
-  arrived is read from a descriptor. Inside a real handler almost nothing is legal — no
+  arrived is read from a descriptor. Inside a real handler almost nothing is legal - no
   allocation, no locks, no reentrancy, and in this language no reference counting and no
-  cycle collection — so running Beans code there is not something to be careful about, it
+  cycle collection - so running Beans code there is not something to be careful about, it
   is something to make impossible. `signalfd` on Linux; a private `kqueue` with
   `EVFILT_SIGNAL` on macOS, whose descriptor is itself readable so it nests in the poller.
 - **`Signals` is a `unique class`.** `watch`/`watch_signal` block the signals, `drain()`
@@ -4063,7 +4063,7 @@ watch.close()?
 - **Which signals exist is a safety decision.** `interrupt`, `terminate`, `hangup`,
   `quit`, `user1`, `user2`, `child`, `pipe`, `alarm`, `window_change`. Absent: `kill` and
   `stop`, which cannot be blocked by anyone; and the fault signals `segv`, `bus`, `fpe`,
-  `ill`, because those are **synchronous** — they name an instruction that already failed,
+  `ill`, because those are **synchronous** - they name an instruction that already failed,
   so deferring one and continuing re-runs it forever. Offering them would be offering a
   hang. Names are the portable part; the numbers differ per platform.
 - **`drain()` never blocks**, and reports each signal **at most once per call** however
@@ -4071,7 +4071,7 @@ watch.close()?
   repeats collapse) and macOS's per-signal count is discarded to match.
 - **Reading consumes; closing discards.** A signal taken from the descriptor is removed
   from the process's pending set, and anything still unread when the watch is dropped is
-  discarded rather than delivered — otherwise unblocking would kill the process with a
+  discarded rather than delivered - otherwise unblocking would kill the process with a
   signal the program had chosen to handle.
 - Watch **before** spawning threads: the block applies to the calling thread and is
   inherited by threads created later, not by ones already running.
@@ -4096,12 +4096,12 @@ if lib.has("plug_add") {
 - `Dylib` is a `unique class`: `open` is a named static, `find` resolves a `Symbol`,
   `has` probes without treating absence as an error, and `close`/`deinit` unloads.
 - **Opened `RTLD_LOCAL`, always.** `RTLD_GLOBAL` would publish the library's symbols where
-  an `extern "C" fn` resolves them — through `dlsym` in the interpreter, through the
-  linker in a native build — so the same program would link in one backend and not the
+  an `extern "C" fn` resolves them - through `dlsym` in the interpreter, through the
+  linker in a native build - so the same program would link in one backend and not the
   other.
 - **Calling requires `unsafe`, and nothing wraps it.** `dl.call0` … `dl.call3` are the
   only way, and they are refused outside `unsafe { }` by the checker. A wrapper in
-  `std.dylib` would need its own `unsafe` block and would then let callers skip theirs —
+  `std.dylib` would need its own `unsafe` block and would then let callers skip theirs -
   laundering exactly the property that matters. There is no `unsafe fn` in the language,
   so the block has to be at the call site.
 - **One machine word per argument and per result**, which covers integers and pointers:
@@ -4113,7 +4113,7 @@ if lib.has("plug_add") {
   general dynamic-library API. Their call rows still require `unsafe`; normal
   programs use `Dylib.find` plus `call0` … `call3`, or declare `extern "C"`.
 - A symbol can legitimately resolve to address 0, so `find` reports failure as an `err`
-  rather than by handing back a null address — `dlerror` is the real test.
+  rather than by handing back a null address - `dlerror` is the real test.
 - Every address from a library dies with it. `Symbol` holds the address and the name, and
   deliberately offers no way back into the library.
 
@@ -4150,7 +4150,7 @@ void  beans_host_write(int stream, const char* bytes, unsigned long long len);
 void  beans_host_exit(int code);                                          // no return
 ```
 
-  `align` is a power of two and never below 16 — the reference-count header's own
+  `align` is a power of two and never below 16 - the reference-count header's own
   alignment, which is what puts the payload where the compiler expects it. `size` is
   never 0, `block` is never NULL, and NULL back from alloc means out of memory. Two more
   hooks, `beans_host_format_f64` and `beans_host_parse_f64`, cover floating-point text;
@@ -4161,7 +4161,7 @@ void  beans_host_exit(int code);                                          // no 
   rather than emitting the loop, so those arrive as ordinary imports beside the
   `beans_host_*` hooks; a program that copies nothing asks for neither. A loader
   built from a fixed list will therefore be right for one module and wrong for
-  the next. Read the imports off the module instead — for a wasm build:
+  the next. Read the imports off the module instead - for a wasm build:
 
   ```js
   const module = await WebAssembly.compile(bytes)
@@ -4173,12 +4173,12 @@ void  beans_host_exit(int code);                                          // no 
   allocator hooks, `memcpy` and `memset` as well. Supplying an import the module
   never requests is harmless; missing one it does means instantiation fails.
 - **Three rules for an implementer.** A hook must not call back into any `beans_`
-  function — the allocator runs inside allocation. The panic path must not allocate, so
+  function - the allocator runs inside allocation. The panic path must not allocate, so
   it formats into a fixed stack buffer and calls write then exit, and still works when
   memory is what ran out. Hooks are supplied by linking a definition, never by editing
   the emitted IR.
 - The hooks are **weak in the hosted profiles**, so any of them can be replaced there
-  too, and the runtime otherwise uses libc directly — a hook on the allocation hot path
+  too, and the runtime otherwise uses libc directly - a hook on the allocation hot path
   would cost every program to serve the one that overrides it.
 - An application entry point is `main`. A freestanding application build is
   `--emit obj`: link it with your own startup, which calls `main`. A
@@ -4247,7 +4247,7 @@ for the ones that have neither. It is **constrained**: the caller writes the ass
 only a template the selected architecture has a row for in `asm_template_allowed`
 in `src/expression.b`, and the constraint string has to be the row's too.
 
-- Both strings must be **plain literals** — no variables, no interpolation, no escapes —
+- Both strings must be **plain literals** - no variables, no interpolation, no escapes -
   because the compiler compares them against the allowlist before the assembler sees them.
   A template built at runtime could not be compared to anything.
 - Operands are **one `int` in and one `int` out, or nothing**. No object references, so
@@ -4258,7 +4258,7 @@ in `src/expression.b`, and the constraint string has to be the row's too.
   a Beans string is interpolation.
 - Every row states what the **interpreter** does, because the interpreter is the reference:
   a register move returns its argument, a barrier does nothing. Rows that touch machine
-  state the host cannot model — an interrupt mask — exist only on the embedded
+  state the host cannot model - an interrupt mask - exist only on the embedded
   architectures, where the interpreter never runs; a test enforces that rather than
   leaving it to good intentions.
 - `unsafe` is required, like every other raw-hardware operation.
@@ -4288,7 +4288,7 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
 - **A Cortex-M4 and an RV32 board**, both 32-bit, both with no operating system and no
   libc. `examples/embedded.b` runs on QEMU's MPS2-AN386 and RISC-V `virt` with output
   byte-identical to the interpreter.
-- `decimal` is **not available** on either — see the refusal table above. That is the one
+- `decimal` is **not available** on either - see the refusal table above. That is the one
   place a target changes what the language offers, it is stated at check time, and it is
   why `examples/embedded.b` exists next to `examples/freestanding.b`.
 - `int` is still 64 bits and `float` is still a double, so ordinary division and
@@ -4308,29 +4308,29 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   from hitting an fd number that `close()` freed and the OS reused for a different file. The
   logical `closed` flag flips immediately, so same-thread `close()` semantics are unchanged; only
   the OS-level release is deferred, and only while threads run.
-- `defer f.close()` — runs when the function exits normally, including through
+- `defer f.close()` - runs when the function exits normally, including through
   `return` and `?`, newest first. A return leaves every scope it sits in, innermost
   first: the locals of the nested blocks (`if`, loop bodies, match arms) drop as their
   blocks exit, *then* the function's defers run, *then* the function's own locals drop,
-  *then* its `move` parameters drop, last-declared first (Variables, above) —
+  *then* its `move` parameters drop, last-declared first (Variables, above) -
   so a defer sees the function-level locals and the moved-in arguments still alive and
-  the block-level ones already gone. Must sit at the top level of the function body (not inside `if`/`for`/blocks — it
+  the block-level ones already gone. Must sit at the top level of the function body (not inside `if`/`for`/blocks - it
   is a function-exit hook, and nested registration would need runtime capture the native
   backend does not do); the checker refuses a nested one. Each defer runs at most once. An *uncontained* panic exits the
   process without running defers. A panic *contained* by `brew`/`join`, or by a `contained`
   call (spec/CONCURRENCY.md), does the opposite: it unwinds the frames on the way to that
-  boundary — the fiber entry, or the contained call itself — running each function's defers
+  boundary - the fiber entry, or the contained call itself - running each function's defers
   newest-first and dropping what it owns, the same cleanup a return runs, in the same
   order, and the boundary reports the failure. A defer
   that panics while the function is exiting normally is a contained panic like any other
   when the fiber is brewed: it is not run again, the older defers still run, and the locals
-  still drop. A panic inside a defer *during* a contained unwind is fatal — it aborts the
-  process (the one unrecoverable case — there is no second unwind to give it) — and an
+  still drop. A panic inside a defer *during* a contained unwind is fatal - it aborts the
+  process (the one unrecoverable case - there is no second unwind to give it) - and an
   uncontained one exits.
   `?` is not allowed inside a deferred expression because the function's
   return path is already being processed.
   (Go's best idea, with an unwind only where a panic is caught.)
-- `unsafe { }` — gates low-level operations. The first implemented part is
+- `unsafe { }` - gates low-level operations. The first implemented part is
   `RawPtr<T>` for primitive integer, float, bool, raw-pointer, fixed-array, and
   declared `extern "C" struct`/`union` values. These shapes can nest.
   `RawPtr.alloc(n)`
@@ -4364,12 +4364,12 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   **The runtime's own entries are the exception, and are never bridged.** A
   `beans_*` name the Beans runtime hosts lives in the process already, so the
   interpreter calls it there through the runtime's dispatcher whatever the
-  signature's width — `beansc run` never needs a C toolchain to reach one, which
+  signature's width - `beansc run` never needs a C toolchain to reach one, which
   is what lets a program write to a socket on a host whose Clang cannot link for
   itself. A declaration naming one of those entries that does not fit its real
   signature is refused where the call is made, with a message about the
-  declaration. Native builds cannot see that mistake — a linker does not compare
-  types — so, as everywhere else here, a wrong `extern "C"` signature is the
+  declaration. Native builds cannot see that mistake - a linker does not compare
+  types - so, as everywhere else here, a wrong `extern "C"` signature is the
   programmer's job; the interpreter simply cannot guess past it.
   A parameter may be a C callback such
   as `fn(i32, i32) -> i32`; its arguments and return use the same C-safe type
@@ -4381,13 +4381,13 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   C may call it only before the surrounding extern call returns, must not store
   it, and must not invoke it from another thread.
 - `extern "C" fn name(fixed: T, ...) -> R` declares a C function with a
-  variadic tail — `ioctl`, `fcntl`, three-argument `open`, `printf`. `...`
+  variadic tail - `ioctl`, `fcntl`, three-argument `open`, `printf`. `...`
   comes last and needs at least one named parameter in front of it, exactly as
   C requires. There is no `va_list` in Beans, so a variadic declaration never
   has a body and a `pub extern "C" fn` export is never variadic.
   A **call site writes its own tail**, and the type it writes is the C type
   that crosses: the backend hands Clang that spelling at that call site, so the
-  target's own variadic rules classify it. That is the point of the form — on
+  target's own variadic rules classify it. That is the point of the form - on
   Apple arm64 the whole tail goes on the stack while the fixed head stays in
   registers, while SysV x86-64 and generic AAPCS64 keep filling the register
   banks, so a variadic function declared with a fixed signature passes its
@@ -4395,7 +4395,7 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
   **C's default argument promotions apply to the tail**, because the tail is
   written as C: `i8`, `u8`, `i16`, `u16` and `bool` arrive as `int`, and `f32`
   arrives as `double`. A tail argument must be an integer, float, bool,
-  `RawPtr` or `CFunctionPtr` — an `extern "C"` struct or union by value, a
+  `RawPtr` or `CFunctionPtr` - an `extern "C"` struct or union by value, a
   callback and every managed Beans value are refused, because past the last
   named parameter the prototype describes nothing and only a type with one
   unambiguous C spelling can cross. Beans `int` is 64 bits, so a bare integer
@@ -4423,7 +4423,7 @@ beansc build --target riscv32imac-unknown-none-elf --runtime freestanding f.b --
 - `LocalStoredCallback<F>.create(userdata_index, closure)` is the owned callback
   for the most common C event-loop shape: the library
   stores the callback once and always invokes it on the thread that
-  registered it. Captures are unrestricted — no `Send`, no `Sync` — because
+  registered it. Captures are unrestricted - no `Send`, no `Sync` - because
   the registering thread is recorded and an invocation from any other thread
   is a checked runtime abort, not a data race. Same `function()` /
   `function_pointer()` / `context()` surface and the same
@@ -4433,7 +4433,7 @@ A **borrowed callback** is an `fn(...)` parameter on an `extern "C" fn`. It is
 lent to C for the length of that one call, so a Beans closure can be passed
 directly and no lifetime question arises. A callback C *stores* is a different
 thing and needs `StoredCallback` or `LocalStoredCallback`, whose value stays
-alive until you `close()` it — close after unregistering, because it waits for
+alive until you `close()` it - close after unregistering, because it waits for
 calls already running. Both registration-owner types are local and move-only;
 "any-thread" describes where C may invoke the callback, not where its owner may
 be moved.
@@ -4480,8 +4480,8 @@ Constructs whose ABI bindgen cannot reproduce exactly are refused: varargs,
 bitfields, flexible arrays, vectors, `_Atomic` members, packed or explicitly
 aligned records, `#pragma pack` layouts, anonymous record members, non-default
 calling conventions and other ABI attributes, and C++ declarations. Types with
-no exact Beans equivalent — `long double`, 128-bit integers, `_Complex`,
-`_BitInt`, extended and decimal floating types — are refused for the same
+no exact Beans equivalent - `long double`, 128-bit integers, `_Complex`,
+`_BitInt`, extended and decimal floating types - are refused for the same
 reason. `--allow-unsupported` skips the affected declaration and declarations
 whose layout depends on it, with generated comments; it never invents a
 usable-looking type in their place. Extra Clang
@@ -4490,11 +4490,11 @@ bindings: every file in a package declares it, so generated bindings dropped
 beside your own sources need one. Without it the output has no clause, which
 loads only as a file on its own. `--pub` emits public records, enum constant
 helpers, globals, and functions for a library package's consumers.
-- **SIMD vector families** (v0.8): a vector type's name *is* its shape — `Simd` +
+- **SIMD vector families** (v0.8): a vector type's name *is* its shape - `Simd` +
   lane count + element. `Simd4i32` is four 32-bit signed integers, `Simd16u8` is
   sixteen bytes, `Simd2f64` is two doubles, `Simd4f32` is four floats. Elements are
   `i8`/`i16`/`i32`/`i64`, their `u` forms, `f32` and `f64`; the lane count must be a
-  power of two and the total width must be a register the machine has — 128 bits
+  power of two and the total width must be a register the machine has - 128 bits
   everywhere, 256 only where the features provide it, so `Simd8i32` needs
   `--features +avx2` on x86-64 and is refused by name otherwise. Available inside
   `unsafe`.
@@ -4503,11 +4503,11 @@ helpers, globals, and functions for a library package's consumers.
   - Lanes: `lane(i)`, `with_lane(i, v)` (a copy), `lane_count()`. A lane index
     outside the vector panics.
   - Arithmetic: `+ - * /` and `add`/`sub`/`mul`/`div`, plus `min`/`max`. Integer
-    families also get `bit_and`/`bit_or`/`bit_xor`/`bit_not` and `shl`/`shr` — a
+    families also get `bit_and`/`bit_or`/`bit_xor`/`bit_not` and `shl`/`shr` - a
     shift at or past the element width panics, and `shr` follows the element's sign.
   - Comparisons `eq`/`ne`/`lt`/`le`/`gt`/`ge` return a **mask**: a vector of the
     same shape whose lanes are all-ones or all-zeros. `mask.select(a, b)` picks per
-    lane, and `any_true()`/`all_true()` fold it — so a comparison feeds a choice
+    lane, and `any_true()`/`all_true()` fold it - so a comparison feeds a choice
     with no branch. Unsigned families compare unsigned.
   - Reductions: `sum()`, `product()`. Whole-vector `==`/`!=` compares lane by lane
     and gives one `bool`.
@@ -4519,7 +4519,7 @@ helpers, globals, and functions for a library package's consumers.
     it cannot be a Map key.
 - `[T; N]` is a fixed-size inline array. It accepts inline scalar, `RawPtr`,
   nested fixed-array, and struct elements with `1 <= N <= 4096`. `N` is an
-  integer literal — decimal, hex, binary, digit separators and all — or a
+  integer literal - decimal, hex, binary, digit separators and all - or a
   module constant that folds to an integer in that range ("Module constants").
   A list-shaped
   literal gets fixed-array meaning from its declared spot:
@@ -4533,8 +4533,8 @@ helpers, globals, and functions for a library package's consumers.
   element set above. `Slice.from_raw(ptr, len)`,
   `get`, `set`, indexing, `subslice`,
   `as_ptr`, and iteration require `unsafe`; reads and writes are bounds checked.
-  Indexing is a place: `view[i] = v` stores through the pointer, and — as with
-  a fixed array, and unlike `List` and `Map` — a compound `view[i] += v` on a
+  Indexing is a place: `view[i] = v` stores through the pointer, and - as with
+  a fixed array, and unlike `List` and `Map` - a compound `view[i] += v` on a
   numeric element is the read-modify-write of that one cell. The write lands in
   the memory the view borrows, so it is visible through any other view of it,
   and needs no `var` on the binding: the view is read-only, the memory it names
@@ -4594,7 +4594,7 @@ helpers, globals, and functions for a library package's consumers.
   depth: `rect.origin.x = 1` and `config.limits.retries += 1` write the one
   struct, not a copy of it. The chain walks back through as many struct fields
   and fixed-array elements as the source writes, and ends at a mutable local's
-  slot or at the heap object a class field sits in — so `holder.settings.size =
+  slot or at the heap object a class field sits in - so `holder.settings.size =
   9` on a class works too, as does an `inout` parameter, a local a closure
   captured, and a struct method declared `inout fn`. A `let` local's fields
   cannot be reassigned, and neither can a method receiver that is not
@@ -4609,13 +4609,13 @@ helpers, globals, and functions for a library package's consumers.
   object: `Cfg.home.origin.y = 3` and `Cfg.cells[0] = 9` write the static
   itself. A static has no owning object whose bit could gate the write and no
   scope that orders it, so a reference stored beneath one takes the cycle
-  collector's static barrier — the one a whole-static assignment already
-  emits — and the read that reaches the place runs the same
+  collector's static barrier - the one a whole-static assignment already
+  emits - and the read that reaches the place runs the same
   initialisation-order guard a whole-static read runs. One thing is still
   refused there and it is refused for a class object too: storing a value
   that may own references into a **fixed-array element** inside a static or a
   class, because an element store emits no write barrier and would leave the
-  collector an untracked edge. A struct field beneath either root is fine —
+  collector an untracked edge. A struct field beneath either root is fine -
   it is a field store, and field stores carry the barrier.
 
   A struct is **move-only when any field is**. A struct is a value, so it can
@@ -4623,8 +4623,8 @@ helpers, globals, and functions for a library package's consumers.
   `Arena` and a `unique class` cannot be. That propagates: adding one such field
   changes the copy semantics of a struct that already has callers, and the
   refusal appears at those call sites rather than at the declaration, so it
-  names the field responsible — `main.Wrapper is move-only — a struct is
-  move-only when any field is, and 'inner.tags' is List<string>` — following the
+  names the field responsible - `main.Wrapper is move-only - a struct is
+  move-only when any field is, and 'inner.tags' is List<string>` - following the
   chain down to the field that actually fails rather than stopping at the type
   on the left.
 
@@ -4666,8 +4666,8 @@ instead of a shapeless parse error. It cannot be used as a name.
 
 `some none ok err` are ordinary names. `super` is contextual. `spawn` is a
 library function, not a keyword. `async` and `await` are ordinary
-identifiers — the effect system that once gave them contextual meaning was
-removed. `package` is contextual — only `package <name>` at the top of a
+identifiers - the effect system that once gave them contextual meaning was
+removed. `package` is contextual - only `package <name>` at the top of a
 file declares one, so `package` stays usable as an ordinary identifier. So is
 `const`: only `const <NAME>` starting a module-level declaration declares one.
 `r` is a string prefix only when a `"` follows it immediately, and a name
@@ -4677,11 +4677,11 @@ everywhere else.
 
 - Language gaps 1.0 (implemented): the nine findings of the 2026-08-18 gap
   report, verified against interpreter and native both. Multi-line method
-  chains — a chain breaks before or after the `.`, since a dot can never end
+  chains - a chain breaks before or after the `.`, since a dot can never end
   a statement; fn-typed fields are callable through member syntax, with a
   same-named method winning; covariant `Self` results on class and interface
   instance methods, enforced by the return-self rule so no layout changes;
-  trailing constant parameter defaults, materialized at call sites — and the
+  trailing constant parameter defaults, materialized at call sites - and the
   standing decision recorded: no named arguments, no overloading; zeroing
   `weak` fields for ARC classes, invisible to the cycle collector's trace and
   nil'd before the referent's deinit; closure capture-by-move
@@ -4693,7 +4693,7 @@ everywhere else.
   content hash; and backend error poisoning, so one unsupported construct is
   one diagnostic instead of a cascade of MIR temporaries.
 - Public API names v0.9 (implemented): a name says what it does or it changes,
-  and there are no aliases for the old spelling — a rename that leaves the old
+  and there are no aliases for the old spelling - a rename that leaves the old
   name working is a rename nobody finishes. The pairs that lied got fixed
   first: `Bytes.to_string` truncated at a NUL while `to_string_full` was the
   honest conversion, so `to_string` is now every byte and the truncating one
@@ -4701,7 +4701,7 @@ everywhere else.
   about a key, so it is `contains_key`; `Bytes.append_varint` meant unsigned
   LEB128 while `std.encoding.binary` used "varint" for zigzag, so the built-in
   pair carries the `u`. Names that hid what they cost or handed back got said
-  out loud — `Mutex.with_lock`, `Weak.is_expired`, `Channel.receive`,
+  out loud - `Mutex.with_lock`, `Weak.is_expired`, `Channel.receive`,
   `AtomicInt.load`/`store`/`add_and_get`, `Dir.create`/`create_all`, and
   `MMap.open_shared_memory`. A resource's pollable descriptor is `poll_handle`
   everywhere it appears, `Signals.drain` says that reading consumes, and the
@@ -4709,7 +4709,7 @@ everywhere else.
   their names name their clock. Internal `beans_*` runtime symbols keep their
   old spellings: they are an ABI, not a public API.
 - async/await removal 1.0 bake (implemented): the v0.9 effect system left
-  the language whole — the words are ordinary identifiers again, the state
+  the language whole - the words are ordinary identifiers again, the state
   machine expander, the hidden `std.async$rt` package, and the runtime's
   parked-readiness registry are gone, and reflection no longer reports an
   async flag. Threads, channels, and `std.poll` carry concurrency until the
@@ -4719,11 +4719,11 @@ everywhere else.
   keywords, so every existing use of the names keeps parsing; the declared
   type is the body's, a call gets `std.async.Task` of it, and the split never
   leaks into `return` or `?`; a task is a cold, single-use, move-only value
-  whose drop cancels it — armed defers newest-first, then every live value
+  whose drop cancels it - armed defers newest-first, then every live value
   exactly once, children in cascade; a task panic stops the program at the
   poll site because panics never unwind in Beans; the poll/take/cancel
   closure triple is the public awaitable protocol and the compiler's own
-  lowering target — the expander rewrites an async body into a synchronous
+  lowering target - the expander rewrites an async body into a synchronous
   maker over ordinary closures, so both executors, the ownership passes, and
   the verifiers run unchanged
 - Layout introspection v0.8 (implemented): `size_of(T)`, `align_of(T)` and
@@ -4732,12 +4732,12 @@ everywhere else.
   enums without a declared representation and type parameters are rejected
   rather than given a wrong number
 - Fixed enum representation v1.0 (implemented): `enum(u8)` on a payload-free
-  enum commits the value to a bare one-byte tag — `size_of` answers 1, structs
+  enum commits the value to a bare one-byte tag - `size_of` answers 1, structs
   holding one keep a fixed pointer-free inline layout, and construction,
   match, equality, printing, and storage agree between both compilers; the
   checker refuses payload variants, generic enums, more than 256 variants,
   and any representation other than `u8`, each with a message naming the rule
-- Signals v0.8 (implemented): **no handler exists** — a watched signal is blocked and read
+- Signals v0.8 (implemented): **no handler exists** - a watched signal is blocked and read
   from a descriptor, which keeps Beans code, the reference counting and the cycle collector
   entirely out of async-signal context; the descriptor is registerable with the poller so
   signals and sockets wait together; which signals are offered is a safety decision, with
@@ -4753,8 +4753,8 @@ everywhere else.
   `wasm32-unknown-unknown` modules for browser/library embedding; opt-in `simd128`;
   registered 32-bit layout and object ABI; interpreter/native/Wasm parity under Wasmtime
   and JavaScript loading through the standard `WebAssembly` API
-- Freestanding runtime v0.8 (implemented): five hooks — alloc, realloc, free, write, exit
-  — and the freestanding object needs nothing from libc, only the compiler primitives every
+- Freestanding runtime v0.8 (implemented): five hooks - alloc, realloc, free, write, exit
+  - and the freestanding object needs nothing from libc, only the compiler primitives every
   freestanding toolchain provides; the core's `snprintf`, `strtoll` and `strtod` are written
   out so panic messages and integer text need no libc; float text stays a hook because
   correct decimal output for a double is not a page of code; the panic path allocates
@@ -4795,12 +4795,12 @@ everywhere else.
   that is a floor rather than an estimate, and random bytes from the OS CSPRNG with
   no pseudo-random fallback and no modulo bias
 - Intrinsics v0.8 (implemented): `std.intrinsic` is a closed allowlist of named
-  machine operations with fixed signatures — no LLVM text, `unsafe` only, arch and
+  machine operations with fixed signatures - no LLVM text, `unsafe` only, arch and
   feature gated through the same guard rule as `feature "x" fn`, and every entry has
   an exact software definition so it is differential-tested
 - CPU dispatch v0.8 (implemented): `cpu.has(CpuFeature.x)` asks the running
   machine, `feature "x" fn` marks a body allowed to use that feature, and the
-  compiler *requires* the guard — an unguarded call to a marked function is an
+  compiler *requires* the guard - an unguarded call to a marked function is an
   error, not a crash on the wrong machine; `BEANS_CPU_FEATURES` can only hide
   features, never invent them
 - SIMD families v0.8 (implemented): a vector's name is its shape, parsed once into
@@ -4808,7 +4808,7 @@ everywhere else.
   hand-written; comparisons give an all-ones/all-zeros mask that `select` consumes
   bitwise; 256-bit shapes are gated on the target's features and refused by name
 - Atomic wait/notify v0.8 (implemented): `wait`, `wait_timeout`, `notify_one`,
-  `notify_all` — a futex on Linux for 32-bit cells and an address-keyed parking lot
+  `notify_all` - a futex on Linux for 32-bit cells and an address-keyed parking lot
   everywhere else, behind one API; a wakeup is explicitly a hint, so callers loop
 - Typed atomics v0.8 (implemented): `Atomic<T>` over integers and `bool` with all
   five memory orders, `compare_exchange` taking success and failure orders, and
@@ -4827,7 +4827,7 @@ everywhere else.
   eager `singleton class` instances; structs support generics, read-only
   methods, and mutating `inout fn` methods
 - Targets v0.8 (implemented): one explicit selected target instead of "whatever
-  compiled the compiler" — `--target`/`--cpu`/`--features`/`--sysroot`/`--cc`/
+  compiled the compiler" - `--target`/`--cpu`/`--features`/`--sysroot`/`--cc`/
   `--linker`/`--emit`, registered triples with alias normalization, every
   setting validated before native compilation runs, tools executed directly
   rather than through a shell, the selected triple emitted into the IR, and
@@ -4840,18 +4840,18 @@ everywhere else.
 - `init`/`deinit`: constructor and destructor bodies use implicit `self`;
   all-default classes get an implicit initializer; required fields require
   `init`; subclass initializer inheritance is allowed when added fields all
-  have defaults; `super.init` keeps the Swift order — own fields, then parent,
+  have defaults; `super.init` keeps the Swift order - own fields, then parent,
   then full self; destruction runs at refcount zero before field release,
   subclass then parent, and is skipped for cycle garbage
-- Stdlib v0.5 phase 4 (implemented): Beans-written `std.reader` line reading over positional I/O (the old native `BufReader` is gone), format specs in interpolation (`{x:8.2}` — first top-level `:` in the braces; the same rendering as `std.fmt`), `chars()` for UTF-8, varint + crc32 on `Bytes`, `MMap.resize` (the handle keeps its fd), `Dir.walk` (recursive, sorted, relative), and Beans-written `std.path`
-- Stdlib v0.5 phase 3 (implemented): the List/Map method set with **stable** sorts (`sort_by` takes a less-than closure; both backends run the identical merge), `Bytes` value `==`, advisory file locks, `MMap` (whole-file, shared, drop unmaps, grow = close + reopen), `std.fmt`, and printing widened to enums and lists — `variant(payload)` / `[a, b]` — everywhere strings interpolate; maps, class instances, and `Result` stayed unprintable until the derived rendering above landed
+- Stdlib v0.5 phase 4 (implemented): Beans-written `std.reader` line reading over positional I/O (the old native `BufReader` is gone), format specs in interpolation (`{x:8.2}` - first top-level `:` in the braces; the same rendering as `std.fmt`), `chars()` for UTF-8, varint + crc32 on `Bytes`, `MMap.resize` (the handle keeps its fd), `Dir.walk` (recursive, sorted, relative), and Beans-written `std.path`
+- Stdlib v0.5 phase 3 (implemented): the List/Map method set with **stable** sorts (`sort_by` takes a less-than closure; both backends run the identical merge), `Bytes` value `==`, advisory file locks, `MMap` (whole-file, shared, drop unmaps, grow = close + reopen), `std.fmt`, and printing widened to enums and lists - `variant(payload)` / `[a, b]` - everywhere strings interpolate; maps, class instances, and `Result` stayed unprintable until the derived rendering above landed
 - Stdlib v0.5: the string method set, `Bytes`, `File`/`Dir`, `std.os`, and the `std.io` console set (implemented); byte semantics, panics carry positions, byte-owner mutators return `unit`, fs errors carry kind slugs
 - Modules: `beans.pot`, one folder = one package, git imports with a global cache (v0.4, implemented)
 - Block-bodied match arms in statement position (v0.4, implemented)
 - `pub interface` exposes its method set implicitly (v0.4)
-- Explicit types everywhere, no inference (v0.2) — match bindings relaxed in v0.3
+- Explicit types everywhere, no inference (v0.2) - match bindings relaxed in v0.3
 - Named field literals remain for structs; classes construct only with `new`
-- No `+` on strings — interpolation / `std.fmt` / `join` only (v0.3)
+- No `+` on strings - interpolation / `std.fmt` / `join` only (v0.3)
 - Package-private by default, `pub` to expose, and `priv` for declaring-type
   private fields and methods
 - OS threads + checked `Send` captures/returns + explicit move transfer for unique

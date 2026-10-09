@@ -43,12 +43,12 @@ clang -O1 -pthread -DBEANS_ARC_STATS -Wno-override-module \
 #
 #   small  three ints (32 bytes of backing) ride behind the header
 #   grow   nine ints: capacity 4 -> 8 -> 16, so two buffers, and the first
-#          four elements start inline — a runtime that never inlined would
+#          four elements start inline, a runtime that never inlined would
 #          report three here
 #   wide   three 40-byte structs: 4 x 40 = 160 bytes is more than a block
 #          carries, so the buffer is separate from the first push
 #   six    a six-element literal: past the four a fresh list starts with,
-#          so the literal has to ask for six — doubling its way there
+#          so the literal has to ask for six, doubling its way there
 #          would leave the inline room behind and cost a buffer
 #   twenty a twenty-element literal: 160 bytes of slots is past the
 #          threshold, so one buffer, where doubling from four costs four
@@ -123,8 +123,8 @@ clang -O1 -g -pthread -fsanitize=address,undefined -fno-sanitize-recover=undefin
 # variable with getenv() != NULL, so setting it to the empty string turns the
 # pool OFF and this would have run the first lane twice.
 #
-# This program drops everything it builds, so LeakSanitizer — on by default
-# inside ASan on Linux, absent on macOS — must stay silent either way.
+# This program drops everything it builds, so LeakSanitizer, on by default
+# inside ASan on Linux, absent on macOS, must stay silent either way.
 asan_lane() {
     local label="$1"
     shift

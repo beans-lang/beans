@@ -4,7 +4,7 @@ import std.io
 
 /// Adds two integers and returns the sum.
 ///
-/// When to use: the simplest documented function — hover should render this
+/// When to use: the simplest documented function, hover should render this
 /// whole block as Markdown.
 fn add(a: int, b: int) -> int {
     return a + b
@@ -32,7 +32,7 @@ class Point {
 
 /// How a customer paid.
 enum Payment {
-    /// Paid in cash — no extra data.
+    /// Paid in cash, no extra data.
     cash
     /// Paid by card; carries the card number.
     card(number: string)

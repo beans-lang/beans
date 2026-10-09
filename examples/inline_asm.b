@@ -1,15 +1,5 @@
-// Inline assembly, with the emphasis on *constrained*.
-//
-// `std.intrinsic` covers machine operations that have a name and an LLVM intrinsic.
-// This covers the ones that have neither — a barrier over a particular domain, an
-// interrupt-enable bit, a wait-for-interrupt — where the only way to reach the
-// instruction is to write it.
-//
-// The caller writes the assembly, but only from a menu. Both the template and the
-// constraint string must be plain string literals, and the compiler looks them up in
-// asm_template_allowed in src/expression.b for the *selected architecture* before LLVM ever sees them. There is no
-// escape hatch, because an escape hatch is what makes inline assembly a hole in a
-// language rather than a feature of it:
+// Inline assembly accepts only architecture-specific templates and literal constraints.
+// The compiler validates templates in src/expression.b before passing them to LLVM:
 //
 //   asm.value("sub $0, $1, $2", "=r,r,r", x)   → not an allowed assembly template
 //   asm.value("mov $0, $1", "=r,x", x)         → takes the constraints "=r,r"
@@ -17,23 +7,13 @@
 //   asm.value("mov $0, $1", "=r,r", x)         → requires unsafe { }, outside one
 //   asm.value(template, "=r,r", x)             → must be a plain string literal
 //
-// Operands are one `int` in and one `int` out, or nothing at all. No object references,
-// so nothing can be smuggled past ownership, and no template branches, so control flow
-// cannot leave or enter one.
-//
-// Every row also states what the *interpreter* does, because the interpreter is the
-// reference: a register move returns its argument, and a barrier does nothing, since one
-// interpreter thread stepping in order is already ordered. That is what lets this file be
-// diff-tested like any other. An operation the interpreter genuinely cannot model — an
-// interrupt mask — exists only on the embedded architectures, where the interpreter
-// never runs; test/asm.sh enforces that rather than leaving it to good intentions.
+// Operands are integers only; interpreted register moves return their input and barriers do nothing.
+// Interrupt-mask operations are limited to embedded targets and checked by test/asm.sh.
 
 import std.io
 import std.asm
 
-// A value round-trip through a machine register. `mov $0, $1` is spelled the same on
-// arm64 and x86-64 — the x86 row is emitted in Intel dialect for exactly that reason —
-// so this one function is the same source on both, and both must print the same numbers.
+// Round-trip an integer through a register on arm64 and x86-64.
 fn through_a_register(value: int) -> int {
     unsafe {
         return asm.value("mov $0, $1", "=r,r", value)
@@ -53,8 +33,7 @@ fn main() {
     let small: int = 0 - 9223372036854775807
     io.println("and the smallest: {through_a_register(small - 1) == small - 1}")
 
-    // It composes like any other expression — there is no separate assembly block, and
-    // no way for the assembler to see anything the compiler did not put there.
+    // Inline assembly is an expression; the assembler sees only compiler-approved templates.
     var total: int = 0
     var i: int = 0
     for i < 5 {

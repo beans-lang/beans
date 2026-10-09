@@ -6,16 +6,16 @@
 # without it, LLVM can make the value 24 bytes on POWER and a runtime out-write
 # can overlap the next stack slot. The compiler also emits textual IR
 # with a `target triple` but no `target datalayout`, so LLVM aligns `i128` from
-# the triple's default — and the powerpc64le default drops `i128:128`, which
+# the triple's default, and the powerpc64le default drops `i128:128`, which
 # leaves an `alloca {i128, i64, i64}` at `align 8`. The C runtime, compiled through
 # Clang's own frontend, accesses a `decimal` as 16-aligned; a stack slot handed
 # to it at 8 was read half-off on ppc64le, silently zeroing the i128 coefficient
 # while the i64 scale survived (`20.00` came back `0.00`). x86-64 and riscv64
-# tolerate the under-alignment, so only POWER surfaced it — which is exactly why
+# tolerate the under-alignment, so only POWER surfaced it, which is exactly why
 # this guard reads the IR instead of trusting a run on the host.
 #
 # The rule: every `alloca` of the decimal aggregate carries `, align 16`, and no
-# bare (unaligned) decimal alloca is emitted — by both compilers, on every
+# bare (unaligned) decimal alloca is emitted, by both compilers, on every
 # decimal-capable target. `--emit ir` needs no sysroot, so this runs on the host.
 set -uo pipefail
 
@@ -76,7 +76,7 @@ for compiler in ${compilers+"${compilers[@]}"}; do
             fail=1
             continue
         fi
-        # (1) no bare decimal alloca — the aggregate at end of line, no `, align`
+        # (1) no bare decimal alloca, the aggregate at end of line, no `, align`
         if grep -nE "$dec_alloca\$" "$ll" >"$tmp/bare" 2>/dev/null; then
             echo "FAIL ($compiler/$label): decimal alloca without align 16:"
             head -3 "$tmp/bare"

@@ -87,7 +87,7 @@ diff -u test/cases/c_callback_panic.out "$tmp/panic.native.out"
 echo "checking a contained call catches a panic raised across a C frame"
 # issue #145: `contained f(args)` stops the unwind at a landing pad in the
 # calling frame. When the panic is raised inside a Beans closure that a C
-# function called, the walk has to cross that C frame to reach the pad — which
+# function called, the walk has to cross that C frame to reach the pad, which
 # works only because every frame on the path carries an unwind table. The
 # failure must arrive as err(kind panic) with the callee's defers run and its
 # locals dropped, identically on both backends; without the pad it is exit 3.

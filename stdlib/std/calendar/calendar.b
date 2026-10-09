@@ -1,5 +1,5 @@
 // The civil calendar: a date and time of day, its conversions to and from the
-// epoch, and the two wire formats a program actually meets — RFC 9110 HTTP
+// epoch, and the two wire formats a program actually meets: RFC 9110 HTTP
 // dates and RFC 3339 timestamps.
 //
 // `std.time` names moments in nanoseconds and knows nothing about years; this
@@ -10,7 +10,7 @@
 // UTC ONLY. There is no local time, no zone database and no daylight-saving
 // rule here, on purpose: a wrong timezone answer is worse than no timezone
 // answer, and the rules change by political decision several times a year. A
-// parsed offset is arithmetic, not a zone — `2024-03-05T09:30:00+05:30` is
+// parsed offset is arithmetic, not a zone: `2024-03-05T09:30:00+05:30` is
 // read as the instant it names and stored as UTC.
 //
 // LEAP SECONDS ARE NOT MODELLED. Every minute here has exactly 60 seconds and
@@ -21,8 +21,8 @@
 // The two conversion kernels, `days_from_civil` and its inverse, are Howard
 // Hinnant's, from "chrono-Compatible Low-Level Date Algorithms"
 // (https://howardhinnant.github.io/date_algorithms.html), which is in the
-// public domain. They use the proleptic Gregorian calendar — the Gregorian
-// leap rule extended backwards through the years it was not yet in use — so
+// public domain. They use the proleptic Gregorian calendar: the Gregorian
+// leap rule extended backwards through the years it was not yet in use: so
 // year 1500 here is Gregorian, not Julian.
 
 package calendar
@@ -54,7 +54,7 @@ fn max_nanos_second() -> int { return 9223372036 }
 fn min_nanos_fraction() -> int { return 145224192 }
 fn max_nanos_fraction() -> int { return 854775807 }
 
-/// Days of the week, Sunday first — the order the day-number arithmetic
+/// Days of the week, Sunday first: the order the day-number arithmetic
 /// produces, not a claim about which day starts a week.
 pub enum Weekday {
     sunday
@@ -157,8 +157,8 @@ pub fn days_in_month(year: int, month: int) -> int {
 
 /// Days from 1970-01-01 to `year`-`month`-`day`, negative before the epoch.
 ///
-/// Howard Hinnant's `days_from_civil`. The era trick — 400 years, 146097 days,
-/// with March starting the shifted year — is what keeps it branch-light and
+/// Howard Hinnant's `days_from_civil`. The era trick: 400 years, 146097 days,
+/// with March starting the shifted year: is what keeps it branch-light and
 /// exact for negative years, where a naive leap-year loop goes wrong.
 pub fn days_from_civil(year: int, month: int, day: int) -> int {
     let shifted: int = if month <= 2 { year - 1 } else { year }
@@ -265,7 +265,7 @@ pub struct DateTime {
 
     /// The moment the wall clock reports. It moves backwards when someone sets
     /// the date, so measure a duration with `std.time.monotonic_nanos`
-    /// instead — a calendar cannot.
+    /// instead: a calendar cannot.
     pub static fn now() -> DateTime {
         return DateTime.from_epoch_nanos(clock.wall_nanos())
     }
@@ -311,8 +311,8 @@ pub struct DateTime {
         return ok(build_from_seconds(seconds, 0))
     }
 
-    /// A checked civil moment. Every field is validated against the calendar —
-    /// 2023-02-29 is an `err`, 2024-02-29 is not — and the error names the
+    /// A checked civil moment. Every field is validated against the calendar:
+    /// 2023-02-29 is an `err`, 2024-02-29 is not, and the error names the
     /// field that was wrong, with kind `invalid`.
     pub static fn of(year: int, month: int, day: int,
                      hour: int, minute: int, second: int,
@@ -354,7 +354,7 @@ pub struct DateTime {
         })
     }
 
-    /// Midnight on a checked civil date — `DateTime.of` with a zero time.
+    /// Midnight on a checked civil date: `DateTime.of` with a zero time.
     pub static fn of_date(year: int, month: int, day: int) -> Result<DateTime> {
         return DateTime.of(year, month, day, 0, 0, 0, 0)
     }
@@ -479,7 +479,7 @@ pub struct DateTime {
     }
 
     /// The same time of day, `days` days later. This is calendar arithmetic
-    /// rather than 86400-second arithmetic — with no zones and no daylight
+    /// rather than 86400-second arithmetic: with no zones and no daylight
     /// saving the two agree, which is part of why zones are left out.
     pub fn plus_days(days: int) -> Result<DateTime> {
         return self.shift_days(days)
@@ -613,7 +613,7 @@ pub struct DateTime {
     /// The HTTP date, RFC 9110's IMF-fixdate:
     /// `Sun, 06 Nov 1994 08:49:37 GMT`. This is the only form a sender may
     /// produce, and the one a `Date`, `Last-Modified` or `Expires` header
-    /// wants. The fraction is dropped — the format has no room for one.
+    /// wants. The fraction is dropped: the format has no room for one.
     pub fn to_http_date() -> string {
         let day: string = "{pad(self.day, 2)}"
         let month: string = month_short_name(self.month)
@@ -755,7 +755,7 @@ fn parse_rfc3339_text(text: string) -> Result<DateTime> {
 }
 
 fn parse_http_date_text(text: string) -> Result<DateTime> {
-    // IMF-fixdate: Sun, 06 Nov 1994 08:49:37 GMT — 29 bytes with every field
+    // IMF-fixdate, such as Sun, 06 Nov 1994 08:49:37 GMT, is 29 bytes with each field
     // at a fixed offset, which is what the "fixdate" name promises.
     if text.len() == 29 && byte_is(text, 3, 44) && byte_is(text, 4, 32) {
         if !is_weekday_short(text.slice(0, 3)) {
@@ -774,7 +774,7 @@ fn parse_http_date_text(text: string) -> Result<DateTime> {
         }
         return parse_time_of_day(text, 17, day, month, year)
     }
-    // asctime: Sun Nov  6 08:49:37 1994 — 24 bytes, and the only form whose
+    // asctime, such as Sun Nov  6 08:49:37 1994, is 24 bytes and the only form whose
     // day is space-padded rather than zero-padded.
     if text.len() == 24 && byte_is(text, 3, 32) {
         if !is_weekday_short(text.slice(0, 3)) {

@@ -6,13 +6,13 @@
 # independent implementation of the same specification. The operands come from
 # the IBM General Decimal Arithmetic test suite (Mike Cowlishaw's .decTest
 # files, whose spec became the decimal part of IEEE 754-2008); every expected
-# answer is recomputed by Python's `decimal` at the beans contract — 38
+# answer is recomputed by Python's `decimal` at the beans contract, 38
 # significant digits, ROUND_HALF_EVEN. IBM chose the operands, Python computes
 # the answers, and beans never sees either column: it reads operands and prints
 # `id<TAB>answer`, which is diffed on both backends.
 #
 # The operands are vendored in test/fixtures/decimal_cases.tsv so the gate needs
-# no CPython source tree — every case in the eligible suite, not a sample, or a
+# no CPython source tree, every case in the eligible suite, not a sample, or a
 # reverted zero-scale fix would slip past a gate that dropped the very cases
 # that caught it. Regenerate the fixture from an installed CPython with
 #

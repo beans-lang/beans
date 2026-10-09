@@ -2,7 +2,7 @@
 // unwrapped. The two kinds are asymmetric and the emitter had only written
 // one of them down: a Result carries its error across, so the propagation
 // extracts the payload and rewraps it, while an Option carries nothing at
-// all — `none` is `none` whatever the two payload types are.
+// all, `none` is `none` whatever the two payload types are.
 //
 // The Option case fell through to the Result code, which read an "error
 // payload" at offset 8 of a value that has none and answered a fresh heap

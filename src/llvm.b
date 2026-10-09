@@ -7,7 +7,7 @@ partial class LlvmTextEmitter {
     // self-build hands to clang, and nothing downstream reads it. It is a
     // debugging aid, so it costs nothing until BEANS_IR_COMMENTS asks for it.
     mir_comments: bool
-    // What every definition in this module says about instrumentation — ""
+    // What every definition in this module says about instrumentation: ""
     // in a build that asked for none, " sanitize_address" or
     // " sanitize_thread" (or both) in one that did. An LLVM sanitizer pass
     // looks only inside the functions carrying its attribute, and IR handed
@@ -181,7 +181,7 @@ partial class LlvmTextEmitter {
     unwind_pad: string
     unwind_used: bool
     // Whether this function carries a `contained` catch pad. That pad is not
-    // the cleanup pad — it stops the unwind instead of resuming it — so it
+    // the cleanup pad (it stops the unwind instead of resuming it) so it
     // needs the personality named on the definition without also asking for
     // a cleanup pad the function may have nothing to put in
     // (src/llvm_emit_concurrency.b).
@@ -393,8 +393,8 @@ partial class LlvmTextEmitter {
             // Which classes the program builds is a whole-program fact and
             // is read here, not accumulated as bodies come out: a guarded
             // call emitted before the body holding the `new` must speculate
-            // on the same set as one emitted after it. A template counts —
-            // its instances carry its `new` instructions — and the blocks
+            // on the same set as one emitted after it. A template counts:
+            // its instances carry its `new` instructions, and the blocks
             // and instructions skipped here are exactly the ones
             // emit_function skips.
             for block: MirBlock in function.blocks {
@@ -442,7 +442,7 @@ partial class LlvmTextEmitter {
     // instruction when the consumer owns it from its entry, or after it when
     // the consumer can still panic before taking it; the result, if it is an
     // owned temporary the pad may have to release, is stored beside the
-    // locals before this instruction's own releases run — a release runs a
+    // locals before this instruction's own releases run: a release runs a
     // deinit, and a deinit can panic.
     fn emit_instruction(function: MirFunction,
                         instruction: MirInstruction,
@@ -458,7 +458,7 @@ partial class LlvmTextEmitter {
         if output == "" { return "" }
         // Every line this instruction lowered to carries the instruction's own
         // source position. One funnel covers the whole opcode table, and
-        // covering all of it — not the first line of each statement — is what
+        // covering all of it (not the first line of each statement) is what
         // satisfies the verifier's rule that a call inside a function with a
         // subprogram must carry a location.
         output =
@@ -1829,8 +1829,8 @@ partial class LlvmTextEmitter {
             }
         }
         // Chunks, joined once at the end. Re-interpolating "{functions}{next}"
-        // per function copied the whole module — tens of megabytes by the
-        // last function — so emission was quadratic and spent most of its
+        // per function copied the whole module: tens of megabytes by the
+        // last function, so emission was quadratic and spent most of its
         // time in memmove. Pushing and joining makes it linear.
         var functions: List<string> = []
         // The source each body came from, in step with it. A chunked build
@@ -1880,8 +1880,8 @@ partial class LlvmTextEmitter {
         // the static field initializers and the singleton constructors were
         // emitted into `main`'s entry block, and a module built with
         // `--emit shared` ran none of them. A static field and a singleton
-        // survived that on their own guards — the first read of either runs
-        // its initializer — but reflection has no such guard and cannot have
+        // survived that on their own guards: the first read of either runs
+        // its initializer, but reflection has no such guard and cannot have
         // one, because a name that was never registered is indistinguishable
         // from a name that does not exist. The registry was therefore
         // silently empty, with no diagnostic anywhere, and the first thing
@@ -1897,7 +1897,7 @@ partial class LlvmTextEmitter {
 
         // A reflective field thunk on a generic class asks the receiver which
         // instantiation it is, so its body needs the whole set of class
-        // layouts — and that set is only complete now, with every instance
+        // layouts, and that set is only complete now, with every instance
         // body raised. It is written here rather than later because a thunk
         // still needs a string constant and a builtin declare, and both of
         // those blobs are closed below. Draining again after it costs
@@ -2179,7 +2179,7 @@ partial class LlvmTextEmitter {
         // The guard `@beans_module_start` reads, so calling it twice registers
         // nothing twice. Here rather than beside the function, because a
         // chunked build hoists a leading global out of a body and then
-        // declares it `external global i8` in every other chunk — which an
+        // declares it `external global i8` in every other chunk, which an
         // `internal` definition in one of them does not match.
         owned = "{owned}@beans.module.started = global i8 0\n"
         let record_types: string = self.emit_record_types()
@@ -2259,14 +2259,14 @@ partial class LlvmTextEmitter {
     // LLVM's AddressSanitizer and ThreadSanitizer passes instrument a
     // function only when that function carries their attribute. Clang writes
     // it for the C it compiles; this backend hands clang finished textual IR,
-    // which carries only what was written here — so before this pass existed
+    // which carries only what was written here, so before this pass existed
     // a sanitized build checked beans_rt.c and the bridges and walked past
     // every line the emitter produced (issue #168).
     //
     // One pass over the finished module, rather than an interpolation at each
     // of the two dozen places a `define` is written, because that set grows:
-    // a definition added tomorrow — a new reflection thunk, a new derived
-    // body — is instrumented by this without anyone having to remember the
+    // a definition added tomorrow: a new reflection thunk, a new derived
+    // body: is instrumented by this without anyone having to remember the
     // rule exists. A build that asked for no sanitizer gets the same string
     // back, so the ordinary compile is byte for byte what it always was.
     fn sanitize_definitions(text: string) -> string {
@@ -2300,7 +2300,7 @@ partial class LlvmTextEmitter {
     // own id had no parent at all, and a class extending a generic base
     // pointed at the template's id, which no object ever carries. Either one
     // ends the walk early, and `as?` then answers `none` for an object that
-    // really is one — a wrong answer, silently.
+    // really is one: a wrong answer, silently.
     fn class_parent_table() -> string {
         var parent_of: Map<int, int> = {}
         for declaration: HirDeclaration in
@@ -2364,7 +2364,7 @@ partial class LlvmTextEmitter {
     // One entry per class id: the name of the class that id names.
     //
     // An object's first word is its class descriptor and the descriptor's
-    // first word is its class id — that pair is what `as?` reads to walk
+    // first word is its class id: that pair is what `as?` reads to walk
     // beans_class_parents, and it is the only thing an object carries about
     // what it actually is. Reflection has to answer the same question with a
     // name, because std.reflect keys every registry row by name, so this
@@ -2406,7 +2406,7 @@ partial class LlvmTextEmitter {
     // One byte per class id per interface tested: 1 when an object of that
     // class reaches the interface, 0 otherwise. A class id is dense and the
     // object already carries it in its descriptor's first word, so the test
-    // is a load and a compare — the same shape beans_class_names is read
+    // is a load and a compare: the same shape beans_class_names is read
     // with, and no new runtime entry (#195).
     //
     // The conformance question is answered where every other interface
@@ -2505,7 +2505,7 @@ partial class LlvmTextEmitter {
     //
     // Every chunk repeats the head and declares the functions the other
     // chunks define, so each one is a whole module a clang can be pointed at
-    // on its own. The definitions live in chunk zero — a string literal keeps
+    // on its own. The definitions live in chunk zero: a string literal keeps
     // one address across the program that way, where copying them per chunk
     // would mint one address per copy.
     fn chunk_modules(count: int) -> List<string> {
@@ -2537,8 +2537,8 @@ partial class LlvmTextEmitter {
             let at: int = llvm_body_line(body, "define ")
             if at < 0 || llvm_define_is_opaque(body, at) {
                 // Not a plain function definition: a global the body list
-                // carries — the box a captureless closure is built from, or a
-                // singleton's accessor welded to its storage — or a linkage
+                // carries: the box a captureless closure is built from, or a
+                // singleton's accessor welded to its storage, or a linkage
                 // whose meaning is the linker's rather than the chunk's. The
                 // first two ride with the definitions; the last is repeated,
                 // which is what its linkage asks for.

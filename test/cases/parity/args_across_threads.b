@@ -2,7 +2,7 @@
 // having a command line because a worker asked. The tree interpreter built
 // a spawned thread's interpreter with an empty argument list, so the same
 // checked program answered the real arguments natively and nothing under
-// `beansc run` — silently, in the direction that survives the edit loop
+// `beansc run`, silently, in the direction that survives the edit loop
 // (#186).
 //
 // The case must be run WITH arguments: with none both backends answer 0 and

@@ -1,8 +1,8 @@
-// HTTP/1.1 parsing for std.http — llhttp under a trace-event ABI.
+// HTTP/1.1 parsing for std.http: llhttp under a trace-event ABI.
 //
 // llhttp's generated core calls one trampoline per parser event, passing the
 // live cursor: `llhttp__on_url(state, p, endp)`. The public settings API in
-// api.c throws the cursor away, so this bridge does not use it — api.c's
+// api.c throws the cursor away, so this bridge does not use it: api.c's
 // trampolines are renamed out of the way at preprocessing time and this file
 // provides its own, which record each event with its exact byte offset into
 // a per-parser buffer the Beans side drains after each feed. No stored
@@ -12,8 +12,8 @@
 // The offsets make the stream simultaneously the substrate for the public
 // std.http parser AND a faithful reproduction of llhttp's own test-fixture
 // trace, so the upstream markdown corpus replays against this bridge line
-// for line. Span events merge when byte-adjacent and same-type — the visible
-// behaviour of upstream's span printer — so a message split at any byte
+// for line. Span events merge when byte-adjacent and same-type: the visible
+// behaviour of upstream's span printer, so a message split at any byte
 // yields the identical stream.
 //
 // Event encoding, little-endian, per event:
@@ -32,7 +32,7 @@
 #include "vendor/llhttp/llhttp.h"
 
 // The generated parser core (vendor/llhttp/llhttp.c) compiles as its own
-// translation unit beside this one — its internal declarations spell the
+// translation unit beside this one: its internal declarations spell the
 // cursor as `const unsigned char*` while api.c spells `const char*`, which
 // only separate units tolerate, exactly as upstream builds them. api.c and
 // http.c compile here, with api.c's cursor-dropping trampoline definitions
@@ -126,7 +126,7 @@ enum {
 
 typedef struct {
     // llhttp writes through the llhttp_t* it is handed, which is this first
-    // member — so a trampoline's state pointer IS the session.
+    // member, so a trampoline's state pointer IS the session.
     llhttp_t parser;
     uint8_t* events;
     size_t events_len;
@@ -412,9 +412,7 @@ BEANS_NET_API long long beans_h1_execute(long long handle,
     uint64_t len = beans_net_word(req, 0);
     if (len && !data) return BEANS_NET_ERR_INVALID;
     if (len > SIZE_MAX) return BEANS_NET_ERR_RANGE;
-    // Feeding nothing is a no-op by definition — and must not reach llhttp:
-    // its execute prologue rebases an open span's origin to the new buffer,
-    // and a NULL buffer would poison the span a later feed continues.
+    // Skip empty feeds because llhttp rebases open spans to the new buffer, which is invalid when that buffer is NULL.
     if (len == 0) return BEANS_NET_OK;
     if (s->parser.error != 0 && s->parser.error != HPE_PAUSED) {
         // Latched: an errored parser stays errored (llhttp's own contract).
@@ -484,7 +482,7 @@ BEANS_NET_API long long beans_h1_events_size(long long handle) {
     if (!s) return -1;
     // A span still pending would be invisible; expose its current shape too.
     // feed()/finish() flush before returning, so this only matters if the
-    // Beans side drains mid-message — which it does after every feed.
+    // Beans side drains mid-message, which it does after every feed.
     return (long long)s->events_len;
 }
 

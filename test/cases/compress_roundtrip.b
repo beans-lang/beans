@@ -1,5 +1,5 @@
 // The std.compress property suite: identity under round-trip, whatever the
-// level, format, flush points, or buffer shapes — plus the boundary facts
+// level, format, flush points, or buffer shapes, plus the boundary facts
 // that make the API bomb-proof: a limit of exactly the output size passes,
 // one byte less is kind `limit`, truncation is `eof`, corruption is
 // `invalid`, and streaming equals one-shot byte for byte. Data mixes a

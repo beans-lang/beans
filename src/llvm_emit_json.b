@@ -530,7 +530,7 @@ partial class LlvmTextEmitter {
     // straight into `target`'s Bytes backing through beans_bytes_reserve_raw
     // (passed as req[6]); req[8] is the Bytes handle, req[9] the length it
     // already holds, and req[4] comes back as the count appended. Compact
-    // bytes only — the same schema validation and the same encoder entry as
+    // bytes only: the same schema validation and the same encoder entry as
     // `encode`, so both write the identical output.
     fn emit_json_encode_into(
         function: MirFunction, instruction: MirInstruction,
@@ -731,7 +731,7 @@ partial class LlvmTextEmitter {
         // buffer like every other output of this ABI: req[4] carries the
         // runtime entry that files this thread's copy of the last decode's
         // status, error code, byte offset and field index. The bridge cannot
-        // keep those words itself — it must resolve against libc alone, so it
+        // keep those words itself: it must resolve against libc alone, so it
         // has no thread-local storage to keep them in, and a file-scope array
         // made two threads decoding at once a data race (issue #152).
         self.require_declare(
@@ -1407,7 +1407,7 @@ partial class LlvmTextEmitter {
     // slot (references arrive ptrtoint-extended, narrow scalars arrive
     // zext/sext-extended). The reader must load that whole slot: a
     // narrow typed load reads the slot's first bytes, which on a
-    // big-endian target hold the high half — a bool payload came back
+    // big-endian target hold the high half: a bool payload came back
     // false and a reference payload came back wild on ppc32.
     fn show_step_push_slot(
         type: HirType,
@@ -1471,17 +1471,7 @@ partial class LlvmTextEmitter {
             let payload: HirType = type.args[0]
             // A payload wider than one runtime slot cannot reach the show
             // driver as a slot at all: to_slot would box a decimal and leak
-            // the box, and a struct, a nested Option or an inline Result has
-            // no slot form to convert to, so request_show answered "" and a
-            // plain `io.println("{v}")` on an Option<Point> refused the whole
-            // build — a debug print of an optional struct, which the
-            // interpreter has always printed.
-            //
-            // It crosses by address instead, the way every other wide value
-            // is shown: the Option is spilled whole and the wide show step —
-            // which already reads an inline Option's tag and pushes its
-            // payload — is run against that address. Same text either way,
-            // `some(x)` and `none`.
+            // Pass an inline wide option by address so the show step can read its tag and payload, matching interpreter output.
             if self.wide_inline_value(type) &&
                self.wide_inline_value(payload) {
                 let wide: string =
@@ -1555,8 +1545,8 @@ partial class LlvmTextEmitter {
         }
         // A result prints as ok(x) / err(e). Its ok and err payloads live in
         // one box (or one aggregate for an inline result), read out of the
-        // arm the discriminant selects — exactly how a match on it reads
-        // them — and each rendered by the same show_value that renders any
+        // arm the discriminant selects: exactly how a match on it reads
+        // them, and each rendered by the same show_value that renders any
         // value. The err payload's default type is Error, which prints as
         // the message a caller passed to err(...).
         if name == "Result" && type.args.len() >= 1 {
@@ -1612,10 +1602,7 @@ partial class LlvmTextEmitter {
             return new LlvmSlotConversion(
                 output, "%show.{tag}{id}")
         }
-        // A struct is a value, not a reference, so it cannot be handed to
-        // the driver as a slot. It crosses the way it does everywhere else a
-        // wide value is shown — by address: spilled to a stack slot whose
-        // pointer the wide show step reads its fields back from.
+        // Pass a struct to the render driver by address; the show step reads its fields from the spill slot.
         if self.declaration_is_struct(type) {
             let wide: string =
                 self.request_show_wide_step(type)

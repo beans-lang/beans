@@ -1,4 +1,4 @@
-# Compiler discovery report — 0.1.51 (`d7adc86`)
+# Compiler discovery report - 0.1.51 (`d7adc86`)
 
 Date: 2026-10-07. Host: macOS ARM64 (Darwin 25.6.0), Apple clang, Python 3.9.
 Compiler under test: `build/beansc` 0.1.51, language 1.0, runtime ABI 22,
@@ -126,8 +126,8 @@ candidate's syntax step (seed 20261007, 8 MiB stack, 20 s per invocation):
 | prefix `!` | ok | accepted | accepted | accepted | accepted | none |
 | mixed parens/if-else | ok | accepted | accepted | accepted, check 3.8 s | SIGSEGV (parse, check) | 19 764 |
 | nested calls `id(id(…))` | ok | accepted | accepted | SIGSEGV (check) | SIGSEGV (parse, check) | check 6 984; parse 14 965 |
-| flat `1 + 1 + …` | — | — | ok | ok (16 384 too) | SIGSEGV (check) | 29 099 |
-| flat `.trim()` chain | — | — | ok | SIGSEGV (check) at 16 384 | SIGSEGV (parse, check) | check 14 964; parse 17 457 |
+| flat `1 + 1 + …` | - | - | ok | ok (16 384 too) | SIGSEGV (check) | 29 099 |
+| flat `.trim()` chain | - | - | ok | SIGSEGV (check) at 16 384 | SIGSEGV (parse, check) | check 14 964; parse 17 457 |
 
 Every depth above 256 is accepted today (CD-4 is a proposal, recorded as a
 violation, fixed by the follow-up that introduces the limit). Stack-overflow
@@ -262,7 +262,7 @@ bash 5, OpenSSL 3 and ripgrep before the final gates.
   parentheses, BOM, `&` versus `==`) is probed for crashes only and listed for
   the spec owner.
 
-## Local fixes follow-up — 2026-10-07
+## Local fixes follow-up - 2026-10-07
 
 This section tracks the working-tree fixes for [#209](https://github.com/beans-lang/beans/issues/209).
 The campaign above remains the historical evidence for 0.1.51 (`d7adc86`).
@@ -288,7 +288,7 @@ branch; the combined run above is the evidence for the merged compiler.
 | [#207](https://github.com/beans-lang/beans/issues/207) | CD-16 | `NativeBuildDriver.chunk_compile_flags`, shared sanitizer flags, chunk cache and `test/sanitize.sh` | Feed the existing sanitizer flag list into each chunk compilation and therefore its cache key. Cross the actual 4 MiB threshold, report injected load/store/UAF faults on fresh and cached builds, and separate unsanitized objects. **Verified locally**, see [#207 and #208](#207-and-208-verified-locally--2026-10-08). |
 | [#208](https://github.com/beans-lang/beans/issues/208) | CD-18 | Existing Beans TLS server, truncation fixture and `test/tls.sh` | Use the server's real `close_notify` exchange for the honest control; retain raw proxy cuts against `s_server`. Pin the PKCS12 fixture encoding supported by both local toolchains and retain the two-connection Windows fixture contract. **Verified locally**, see [#207 and #208](#207-and-208-verified-locally--2026-10-08). |
 
-### #207 and #208 verified locally — 2026-10-08
+### #207 and #208 verified locally - 2026-10-08
 
 Compiler: `build/beansc` sha256 `2b9f9cd4fdf328d9…`, built from 76a7b29 plus
 one formatting commit. The WIP's sources did not follow #206's new `} else`
@@ -312,7 +312,7 @@ Apple clang, system bash 3.2.
 Not run: the Autobahn suite, Linux x86-64, the Windows TLS staging (unchanged
 two-connection contract), and any candidate soak.
 
-### CD-22 verified locally — 2026-10-08
+### CD-22 verified locally - 2026-10-08
 
 No Linux build took the chunked backend: the module's PIC and PIE levels sat in
 the emitter's debug metadata list, and `chunk_modules` never splits a module
@@ -332,9 +332,9 @@ themselves:
 | #207 probe (4.3 MB IR), `--release`, `BEANS_BUILD_JOBS=2` | 0 chunk objects | 8 compiled and linked; runs |
 | Same probe for ppc32 (`powerpc-unknown-linux-gnu`, lld) | 0 chunk objects; runs under qemu | 8 compiled and linked, each with both flags; runs under qemu |
 | `test/sanitize.sh` with the strict #207 leg | fails: "the first lane linked no chunk objects" | **passed** in 484 s, no skip; the #207 leg runs in full |
-| `make test-fixpoint` | — | **passed** in 23 s |
-| `compiler_campaign.py --sanitize-only` | — | **passed**, nine steps in 107 s; the chunked fault build compiled 8 chunk objects |
-| `make test-self-host` | — | **passed** in 1 339 s, 80 examples compiled and matched |
+| `make test-fixpoint` | - | **passed** in 23 s |
+| `compiler_campaign.py --sanitize-only` | - | **passed**, nine steps in 107 s; the chunked fault build compiled 8 chunk objects |
+| `make test-self-host` | - | **passed** in 1 339 s, 80 examples compiled and matched |
 | `test/chunk_module_flags.sh` (new) | fails: no chunk module for a Linux target | passes |
 
 On ppc32 the flags change the code: without them a chunk's PLT calls lose the
@@ -361,7 +361,7 @@ Not run: Linux x86-64 (only arm64 in a container), macOS `make test-self-host`,
 `make test-core` on either host, Windows, and any candidate soak. The macOS
 and container runs shared the machine, so their times are not benchmarks.
 
-### CD-15 checker part verified locally — 2026-10-08
+### CD-15 checker part verified locally - 2026-10-08
 
 The checker kept move and borrow state across `if`, `match` and loops by
 copying every visible binding at each branch (`copy_scopes`, several copies
@@ -425,7 +425,7 @@ reproduction segfaults). The code involved is unchanged since 0.1.51.
 Not run: Linux, Windows, `make test-sanitize`, the Autobahn suite and any
 candidate soak.
 
-### CD-24 verified locally — 2026-10-09
+### CD-24 verified locally - 2026-10-09
 
 A native build of a nested `List` or `Map` type doubled its IR-emission work
 at every level. `llvm_type` asked for the element's spelling twice per level,
@@ -444,7 +444,7 @@ compiler, whose IR for them is byte-identical to the unfixed compiler's;
 | `List` of a struct, n = 16 / 20 (CPU s) | 0.31 / 5.3 | under 0.01 |
 | `--release` build, `List` / `Map` at 24 | 19.3 / 23.9 | 0.15 / 0.06 |
 | `--release` build, `List` / `Map` at 256 | not run (32 levels: over 300 s) | 0.07 / 0.09 |
-| IR bytes, `List` at 8 / 24 / 256 | 9 604 / 11 843 / — | the same / the same / 45 115 |
+| IR bytes, `List` at 8 / 24 / 256 | 9 604 / 11 843 / - | the same / the same / 45 115 |
 
 Behaviour is unchanged. Unfixed against fixed:
 
@@ -472,7 +472,7 @@ Not run: Linux, Windows, `make test-sanitize`, the Autobahn suite and any
 candidate soak; `make test-self-host` and `make test-core` were not rerun after
 the rebase.
 
-### CD-26 verified locally — 2026-10-08
+### CD-26 verified locally - 2026-10-08
 
 A closure's read of an outer binding marks it borrowed, but the mark was branch
 state: a read in a loop or a returning branch of the body, or a closure made in
@@ -526,7 +526,7 @@ Not run: Linux, Windows, `make test-sanitize` and any candidate soak;
 `make test-quick`, `make test-frontend`, `make test-self-host` and
 `make test-core` were not rerun after the rebase.
 
-### CD-27 verified locally — 2026-10-09
+### CD-27 verified locally - 2026-10-09
 
 IR emission for a nested `Result` or `Option` type cost the cube of its
 depth. Every level asked about the whole chain below it each time its type

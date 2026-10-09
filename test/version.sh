@@ -11,15 +11,7 @@ test -n "$version"
 test -n "$language"
 test -n "$abi"
 
-# Checked before the built compiler is asked its version, because a stale
-# version.b makes that check fail too — and it fails as a bare `test`, with no
-# hint that regenerating one file is the fix.
-#
-# src/version.b is generated from VERSION and committed, because a compiler
-# can be built straight from src/main.b with no make step to generate it
-# first. Committed means it can go stale, so prove it has not: a bump to
-# VERSION that never reached the compiler is exactly how the declared version
-# and the binary that ships a release drift apart.
+# Verify generated src/version.b matches authoritative VERSION before checking the compiler's version.
 mkdir -p build
 tools/gen_version_b.sh build/version.b.fresh
 if ! cmp -s build/version.b.fresh src/version.b; then
@@ -28,8 +20,7 @@ if ! cmp -s build/version.b.fresh src/version.b; then
     diff -u src/version.b build/version.b.fresh >&2 || true
     exit 1
 fi
-# Nothing else may spell a version out: src/version.b is the compiler's one
-# copy, the same way VERSION is the tree's.
+# src/version.b is the only self-hosted version literal.
 selfhosted=()
 for source in src/*.b; do
     if [[ "$source" != src/version.b ]]; then
@@ -43,12 +34,7 @@ if grep -nE 'beansc [0-9]+[.][0-9]+' ${selfhosted+"${selfhosted[@]}"} \
     exit 1
 fi
 
-# Reported with its two sides, for the same reason the stale-version.b check
-# above says what to do: a bare `test` under `set -e` exits 1 and prints
-# nothing, so a bump that has not reached the binary looks like the gate
-# itself is broken. The usual cause is simply that build/beansc predates the
-# bump, and the fix is to rebuild — which is worth saying rather than leaving
-# someone to read this file to find out.
+# Report both versions and the rebuild command when the binary is stale.
 built=$(./build/beansc --version)
 want="beansc $version (language $language, runtime ABI $abi)"
 if [[ "$built" != "$want" ]]; then

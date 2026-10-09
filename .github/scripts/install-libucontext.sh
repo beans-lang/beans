@@ -8,7 +8,7 @@
 # with the POSIX ucontext family everywhere else. musl declares those functions
 # without shipping them, so every other musl target links libucontext. Alpine
 # hosts get it from `apk add libucontext-dev`, but the cross toolchains used for
-# targets Alpine has no port of — big-endian PowerPC64 — carry only musl itself,
+# big-endian PowerPC64, has no Alpine port and carries only musl itself,
 # so build the same library from a pinned source release into their sysroot.
 set -euo pipefail
 
@@ -48,7 +48,7 @@ make -C "$work/src" -s \
 # path to install into, and the compiler links these statically anyway. The
 # `_posix` archive carries the plain getcontext/setcontext/swapcontext names
 # and stands on the base library, so link order stays `-lucontext_posix
-# -lucontext` — the same order tools/link_compiler_ir.sh and the driver use.
+# -lucontext`, matching tools/link_compiler_ir.sh and the driver.
 install -m644 "$work/src/libucontext.a" "$work/src/libucontext_posix.a" \
     "$sysroot/lib/"
 mkdir -p "$sysroot/include"

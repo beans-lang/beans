@@ -4,7 +4,7 @@
 // fit rides inside the header's own block; anything else gets a block of its
 // own, and so does every buffer a list grows into. `list_backings` in the
 // -DBEANS_ARC_STATS report counts exactly the blocks of the second kind, which
-// `allocations` cannot see — a backing is not an object and never went through
+// `allocations` cannot see, a backing is not an object and never went through
 // beans_alloc.
 //
 // The gate runs each mode at two round counts and reads the difference, so the

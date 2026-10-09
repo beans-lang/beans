@@ -1353,7 +1353,7 @@ class SemanticBuilder {
     // A later part of a partial class.
     //
     // The type is declared once, by the part carrying the header, and every
-    // part's members are folded into that one declaration — so nothing is
+    // part's members are folded into that one declaration, so nothing is
     // registered at this node's own position and `walk_file` finds nothing
     // there. The members are still *written* here, though, and an editor
     // asking about this file has to find them: without this, every

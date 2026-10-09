@@ -1,6 +1,6 @@
 // A reflection box reports the type a value IS, not the type of the binding
 // it was handed. That is what lets a program hold its children at a common
-// base and still get one back as its own type — the thing a framework wants
+// base and recover each child as its actual runtime type.
 // reflection for.
 import std.io
 import std.reflect

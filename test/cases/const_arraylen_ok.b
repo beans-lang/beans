@@ -1,10 +1,10 @@
 // A module constant sizes a fixed array (#59). The constant is folded at the
 // end of signature checking, before any type is laid out, so a length reads
-// the number the fold computed — in every position a fixed array can be
+// the number the fold computed, in every position a fixed array can be
 // written, and identically on both backends.
 //
 // Every length here is different, and each array is read at its *last*
-// element — an array indexed only at 0 would pass with any length at all. Both
+// element, an array indexed only at 0 would pass with any length at all. Both
 // ends of the range are here on purpose: 1, where a wrong length is hardest to
 // notice, and 4096, the largest a fixed array may be. The two whose elements
 // are too many to write out are measured with size_of instead.
@@ -23,7 +23,7 @@ const LINK_C: int = LINK_B
 const LINK_B: int = LINK_A
 const LINK_A: int = 5
 
-// Expressions, not literals — folded with the language's own operators, in
+// Expressions, not literals, folded with the language's own operators, in
 // the spellings an integer literal has.
 const EXPR: int = 8 * 4
 const SHIFTED: int = 1 << 3

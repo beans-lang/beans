@@ -6,7 +6,7 @@
 // It is not the same root as the other two and the difference is not
 // spelling. A static has no owning object whose bit gates a write and no
 // scope that orders it, so a reference stored beneath one takes the cycle
-// collector's *static* form — the barrier a whole-static store already
+// collector's *static* form, the barrier a whole-static store already
 // emits. That is the half the printed values cannot see, so the reference
 // here is held through an Option and finally cleared: nothing tears a static
 // down at exit (issue #74), so a value left in one at the end would be an

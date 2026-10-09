@@ -1,9 +1,9 @@
 // The Beans debugger: a Debug Adapter Protocol server over stdio, driving the
 // tree interpreter.
 //
-// The interpreter already has everything a source-level debugger needs — real
+// The interpreter already has everything a source-level debugger needs: real
 // call frames, values, the binding ids the checker allocated, and a source
-// position on every node — so the debugger reads those rather than inventing a
+// position on every node, so the debugger reads those rather than inventing a
 // second model. Breakpoints are Beans file and line positions; frames name
 // Beans functions; a local keeps its own binding id, so a shadowed name stays
 // two separate variables.
@@ -603,7 +603,7 @@ class DebugSession {
         if value.kind == "object" {
             // A reserved-but-unwritten slot holds a field's place in the
             // object's storage order; it is not a value, so the debugger
-            // does not list it — the same field is invisible to a read.
+            // does not list it: the same field is invisible to a read.
             var names: List<string> = []
             for candidate: string in
                 value.data().fields.entries.keys() {

@@ -1,6 +1,6 @@
 // A class that extends a closed generic and writes no `init` of its own.
 // `beansc check` passed, `beansc run` printed the right answer, and only
-// `beansc build` refused — "LLVM emitter cannot find initializer
+// `beansc build` refused, "LLVM emitter cannot find initializer
 // 'main::Grid.init'", a message about the emitter's internals for ordinary
 // user code with no reflection in it (#172). A generic class's bodies are
 // raised under the rendered instance name, `main.Grid<int>.init`, while the

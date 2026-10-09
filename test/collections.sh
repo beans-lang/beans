@@ -1,16 +1,7 @@
 #!/usr/bin/env bash
-# std.collections: Set, Deque, PriorityQueue and SortedMap, plus the
-# fmt.StringBuilder. Each structure is driven through a randomized operation
-# stream and checked against an independent linear model in
-# test/cases/collections_models.b; the golden pins the result and both backends
-# must print it byte for byte. Two sanitizer lanes then run: the leak-clean
-# subset (collections_leakcheck.b) under full ASan + UBSan + LeakSanitizer, and
-# the whole model — which exercises SortedMap.remove — under the same three.
-# On Linux ASan bundles LeakSanitizer and runs it by default, so the
-# check greps for AddressSanitizer, UndefinedBehaviorSanitizer and LeakSanitizer
-# and treats a non-zero exit as failure — a leak here must be loud, not silent.
-# The bounded element/key rules — Clone for every value read back, Order for a
-# sorted key — are refused at the type with a message about the program.
+# Check collection behavior against linear models on both backends, then run
+# leak-clean and full suites under ASan, UBSan, and LeakSanitizer.
+# Bounded element and key requirements are also checked at compile time.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -118,7 +109,7 @@ grep -q "PriorityQueue needs P implements Order, got main.Key" "$tmp/order.bad"
 
 # Bytes is the one builtin the checker let through to a backend that could not
 # emit it. `get` and `set` have always been the way to reach a byte, so this is
-# a spelling being refused rather than a capability being withdrawn — and the
+# a spelling being refused rather than a capability being withdrawn, and the
 # message says which spelling to use instead of naming a stage of the compiler.
 echo "checking Bytes indexing is refused at the type"
 if ./build/beansc check test/cases/bytes_index_bad.b \

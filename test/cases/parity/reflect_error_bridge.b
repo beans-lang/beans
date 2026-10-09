@@ -1,13 +1,13 @@
 // #46, the acceptance case: `std.reflect` answers `Result<T, ReflectError>`,
 // so before the fix no `?` in an ordinary `Result<T>` function could call
-// reflection at all — std failed its own users. `ReflectError` now offers
+// reflection at all, std failed its own users. `ReflectError` now offers
 // `fn to_error() -> Error`, so a reflection failure crosses into a plain
 // `Result<T>` carrying the reflect kind as the error slug.
 //
 // This lives in the parity gate because the whole claim is that both backends
 // take the same conversion: the interpreter used to propagate the wrong error
-// type here while the native backend refused it in the emitter. No markers —
-// the reflect internals are not ours to tag — but the compared answers cover
+// type here while the native backend refused it in the emitter. No markers,
+// the reflect internals are not ours to tag, but the compared answers cover
 // both the ok path (no conversion) and the err path (conversion runs).
 package main
 

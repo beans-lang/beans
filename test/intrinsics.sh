@@ -31,11 +31,11 @@ grep -q '^hints are safe to ignore$' "$tmp/interp"
 echo "checking the hardware CRC step matches the software one"
 # This is the assertion that matters most in the file. The interpreter computes
 # CRC32C in software; the native binary uses the machine's own instruction. They only
-# agree if the polynomial, the byte order and the accumulator convention all match —
+# agree if the polynomial, the byte order and the accumulator convention all match,
 # and the first version here got the convention wrong, adding the pre/post inversion
 # a *complete* CRC32C uses but the *instruction* does not.
 #
-# The feature has two names for one instruction — `crc` on arm64, `sse4.2` on x86-64 —
+# The feature has two names for one instruction, `crc` on arm64, `sse4.2` on x86-64,
 # and Beans has no conditional compilation, so the guard is written for the machine
 # this is running on. That is also why the case lives here rather than in
 # examples/intrinsics.b, which has to check on every architecture. The dotted x86 name
@@ -107,7 +107,7 @@ grep -q 'call float @llvm.fma.f32' build/intrinsics.ll
 grep -q 'call void @llvm.prefetch.p0' build/intrinsics.ll
 # spin_hint has no portable intrinsic, so it is a runtime call by design.
 grep -q 'call void @beans_spin_hint()' build/intrinsics.ll
-# fma must not have been turned into a multiply and an add — that would round twice.
+# fma must not have been turned into a multiply and an add, that would round twice.
 if grep -qE 'fmul double .*\n.*fadd double' build/intrinsics.ll; then
     echo "fma was lowered to a multiply and an add" >&2
     exit 1

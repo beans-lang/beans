@@ -124,7 +124,7 @@ fi
 
 echo "checking a class past the inline mask uses its descriptor shape"
 # 58 slots is 464 bytes at an 8-byte stride. A pointer beyond that cannot be named by
-# the mask at all, so the class needs its extended shape — a silently unwalked field
+# the mask at all, so the class needs its extended shape, a silently unwalked field
 # is a leak that only shows up under the collector.
 cat >"$tmp/wide.b" <<'WIDE'
 // 60 string fields puts the last ones past the 58-slot mask.

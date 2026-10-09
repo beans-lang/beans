@@ -1,21 +1,7 @@
-// Sockets.
-//
-// Everything here runs on loopback in **one process**, which is what makes it a
-// deterministic test rather than a demo that needs a server somewhere. The trick is
-// that a `connect` to a listening socket on loopback finishes as soon as the kernel
-// queues it — the accept queue holds the connection until someone takes it — so a
-// single thread can be both ends without a race.
-//
-// The API follows the same rule as the rest of the language: **making a socket is
-// named construction on the class it produces**, because it can fail and so cannot be
-// a constructor. `TcpListener.bind`, `TcpStream.connect`, `UdpSocket.bind`,
-// `Address.resolve` — the same shape as `File.open` and `MMap.open`. There are no
-// module-level functions in `std.net`.
-//
-// Sockets are `unique class`: move-only, closed by `deinit`. One owner, one close.
-//
-// Every line prints a *derived fact*, because ports are picked by the system and
-// differ every run. The facts do not.
+// Loopback sockets let one process run both client and server deterministically.
+// A loopback `connect` returns once queued, so one thread can serve both ends.
+// Fallible socket creation uses class methods; sockets are unique and close in `deinit`.
+// Output omits system-assigned ports to remain deterministic.
 
 import std.io
 import std.net
@@ -78,7 +64,7 @@ fn bulk() -> Result<int> {
     client.shutdown_write()?
 
     // read_exact loops the other way, and fails with kind `eof` if the peer stops
-    // early — which is what a caller reading a fixed-size header needs.
+    // early, which is what a caller reading a fixed-size header needs.
     let got: Bytes = session.read_exact(4096)?
     io.println("sent and received 4096 bytes {sent == 4096 && got.len() == 4096}")
     io.println("bytes survived the trip {got.get_u8(0) == 0 && got.get_u8(4095) == 4095 % 251}")
@@ -152,7 +138,7 @@ fn failures() {
     }
 
     // A name that cannot resolve. An empty label ("a..b") is not a legal DNS name, so
-    // the resolver rejects it without sending anything — this example never touches
+    // the resolver rejects it without sending anything. This example never touches
     // the network. A reserved name like "x.invalid" would also fail, but it costs a
     // round trip and a resolver that hijacks unknown names could answer it.
     match net.Address.resolve("a..b", 80) {
@@ -160,8 +146,7 @@ fn failures() {
         err(e) => io.println("unknown name: {e.kind}"),
     }
 
-    // An empty host is refused rather than quietly meaning "every interface" — a
-    // socket listening on the whole world by accident is not a mistake worth allowing.
+    // An empty host is refused; binding every interface by accident is unsafe.
     match net.TcpListener.bind("", 0) {
         ok(server) => io.println("unexpectedly bound"),
         err(e) => io.println("empty host: {e.kind}"),

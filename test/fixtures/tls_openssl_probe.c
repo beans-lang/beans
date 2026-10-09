@@ -1,14 +1,14 @@
-// Drives the OpenSSL lane of the TLS bridge directly, so the second backend
-// is exercised on any host with a libssl — including macOS, where the
-// shipped backend is SecureTransport and would otherwise be the only one
-// ever tested. Compiled with -U__APPLE__ so beans_net_tls.c takes its
-// POSIX/dlopen path; BEANS_LIBSSL names the library.
-//
-//   tls_openssl_probe <ca.pem> <host> <port> [alpn] [connect-address]
-//
-// Prints one line: "accepted alpn=<proto>" or "rejected <reason>", matching
-// the verdict vocabulary test/cases/tls_verify.b prints, so test/tls.sh can
-// hold both backends to the same table.
+// test/tls.sh compiles with -U__APPLE__ to exercise the POSIX/dlopen OpenSSL bridge.
+
+
+
+
+
+
+
+
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -656,8 +656,8 @@ fn main() {{
     io.println("{{live.label()}} {{live.pair()[1]}}")
 }}
 '''
-    # five in work() before the loop — two returned through an interface, two
-    # passed through a bound, one holder — then one Unit per copy
+    # five in work() before the loop: two returned through an interface, two
+    # passed through a bound, and one holder; then one Unit per copy
     lifetimes = 5 + copies
     total = 2 * unit + 2 * boxed + held + copies * (unit + 2)
     expected = (

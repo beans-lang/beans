@@ -1,8 +1,8 @@
 // A method the emitter calls directly is still a row in its class's
 // descriptor, and reflection reads exactly those rows. Every method here is
-// one the static-dispatch rule settles — a leaf class, an inherited body
+// one the static-dispatch rule settles, a leaf class, an inherited body
 // nobody replaces, an abstract class with a single concrete subclass, a sole
-// interface implementor — so if settling a call ever cost a table row, these
+// interface implementor, so if settling a call ever cost a table row, these
 // reflective calls would be the ones to lose their target.
 package main
 

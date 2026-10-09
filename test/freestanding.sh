@@ -183,7 +183,7 @@ if [[ "$boom_status" -eq 0 ]]; then
     echo "the out-of-range removal did not panic" >&2
     exit 1
 fi
-# The message, byte for byte what the interpreter says — which is the point of the
+# The message, byte for byte what the interpreter says, which is the point of the
 # formatter being written out rather than left to snprintf.
 ./build/beansc run "$tmp/boom.b" >"$tmp/boom.interp.out" 2>"$tmp/boom.interp.err" || true
 grep -q 'runtime panic' "$tmp/boom.err" || {
@@ -266,7 +266,7 @@ echo "checking the hooks are weak in the hosted profiles"
 # timing, which is what made it look like a flaky compiler for so long.
 #
 # So: `nm` runs once into a file, its exit status and output length are checked before
-# anything is matched, and the hooks are grepped from that file. The loud retry stays —
+# anything is matched, and the hooks are grepped from that file. The loud retry stays,
 # a second attempt succeeding would still be evidence, and evidence must not be
 # swallowed.
 build_full_runtime() {

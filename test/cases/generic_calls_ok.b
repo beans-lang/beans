@@ -78,7 +78,7 @@ fn main() {
     io.println(crate.replace<string>("swapped"))
     io.println(crate.get())
 
-    // 5. a generic method infers from a generic argument — no explicit
+    // 5. a generic method infers from a generic argument, no explicit
     // type arguments anywhere
     io.println(wires.adopt(new Bind<Greets, Greeter>()))
 

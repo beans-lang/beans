@@ -1,5 +1,5 @@
-// Raw literals: bytes, not syntax. Every shape that used to need escaping —
-// a route template, a regex, a Windows path, a printf format, embedded JSON —
+// Raw literals: bytes, not syntax. Every shape that used to need escaping,
+// a route template, a regex, a Windows path, a printf format, embedded JSON,
 // written the way its own reader spells it, and proved equal to the escaped
 // spelling so the two forms cannot drift.
 import std.io
@@ -89,7 +89,7 @@ fn nested_in_interpolation() {
 // Where a slot's expression ends and its format spec begins is one walk,
 // asked by the checker, the tree interpreter and the LLVM emitter. When the
 // emitter counted only braces it stopped at the first `:` at brace depth 1
-// — a closure parameter's type, a map key, a named argument — and dropped
+// The colon may occur in a closure parameter's type, map key, named argument, or dropped
 // the real spec, so the two compilers printed different widths for one
 // literal. Every line here holds a `:` that is not a separator.
 fn twice(v: int) -> int { return v * 2 }

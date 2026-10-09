@@ -1,11 +1,4 @@
-// Move-only resources: the shape every OS handle in `std` uses.
-//
-// A `unique class` cannot be copied. Combined with `deinit` it gives a handle that
-// exactly one place owns and that closes at a knowable moment — which is what an
-// open file, a socket or a child process needs.
-//
-// Three rules follow from `unique`, and they are the reason this file exists: they
-// are worth seeing in one place before reading any resource API.
+// `unique class` and `deinit` give OS handles one owner and deterministic cleanup.
 
 import std.io
 
@@ -20,7 +13,7 @@ unique class Slot {
     }
 
     fn deinit() {
-        // Deterministic, and observable — that is the point of a resource type.
+        // Resource cleanup is deterministic and observable.
         io.println("slot {self.id} closed")
     }
 
@@ -43,7 +36,7 @@ fn open_slot(id: int) -> Result<Slot> {
 }
 
 // `?` unwraps the Result into an *owned* local. That is how a resource is taken out
-// of a Result — a `match` binding borrows instead, so it can read the resource but
+// of a Result. A `match` binding borrows, so it can read the resource but
 // not take it.
 fn use_two() -> Result<int> {
     let first: Slot = open_slot(1)?
@@ -83,8 +76,7 @@ fn main() {
     }
 
     // The error path. Slot 4 was already open when slot -1 failed, and it still
-    // closes — a leak here would be a resource left open on an error return, which
-    // is the single most common bug this shape exists to prevent.
+    // closes. A leak would leave a resource open after an error return.
     match fails_late() {
         ok(total) => io.println("unexpected {total}"),
         err(e) => io.println("failed as expected: {e.msg}"),

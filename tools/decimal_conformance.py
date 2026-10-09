@@ -52,8 +52,7 @@ BDEC_MAX_SCALE = 65535
 BDEC_MAX_EXPONENT_TEXT = 4096  # dec_valid_c caps |exponent| in source text
 
 # Operations beans has. Everything else in the suite (quantize, remainder,
-# power, rotate, the encodings) has no beans spelling, so it is not a skip —
-# it is not a case.
+# power, rotate, the encodings) has no Beans spelling and is outside this suite.
 OPS = {
     "add": 2,
     "subtract": 2,
@@ -274,7 +273,7 @@ def collect_cases(decdata):
             if any(p is None for p in parsed):
                 skips["operand"] += 1
                 continue
-            # IBM's own spelling is kept — beans' parser reads `1E+7` and
+            # IBM's spelling is kept because Beans parses `1E+7` and
             # `77E-999` itself, and a case file of expanded positional text
             # would be ten times the size and would stop testing that parser.
             # The oracle below re-reads the same text through beans_parse, so

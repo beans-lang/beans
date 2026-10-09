@@ -276,7 +276,7 @@ fn net_source_root() -> string {
 // A wasm sysroot is a per-machine constant: wasi-libc lands somewhere
 // different on every host, so a project that names it in a script names one
 // machine. It reads from the environment for the same reason the wasm C
-// compiler does, and the pair matches — BEANS_WASM_SYSROOT over BEANS_SYSROOT
+// compiler does, and the pair matches: BEANS_WASM_SYSROOT over BEANS_SYSROOT
 // the way BEANS_WASM_CC sits over BEANS_CC. An explicit --sysroot always wins,
 // because a flag is the one thing a person can see in the command they ran.
 class ResolvedSysroot {
@@ -341,7 +341,7 @@ fn net_bridge_features(packages: List<LoadedPackage>) -> List<string> {
             wanted = ["h1", "h2"]
         } else if loaded.import_path == "std.websocket" {
             // permessage-deflate (RFC 7692) is part of std.websocket, and
-            // its DEFLATE codec is the zlib bridge — the two bridges cannot
+            // its DEFLATE codec is the zlib bridge: the two bridges cannot
             // share one translation unit, so the package pulls both, the
             // same way std.http pulls h1 and h2.
             wanted = ["ws", "zlib"]
@@ -362,9 +362,9 @@ fn net_bridge_features(packages: List<LoadedPackage>) -> List<string> {
 }
 
 // The translation units one feature compiles, shim first. Vendored
-// libraries whose sources cannot share a translation unit — colliding
+// libraries whose sources cannot share a translation unit: colliding
 // static helpers, or upstream files that disagree on internal signatures
-// across files — compile beside the shim as their own objects, all inside
+// across files: compile beside the shim as their own objects, all inside
 // the feature's one cache entry.
 fn net_bridge_translation_units(root: string, feature: string) -> List<string> {
     var units: List<string> = []
@@ -395,7 +395,7 @@ fn net_bridge_translation_units(root: string, feature: string) -> List<string> {
     return move units
 }
 
-// Every file whose content shapes the compiled bridge — the shim, the
+// Every file whose content shapes the compiled bridge: the shim, the
 // shared header, and the vendored sources. All of them feed the cache key.
 fn net_bridge_inputs(root: string, feature: string) -> List<string> {
     var files: List<string> = []
@@ -621,7 +621,7 @@ fn net_bridge_link_arguments(
 //
 // The chunk count is a constant, not the machine's core count. The partition
 // decides which symbols land in which object and therefore the bytes of the
-// final binary, and a binary must not depend on how many cores built it —
+// final binary, and a binary must not depend on how many cores built it:
 // the fixed-point gate compares binaries built on different runs, and people
 // compare them across machines. BEANS_BUILD_JOBS only decides how many of
 // those compiles run at once, so it changes the wall time and nothing else.
@@ -672,7 +672,7 @@ fn native_build_jobs(chunks: int) -> int {
 // into place, so a half-written object cannot appear through normal use;
 // this catches the one something else truncated, and re-compiles rather than
 // handing the linker a file it cannot read. What it does not catch is a byte
-// changed in place without changing the length — neither does any other
+// changed in place without changing the length: neither does any other
 // cache here, and a malformed object still stops the link with the file
 // named rather than reaching the binary.
 fn native_chunk_receipt(object: string) -> string {
@@ -712,7 +712,7 @@ fn native_chunk_publish(staging: string, object: string) {
 }
 
 // Test-only native instrumentation. `BEANS_SANITIZE` names the sanitizers a
-// build asks for, comma-separated, out of a closed set — keeping the accepted
+// build asks for, comma-separated, out of a closed set: keeping the accepted
 // names closed avoids turning an environment variable into arbitrary compiler
 // flags, and a name that is not one of them is refused rather than ignored,
 // because a sanitizer that silently does nothing is the whole of issue #168.
@@ -722,7 +722,7 @@ fn native_chunk_publish(staging: string, object: string) {
 // (sanitizer_flags, below) and the attributes the emitter writes onto every
 // function it defines (sanitizer_function_attribute). It used to be only the
 // first half, and an LLVM sanitizer pass instruments only the functions that
-// carry its attribute — so `make test-sanitize` checked beans_rt.c and the
+// carry its attribute, so `make test-sanitize` checked beans_rt.c and the
 // bridges and not one line of the code this compiler generated.
 fn sanitizers_requested() -> List<string> {
     var requested: string = ""
@@ -788,9 +788,9 @@ fn sanitizer_flags() -> List<string> {
 // TSan walk straight past (issue #168).
 //
 // `undefined` has no attribute here, and that is not an omission:
-// UndefinedBehaviorSanitizer is Clang front-end instrumentation — it writes
+// UndefinedBehaviorSanitizer is Clang front-end instrumentation: it writes
 // its checks into the IR it generates rather than running a pass over IR it is
-// given — and LLVM has no `sanitize_undefined` function attribute to ask for
+// given, and LLVM has no `sanitize_undefined` function attribute to ask for
 // it with (clang rejects the spelling outright). UBSan therefore covers
 // beans_rt.c, beans_fiber.c and the bridges only. Reaching the generated code
 // with it would mean this emitter writing the checks itself, which is a
@@ -830,9 +830,9 @@ class NativeBuildDriver {
     net_features: List<string>
     csrc_sources: List<CsrcUnit>
     // Does the emitted module carry the controlled unwind (src/llvm_unwind.b)?
-    // The runtime half has to agree with the backend half — a runtime that
+    // The runtime half has to agree with the backend half: a runtime that
     // starts an unwind through frames with no cleanup pads would walk to the
-    // end of the fiber's stack — so both read the one answer the emitter
+    // end of the fiber's stack, so both read the one answer the emitter
     // computed.
     unwind: bool
     errors: List<Diagnostic>
@@ -908,7 +908,7 @@ class NativeBuildDriver {
     // building a package from anywhere else looks for them beside that package
     // and does not find them. "The runtime is missing" and "you are in the
     // wrong directory" would otherwise read as the same error, and only the
-    // second one is ever true here — so name the absolute path that was tried
+    // second one is ever true here, so name the absolute path that was tried
     // and say where that path came from.
     fn missing_c_source(kind: string,
                         environment: string,
@@ -933,7 +933,7 @@ class NativeBuildDriver {
     // A native build is the one command that needs software Beans does not
     // ship in every package. When it is missing, say so before Clang is
     // started: a user should never have to read "cannot start Clang: No such
-    // file or directory" — or worse, a linker error about a missing SDK — to
+    // file or directory" (or worse, a linker error about a missing SDK) to
     // learn that they need one command.
     fn check_toolchain(source: string,
                        compiler: string) -> bool {
@@ -1068,7 +1068,7 @@ class NativeBuildDriver {
     // allocator at -O0, and that allocator does not spill the way the greedy
     // one does: on a target with six usable general-purpose registers, where
     // every i64 costs a pair, it can genuinely run out. This compiler's
-    // output reaches that point — `beansc build --target i686-pc-windows-gnu
+    // output reaches that point: `beansc build --target i686-pc-windows-gnu
     // examples/unsafe_raw.b` fails with "ran out of registers during register
     // allocation" in three functions at -O0 and builds clean at any level
     // that allocates with greedy. No 64-bit target and no ARM lane hits it;
@@ -1192,7 +1192,7 @@ class NativeBuildDriver {
                 // __attribute__((cleanup)) guards for their scratch and for
                 // the collection they are mutating (issue #73). C cleanups
                 // only run during an unwind when the frame has exception
-                // handling, which for C is -fexceptions — the same pairing
+                // handling, which for C is -fexceptions: the same pairing
                 // glibc uses for pthread cleanup handlers. Only the runtime
                 // unit needs it, and the runtime object cache keys on
                 // self.unwind, so an unwinding and a non-unwinding build
@@ -1966,7 +1966,7 @@ class NativeBuildDriver {
     // list feeds both the cache key and the invocation, so a flag can never
     // change an object without changing its cache path. These are exactly the
     // compile-side flags the single-module link line carries: the link-only
-    // ones — -fuse-ld, -static, -Wl, -l — have no place on a -c.
+    // ones (-fuse-ld, -static, -Wl, -l) have no place on a -c.
     fn chunk_compile_flags() -> List<string> {
         var flags: List<string> = []
         flags.push(self.optimization_flag())
@@ -2028,7 +2028,7 @@ class NativeBuildDriver {
     // One object per chunk: reused when its key is already on disk, compiled
     // by one of the concurrent Clangs when it is not. The returned order is
     // the chunk order, never the order the compiles finished, so the link
-    // line — and the binary — does not depend on the scheduler.
+    // line (and the binary) does not depend on the scheduler.
     fn cached_chunk_objects(compiler: string,
                             artifact_name: string,
                             chunks: List<string>) -> List<string> {
@@ -2060,7 +2060,7 @@ class NativeBuildDriver {
                 path.join("build", "{stem}.ll")
             // The name is addressed by the chunk's own content, so two
             // concurrent builds of the same program write the same bytes to
-            // the same path and a third reading it sees whole content —
+            // the same path and a third reading it sees whole content:
             // and object files that embed their input's filename still
             // rebuild byte for byte.
             if !self.publish_scratch(
@@ -2257,8 +2257,8 @@ class NativeBuildDriver {
             !self.lto &&
             !self.debug &&
             self.target.object_format != "wasm"
-        // Concurrent builds of entries sharing a stem — every project's
-        // main.b, say — must not share scratch files, or interleaved
+        // Concurrent builds of entries sharing a stem: every project's
+        // main.b, say: must not share scratch files, or interleaved
         // writes hand Clang a torn module. The transient name is
         // addressed by the IR's own content: deterministic for
         // identical builds (ELF objects embed the input filename as an
@@ -2292,8 +2292,8 @@ class NativeBuildDriver {
             if !self.publish_scratch(ir_path, llvm) {
                 return false
             }
-            // the stable spelling persists as an inspectable copy — tests
-            // and humans read build/<name>.ll after a build — while Clang
+            // the stable spelling persists as an inspectable copy: tests
+            // and humans read build/<name>.ll after a build, while Clang
             // always compiles the content-addressed file above, so
             // concurrent builds can tear this copy without tearing a compile
             if scratch_tag != "" {
@@ -2374,7 +2374,7 @@ class NativeBuildDriver {
             } else if self.target.is_android() {
                 // The NDK's clang, not the host's. Android's compiler-rt
                 // builtins and libunwind ship with the NDK, and a host clang
-                // handed an Android triple fails at link looking for them —
+                // handed an Android triple fails at link looking for them:
                 // with an error about a missing `libclang_rt.builtins.a` that
                 // says nothing about the NDK.
                 self.configured_program("BEANS_ANDROID_CC", android_clang())
@@ -2646,7 +2646,7 @@ class NativeBuildDriver {
                 // The module's own startup. A library has no `main`, so the
                 // host has to run this once after instantiating it or the
                 // reflection registry is empty, every annotation is absent
-                // and every singleton is zeroed memory — with nothing
+                // and every singleton is zeroed memory: with nothing
                 // reporting a failure, because nothing failed.
                 wasm.arg("-Wl,--export=beans_module_start")
                 for symbol: string in self.export_symbols {

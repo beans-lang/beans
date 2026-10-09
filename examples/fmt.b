@@ -1,4 +1,4 @@
-// stdlib phase 3: std.fmt, and printing that now covers lists and enums —
+// stdlib phase 3: std.fmt formats lists and enums for printing,
 // io.println and interpolation render them exactly like the interpreter's
 // display(): [1, 2, 3], variant(payload), nesting included.
 import std.io

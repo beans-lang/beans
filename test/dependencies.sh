@@ -245,8 +245,8 @@ EOF
 done
 
 # ---- one manifest, one ingestion ------------------------------------------
-# A package reached by two edges — imported directly and required by a nested
-# module inside it — must contribute its csrc row once, or the link sees it twice.
+# A package reached by two edges, imported directly and required by a nested
+# module inside it, must contribute its csrc row once, or the link sees it twice.
 mkdir -p "$tmp/kitsrc/native" "$tmp/kitsrc/shell" "$tmp/kitapp"
 git -C "$tmp/kitsrc" init -q
 git -C "$tmp/kitsrc" config user.name "Beans Test"

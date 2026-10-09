@@ -6,7 +6,7 @@ import std.io
 // pointer pair and the pointer-plus-int must reach the C ABI bridge with
 // their declared widths, while the lone narrow argument stays on the word
 // path. Every symbol is a real CRT export everywhere the interpreter runs
-// (glibc, musl, libSystem, msvcrt.dll, ucrtbase.dll) — the Windows module
+// (glibc, musl, libSystem, msvcrt.dll, ucrtbase.dll), the Windows module
 // walk cannot see static-CRT symbols.
 extern "C" fn abs(value: i32) -> i32
 extern "C" fn strcmp(left: RawPtr<u8>, right: RawPtr<u8>) -> i32

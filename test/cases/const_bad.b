@@ -1,5 +1,5 @@
 // A non-foldable initializer is refused with a message that names what was
-// not constant — a call, a cast, a layout query, and every arithmetic
+// not constant, a call, a cast, a layout query, and every arithmetic
 // result a backend could not reproduce. Grouped so one check proves the
 // whole reason table, not one line of it.
 import std.io
@@ -14,7 +14,7 @@ const BAD_MODZERO: int = 5 % 0
 const BAD_SHIFT: i32 = 1 << 40
 const BAD_U64: u64 = 1 << 63
 // A u64 literal at or above 2^63 is a negative bit pattern in the fold's
-// signed accumulator, so no operator may consume it — including a
+// signed accumulator, so no operator may consume it, including a
 // comparison, which would otherwise answer with signed order. Both
 // spellings reach the same guard: the decimal one used to slip past it
 // because `to_int()` answers i64's maximum instead of failing, and the

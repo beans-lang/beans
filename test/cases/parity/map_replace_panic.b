@@ -1,7 +1,7 @@
 // A deinit that panics while a map replace holds the old value (issue #44,
 // spec/CONCURRENCY.md): the store stands. The runtime stores the new value
-// and drops the duplicate key before the old value's release — the only
-// step that can run user code — so the contained panic finds the map
+// and drops the duplicate key before the old value's release, the only
+// step that can run user code, so the contained panic finds the map
 // already holding the new entry and nothing is double-freed. The declined
 // insert releases the incoming value the same way. Reverting the runtime
 // order (release-old-first) flips "replace entry" to the old tag; reverting
@@ -32,7 +32,7 @@ fn replace_boom() -> int {
     // same key value, fresh string object: the replace path; the old
     // value's deinit panics after the new value is already stored. The new
     // value survives in the static map to the end of the program, and no
-    // deinit runs for it on either backend — statics are never torn down
+    // deinit runs for it on either backend, statics are never torn down
     // (issue #74, spec/SYNTAX.md), which is why this one can be loud now.
     Store.cache[fresh_key(1)] = new Loud("replace-new")
     return Store.cache.len()

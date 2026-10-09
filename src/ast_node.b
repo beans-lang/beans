@@ -207,7 +207,7 @@ fn ast_array_length_text(node: AstNode) -> string {
 // every integer literal in the language is read, so hex, binary and digit
 // separators all mean here what they mean everywhere else. A length that
 // names a constant answers -1 until the constant is folded and substituted,
-// and keeps answering -1 when that constant could not supply one — the
+// and keeps answering -1 when that constant could not supply one: the
 // refusal was already reported at the name.
 fn ast_array_length(node: AstNode) -> int {
     if node.value == "" { return -1 }

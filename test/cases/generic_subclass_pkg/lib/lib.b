@@ -1,7 +1,7 @@
 // The generic base lives in its own package. `weight` is public, so a
 // subclass in another package answers the same selector and really is an
 // override; `secret` is package-private, so its selector carries this package
-// and no subclass elsewhere can replace it — its row on a foreign subclass's
+// and no subclass elsewhere can replace it, its row on a foreign subclass's
 // descriptor must still be the base's own body.
 package lib
 

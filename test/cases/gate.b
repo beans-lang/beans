@@ -1,6 +1,6 @@
 // Gate (spec/CONCURRENCY.md, F3): a sticky broadcast flag. One open wakes
-// every parked waiter at once — same-worker fibers and fibers parked while
-// an OS thread fires the open — and the gate stays open for every later
+// every parked waiter at once, same-worker fibers and fibers parked while
+// an OS thread fires the open, and the gate stays open for every later
 // wait. The differential gate runs this on both engines and demands
 // byte-identical output, scheduling order included.
 import std.io
@@ -53,7 +53,7 @@ fn main() {
     io.println("sticky pass")
 
     // cross-thread: main parks on a shut gate and an OS thread fires the
-    // open — the wake crosses back into the parked fiber's worker
+    // open, the wake crosses back into the parked fiber's worker
     let late: Gate = new Gate()
     let t: Thread<int> =
         thread.spawn(fn() -> int { return late_open(late) })

@@ -5,14 +5,14 @@
 //
 // **Symbols never leak into the global namespace.** The library is opened with
 // `RTLD_LOCAL`. `RTLD_GLOBAL` would publish its symbols where an `extern "C" fn`
-// resolves them — and the interpreter resolves those through `dlsym`, while a native
+// resolves them, and the interpreter resolves those through `dlsym`, while a native
 // build resolves them through the linker. A program would then link in one backend and
 // not the other, which is the exact failure this project tests against.
 //
 // **Calling a resolved address requires `unsafe`, and always will.** A symbol is just an
 // address; nothing about it says what arguments it takes. The signature is your guess,
 // and a wrong guess corrupts the stack rather than raising an error. Only word-sized
-// arguments — integers and pointers — are offered. Anything with a float, a narrow
+// arguments (integers and pointers) are offered. Anything with a float, a narrow
 // integer or a by-value struct needs `extern "C"`, where Clang classifies the signature
 // for the target instead of you.
 
@@ -23,7 +23,7 @@ import std.dl
 /// A resolved symbol: its address, and the name it was looked up by.
 ///
 /// Holding one is safe. *Calling* it is not, and goes through `std.dl` inside an
-/// `unsafe { }` block — see the note at the bottom of this file for why there is no
+/// `unsafe { }` block: see the note at the bottom of this file for why there is no
 /// wrapper here.
 pub class Symbol {
     pub address: int = 0
@@ -35,7 +35,7 @@ pub class Symbol {
     }
 
     /// True when the symbol resolved to a real address. A symbol *can* legitimately live
-    /// at address 0, so this is a convenience rather than the error check — `Dylib.find`
+    /// at address 0, so this is a convenience rather than the error check: `Dylib.find`
     /// already reported failure as an `err`.
     pub fn is_null() -> bool {
         return self.address == 0
@@ -83,7 +83,7 @@ pub unique class Dylib {
     }
 
     /// Closes it. **Every address obtained from this library becomes invalid**, and
-    /// calling one afterwards is undefined — which is why `Symbol` carries the address
+    /// calling one afterwards is undefined, which is why `Symbol` carries the address
     /// rather than a way to reach back into the library.
     pub fn close() -> Result<bool> {
         if !self.live { return err("library is closed", "closed") }
@@ -95,7 +95,7 @@ pub unique class Dylib {
 // **Calling is deliberately not wrapped here.**
 //
 // A `dylib.call2(symbol, a, b)` helper would have to open its own `unsafe { }` block to
-// reach the primitive, and then callers would not need one — the wrapper would launder
+// reach the primitive, and then callers would not need one: the wrapper would launder
 // the unsafety, which is the opposite of what it is for. So calling goes straight to
 // `std.dl` at the call site, where `unsafe` is visible and the checker enforces it:
 //
@@ -107,6 +107,6 @@ pub unique class Dylib {
 //     }
 //
 // `call0` through `call3` take and return one machine word each, which covers integers
-// and pointers — every C function whose arguments pass in registers as words. A float, a
+// and pointers: every C function whose arguments pass in registers as words. A float, a
 // narrow integer or a by-value struct needs `extern "C"`, where Clang classifies the
 // signature for the target instead of you guessing.

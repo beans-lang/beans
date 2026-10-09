@@ -249,8 +249,8 @@ fn bindgen_real_file(name: string) -> bool {
 // because it repeats the one before it.
 //
 // A declaration written out by hand carries `loc.file`. One created by a macro
-// carries a spelling location — where the tokens were written, which for a
-// pasted name is `<scratch space>` — and an expansion location, which is where
+// carries a spelling location, where the tokens were written, which for a
+// pasted name is `<scratch space>`, and an expansion location, which is where
 // the macro was used. The expansion location is the one that says which header
 // the declaration belongs to.
 fn bindgen_declaration_file(
@@ -311,7 +311,7 @@ fn bindgen_error_is_located(text: string) -> bool {
 // are unsupported" gives the reader of a 300-function header no way to
 // know which declaration carried the array. The renderer cannot see its
 // top-level owner, so the record and declaration loops stamp the owner
-// onto every error their rendering produced — a skip comment is only
+// onto every error their rendering produced: a skip comment is only
 // auditable against a coverage list when it names its declaration.
 fn bindgen_name_errors(
     generator: BindgenGenerator, from: int, owner: string) {

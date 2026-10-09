@@ -2,8 +2,8 @@
 # run it after adding or removing an emitter refusal.
 #
 # status is triage, and is preserved across regeneration:
-#   interpreter-ok  the interpreter runs it, only `beansc build` refuses
-#                   — a program that runs but will not build, i.e. a bug
+#   interpreter-ok  the interpreter runs it, but `beansc build` refuses the program
+
 #   both-refuse     neither path offers it, so it is a real language limit
 #   internal        an invariant, not something a user program can reach
 #   unknown         not triaged

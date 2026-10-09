@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # std on fibers (spec/CONCURRENCY.md, F3): channels, sleep, and thread.join
 # park the calling fiber instead of blocking its worker. The differential
-# case pins the semantics on both engines at once — a same-worker channel
+# case pins the semantics on both engines at once, a same-worker channel
 # ping-pong (an instant thread deadlock before fiber-aware channels),
 # deadline-ordered sleeps, close waking a parked receiver, a closed-channel
 # send panicking contained to its fiber, and a sibling fiber running while
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 # macOS runners ship no GNU timeout; stand in for it when absent. The
-# stand-in reports 137 (SIGKILL) where GNU prints 124 — every use here
+# stand-in reports 137 (SIGKILL) where GNU prints 124, every use here
 # only cares that a hang cannot pass, and neither code ever matches an
 # expected exit.
 if ! command -v timeout >/dev/null 2>&1; then

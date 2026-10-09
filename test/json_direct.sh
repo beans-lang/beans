@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The direct compact JSON writer must be byte-identical to the yyjson DOM
-# path it replaced — same bytes on success, same refusal on broken UTF-8.
+# path it replaced, same bytes on success, same refusal on broken UTF-8.
 # The fuzz drives both writers over the same seeded values (escapes, control
 # bytes, unicode, integer extrema, optionals present and absent, boxed
 # options, growth-boundary and megabyte strings, fifty-thousand-element
@@ -33,7 +33,7 @@ done
 # appended bytes, the returned count, the untouched prefix, and a shared
 # refusal must all agree. The fuzz counts the mismatches and exits non-zero if
 # any value disagrees or no check ran, so a broken encode_into fails the runs
-# above under `set -e` — no transcript grep, which trips over the raw control
+# above under `set -e`, no transcript grep, which trips over the raw control
 # and multibyte bytes these documents carry.
 
 # The transcript must still contain what the parity claim rests on: the
@@ -53,7 +53,7 @@ FUZZ_SEED=7 FUZZ_ROUNDS=40 FUZZ_GIANTS=0 BEANS_JSON_NO_DIRECT=1 \
     "$beansc" run test/cases/json_direct_fuzz.b >"$tmp/interp.dom"
 cmp "$tmp/interp.direct" "$tmp/interp.dom"
 
-# The interpreter and the native backend must agree byte for byte — on encode
+# The interpreter and the native backend must agree byte for byte, on encode
 # and on encode_into, refusals included. The suite never compared the two
 # directly before, which is how the interpreter came to emit invalid UTF-8 the
 # native writers reject. Giants off so both sides emit the same set; the

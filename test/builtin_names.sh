@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The builtin-name rule: a user type declaration (class, struct, enum, union,
-# interface) may not reuse a name the language already owns — the builtin
+# interface) may not reuse a name the language already owns, the builtin
 # generic classes, the builtin enums, Error, or a primitive type name. Both
 # compilers must reject it at the declaration with identical bytes, in a
 # single file, in a package, imported, generic, and when the uses sit inside
@@ -47,8 +47,8 @@ run_lf() {
 # The whole reserved registry, kept in step with Checker::reserved_type_name
 # and resolve.b's builtin_type by this sweep: every name must be refused as a
 # class declaration by both compilers with identical bytes. A name either
-# compiler starts accepting again — or a future builtin that is not added
-# here and to both predicates — fails this file.
+# compiler starts accepting again, or a future builtin that is not added
+# here and to both predicates, fails this file.
 RESERVED="unit bool string decimal int i8 i16 i32 i64 uint byte u8 u16 u32
 u64 f32 f64 float List Map OrderedMap Thread Brew Mutex Channel Box Arena
 Shared Weak RawPtr Slice Atomic StoredCallback Option Result Error AtomicInt
@@ -80,7 +80,7 @@ EOF
     }
 done
 
-# Names the parse does not claim stay free — a Simd prefix alone reserves
+# Names the parse does not claim stay free, a Simd prefix alone reserves
 # nothing. Declared and used, they must behave as ordinary user classes in
 # both compilers, in a plain file and through a package-qualified reference.
 echo "checking non-reserved names stay fully usable"

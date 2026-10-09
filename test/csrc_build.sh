@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # csrc manifest rows (G8): a package declares its own C sources; the
-# toolchain compiles them — a cached object per source for native links,
-# one cached host library for `beansc run` — and rows propagate from a
+# toolchain compiles them, a cached object per source for native links,
+# one cached host library for `beansc run`, and rows propagate from a
 # dependency to its consumer like link rows.
 set -euo pipefail
 
@@ -99,7 +99,7 @@ grep -Fqx "fast 43" "$tmp/header.native.out"
 # one ABI header: changing that header kept reusing the object built before it,
 # and the program answered with the ABI version the header no longer had.
 #
-# Written in C rather than Objective-C on purpose — clang accepts `#import`
+# Written in C rather than Objective-C on purpose, clang accepts `#import`
 # there with no warning, and this suite has to run where there is no
 # Objective-C runtime.
 cat > "$tmp/mathlib/native/fast_add.c" <<'CSRC'
@@ -250,7 +250,7 @@ grep -Fqx "fast 47" "$tmp/cflags.interp.out"
 grep -Fqx "fast 47" "$tmp/cflags.native.out"
 
 # Changing only a flag must recompile. A cache key that ignored the flags
-# would hand back the object built with the old -D and answer 48 forever —
+# would hand back the object built with the old -D and answer 48 forever,
 # a wrong answer with nothing to notice it by.
 cat > "$tmp/mathlib/beans.pot" <<'POT'
 module mathlib
@@ -290,7 +290,7 @@ POT
 # A path flag written relative to the package resolves against *that package*,
 # not against whatever directory the build was started in. Every run below
 # starts from $tmp/app, so a -I that resolved against the working directory
-# would look in app/ and never find the header — which is how a vendored C
+# would look in app/ and never find the header, which is how a vendored C
 # library with its own include tree gets a build that works on exactly one
 # machine. The header is reachable ONLY through the -I, so the flag either
 # resolves or the compile fails.
@@ -316,7 +316,7 @@ grep -Fqx "fast 49" "$tmp/cflags.rel.interp"
 "$tmp/app/app.rel.bin" >"$tmp/cflags.rel.native"
 grep -Fqx "fast 49" "$tmp/cflags.rel.native"
 
-# The joined spelling too — -Iextra, not -I extra — because a reader writes
+# The joined spelling too, -Iextra, not -I extra, because a reader writes
 # both and clang accepts both.
 cat > "$tmp/mathlib/beans.pot" <<'POT'
 module mathlib
@@ -329,7 +329,7 @@ POT
 grep -Fqx "fast 49" "$tmp/cflags.rel2.interp"
 
 # An absolute path is left exactly as written. `//` is collapsed first
-# because a pot value ends at one — mktemp under a TMPDIR with a trailing
+# because a pot value ends at one, mktemp under a TMPDIR with a trailing
 # slash hands back exactly that shape.
 abs_extra=$(cd "$tmp/mathlib/extra" && pwd)
 cat > "$tmp/mathlib/beans.pot" <<POT

@@ -1,11 +1,11 @@
-// HTTP/2 framing for std.http — nghttp2 behind a byte-pump ABI.
+// HTTP/2 framing for std.http: nghttp2 behind a byte-pump ABI.
 //
 // nghttp2 owns frames, HPACK, flow control and stream state, and does no IO,
 // which is exactly the shape this stack wants: bytes from the transport go
 // in through mem_recv, bytes to send come out through mem_send, and every
 // callback is a C static that appends to an event buffer the Beans side
-// drains. Nothing calls back into Beans, so — as with the h1, ws and TLS
-// bridges — there is no stored-callback machinery and no thread contract to
+// drains. Nothing calls back into Beans, so: as with the h1, ws and TLS
+// bridges: there is no stored-callback machinery and no thread contract to
 // get wrong. One session per connection, driven from one loop.
 //
 // Event encoding, little-endian:

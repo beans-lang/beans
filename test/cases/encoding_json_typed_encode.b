@@ -24,7 +24,7 @@ struct Tiny {
     pub code: i16
 }
 
-// A record that can carry both runtime refusals at once — a string whose
+// A record that can carry both runtime refusals at once, a string whose
 // bytes are not UTF-8 and a NaN float. The writer stops at the FIRST one it
 // meets in document order, so field order decides which refusal is reported,
 // and both backends have to report the same one.
@@ -51,7 +51,7 @@ struct IgnoredFloat {
 
 // The same two faults, but not side by side in one record: the float sits one
 // level down, inside an Option, or inside a list. Whatever encloses the leaf
-// that refuses, the reason has to travel out from that leaf — a writer stops
+// that refuses, the reason has to travel out from that leaf, a writer stops
 // at it exactly the same way.
 struct ScoreOnly {
     pub score: f64
@@ -405,8 +405,8 @@ fn main() {
 
     // A refusal the writer only reaches after appending tens of kilobytes and
     // growing the target's backing several times. The direct writer is the
-    // only path that writes into the caller's Bytes before it can refuse — the
-    // DOM path serializes into its own buffer first — so this is the case that
+    // only path that writes into the caller's Bytes before it can refuse, the
+    // DOM path serializes into its own buffer first, so this is the case that
     // proves the rollback restores the pre-call length rather than merely
     // never having written. Address carries no float, so it takes that path.
     let pad: string = filled(97, 300)

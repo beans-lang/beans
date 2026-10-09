@@ -1,7 +1,7 @@
 // The other half of a partial class.
 //
 // A class written in two files is lowered once, into the part that carries
-// the header — so nothing at all is registered at this file's own positions,
+// the header, so nothing at all is registered at this file's own positions,
 // and an editor asking about this file used to get no symbols, no hover and
 // no navigation for anything in it.
 

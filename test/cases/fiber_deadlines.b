@@ -7,7 +7,7 @@
 // heap entry must not fire at the wrong fiber.
 //
 // TaskGroup.next() yields fibers in completion order, which for readers that
-// only ever time out is deadline order — deterministic, and the same on both
+// only ever time out is deadline order, deterministic, and the same on both
 // backends because both run the one fiber runtime. Deadlines are spaced 20 ms
 // so scheduling jitter cannot reorder them.
 import std.io
@@ -94,7 +94,7 @@ fn poke(stream: net.TcpStream, after_ms: int) -> int {
 // stale entry: the reader arms a 300 ms deadline, is signalled at ~20 ms (data
 // arrives), then re-parks with a fresh 60 ms deadline on the now-silent socket.
 // It must time out ~60 ms after the signal, and the abandoned 300 ms entry must
-// not fire at it — a wrong answer would be a hang toward 300 ms or a missed
+// not fire at it, a wrong answer would be a hang toward 300 ms or a missed
 // timeout.
 fn stale(stream: net.TcpStream, id: int) -> int {
     match stream.set_timeouts(300, 0) {

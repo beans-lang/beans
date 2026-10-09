@@ -1,7 +1,7 @@
 // The package every other file in this module reaches by name. Nothing
 // here is unusual: a base class and a subclass, a struct with a layout, a
 // module constant, an enum, a class with a static, and functions that take
-// and return those types — enough for one type name to be written in every
+// and return those types, enough for one type name to be written in every
 // position a type can be written in.
 package kit
 

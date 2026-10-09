@@ -5,7 +5,7 @@
 //
 // Before #89 the emitter looked for the template under the receiver's own
 // declaration only. A subclass that inherited one found nothing, fell through
-// to dispatch, and read a row that was never going to be filled — a literal
+// to dispatch, and read a row that was never going to be filled, a literal
 // null in the descriptor, jumped through. The interpreter answered the whole
 // time, so its answers are the reference here.
 //
@@ -33,7 +33,7 @@ class Base {
     fn plain() -> string { return "{self.tag}.plain" }
 
     // `priv` scopes a name to its exact declaring type, so a subclass may
-    // wear it too — the only way one family can now hold two generic
+    // wear it too, the only way one family can now hold two generic
     // methods under one name. The body this calls is Base's whatever the
     // receiver's runtime class is: the method holds no row, so the runtime
     // class never enters into it.

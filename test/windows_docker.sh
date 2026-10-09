@@ -9,7 +9,7 @@
 #
 # The platform is always linux/amd64: Wine is not an emulator, so it can only
 # run x86-64 PE code on an x86-64 Linux. On an Apple-silicon host that means
-# the whole container is emulated (Rosetta/qemu) — correctness only, never a
+# the whole container is emulated (Rosetta/qemu), correctness only, never a
 # performance number.
 #
 # The repository is bind-mounted read-only and copied inside the container, so

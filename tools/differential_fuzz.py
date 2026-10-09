@@ -255,10 +255,10 @@ class OracleUnsupported(Exception):
 
 
 # ---------------------------------------------------------------------------
-# AST — expressions
+# AST expressions
 #
 # Each node carries emit() (Beans source) and eval() (oracle semantics).
-# eval() here is a method on our own AST model — Python's builtin eval()
+# eval() here is a method on our AST model; Python's builtin eval()
 # is never used anywhere in this tool.
 
 class Expr:
@@ -508,7 +508,7 @@ class Call(Expr):
         # FnDecl must not shadow the program's registered one
         result = env.interp.call_by_name(self.fn.name, vals)
         # temporaries made for a call's arguments die when it returns,
-        # newest first — every implementation lane releases here
+        # newest first; every implementation lane releases here
         for v in reversed(vals):
             env.interp.release(v)
         return result
@@ -888,7 +888,7 @@ class MatchEnumValue(Expr):
 
 
 # ---------------------------------------------------------------------------
-# AST — statements
+# AST statements
 
 class Stmt:
     pass
@@ -2433,7 +2433,7 @@ class Gen:
             counter = self.fresh("lc")
             limit = r.randint(1, 6)
             # registered immutable so no generated statement reassigns
-            # it — the loop's own advance is what terminates it
+        # it; the loop's own advance terminates the loop
             scope.vars.append((counter, "int", False))
             inner = Scope(scope)
             self.loop_depth += 1
@@ -4378,7 +4378,7 @@ def emit_corpus(args):
 #
 # These cases never touch the runtime oracle. Both compilers must reject
 # each generated project, and after paths are normalized away their
-# diagnostics must agree line for line — a compiler accepting an invalid
+# diagnostics must agree line for line; a compiler accepting an invalid
 # access, or wording a rejection differently, is the failure.
 
 NEGATIVE_KINDS = (
@@ -4709,7 +4709,7 @@ def negative_case_files(seed, case):
                  "",
                  "fn main() {}"]
     elif kind == "missing_return":
-        # a `-> T` body that can run off the end — both checkers must
+        # a `-> T` body that can run off the end; both checkers must
         # reject it with the same report (there is no implicit tail
         # return, and the walk treats a conditional `for` or a broken
         # `for { }` as falling through)

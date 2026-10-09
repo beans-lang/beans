@@ -1,6 +1,6 @@
 // an out-of-range array index panics with the same message,
 // position, and exit code in the interpreter and both native
-// backends — the bounds check compares against the static length
+// backends, the bounds check compares against the static length
 import std.io
 
 fn pick(values: [i32; 3], index: int) -> i32 {

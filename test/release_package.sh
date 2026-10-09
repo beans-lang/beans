@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The public archive is reproducible, carries exactly what a user needs, and
-# carries nothing else — above all not beansc0.
+# carries nothing else, above all not beansc0.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -12,7 +12,7 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-package.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
 # A full Linux package needs a pinned sysroot, which is built from dpkg's own
-# manifests. A host without dpkg — Alpine, for one — can only produce a slim
+# manifests. A host without dpkg, Alpine, for one, can only produce a slim
 # package, so say so rather than fail while building a sysroot it cannot have.
 if [[ "$(uname -s)" == Linux && "${BEANS_RELEASE_CLASS:-auto}" != slim ]]; then
     if command -v dpkg-query >/dev/null 2>&1; then
@@ -133,8 +133,8 @@ mv "$root" "$moved"
     cd "$tmp"
     "$moved/bin/beansc" doctor >"$tmp/doctor.out"
 )
-# The launcher reports the physical path — on macOS /var is a symlink into
-# /private/var — so compare against the resolved directory, not the spelling
+# The launcher reports the physical path, on macOS /var is a symlink into
+# /private/var, so compare against the resolved directory, not the spelling
 # this script happened to use.
 real=$(cd "$moved" && pwd -P)
 grep -q "^standard library: *$real/lib/std\$" "$tmp/doctor.out"

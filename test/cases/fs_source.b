@@ -42,7 +42,7 @@ fn main() {
     fs.remove(source).expect("remove source")
 
     // issue #167: a path's whole life, not only its bytes. Seven parts rather
-    // than one, because the interesting half is the *error* path — a remove
+    // than one, because the interesting half is the *error* path, a remove
     // that finds nothing builds an Error the wrapper then answers `ok(false)`
     // instead of propagating, and that discarded Error is exactly the kind of
     // thing a single run under the sanitizers would not weigh enough to catch.
@@ -86,7 +86,7 @@ fn main() {
     // follows the link and `remove` does not, and the gap between them is the
     // whole reason `remove` asks the filesystem instead of asking `exists`
     // first: a dangling link answers false to `exists` and is still removed.
-    // A link to a directory goes the same way — the link, never the directory.
+    // A link to a directory goes the same way, the link, never the directory.
     let live: string = "{root}/links/live.link"
     let dead: string = "{root}/links/dead.link"
     let to_dir: string = "{root}/links/dir.link"
@@ -100,7 +100,7 @@ fn main() {
 
     // The same link, before and after its target goes: `exists` said true a
     // moment ago and says false now, and the link is still there to remove.
-    // This is the window a check-then-act remove would answer wrongly — it is
+    // This is the window a check-then-act remove would answer wrongly, it is
     // not a hypothetical race, it is one call apart in a single thread.
     let breaks: string = "{root}/links/breaks.link"
     let doomed: string = "{root}/links/broken_target.txt"

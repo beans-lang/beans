@@ -52,7 +52,7 @@ case "$(uname -m)" in
 esac
 # The fiber core uses hand-written asm on arm64 and x86-64 and the POSIX
 # ucontext family everywhere else. musl declares those functions without
-# shipping them, so those hosts link Alpine's libucontext — the `_posix`
+# shipping them, so those hosts link Alpine's libucontext, the `_posix`
 # archive carries the plain names and stands on the base library, so it
 # comes first. Same rule the compiler's own linker step applies.
 case "$(uname -m)" in

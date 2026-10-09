@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Locate — or fetch — an LLVM-MinGW toolchain covering every Windows target,
+# Locate, or fetch, an LLVM-MinGW toolchain covering every Windows target,
 # and print its bin directory on stdout.
 #
 #   eval "export PATH=$(bash test/windows_toolchain.sh):\$PATH"
@@ -27,7 +27,7 @@ dest=${BEANS_TOOLCHAIN_DIR:-$root/toolchains}
 # existing green x86-64 target already links against and this file is meant to
 # add architectures without moving anything under the one that works. Upstream
 # publishes no msvcrt build for an ARM64 or macOS host, so those fall back to
-# ucrt — stated here rather than discovered as a 404 in the middle of CI.
+# ucrt, stated here rather than discovered as a 404 in the middle of CI.
 host_machine=$(uname -m)
 case "$(uname -s)" in
     Linux)

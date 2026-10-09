@@ -1,4 +1,4 @@
-// size_of / align_of / offset_of — compile-time layout facts for the selected
+// size_of / align_of / offset_of report compile-time layout facts for the selected
 // target. `beansc build --target <triple>` reports that target's numbers, not
 // the compiler host's, which is why these are folded by the checker rather than
 // asked of the machine at run time.

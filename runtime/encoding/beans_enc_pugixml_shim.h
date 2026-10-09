@@ -4,7 +4,7 @@
 // Why any shim at all: pugixml's in-memory serialization goes through
 // `pugi::xml_writer`, an abstract class with a virtual destructor, so the
 // derived sink's vtable carries a deleting-destructor slot (referencing
-// `operator delete`) and the pure-virtual placeholder — even though the sink
+// `operator delete`) and the pure-virtual placeholder: even though the sink
 // only ever lives on the stack and is never deleted through a base pointer.
 // Beans links programs with the plain C driver, so no C++ standard library
 // is on the link line to supply them.
@@ -15,9 +15,9 @@
 //
 // Verified by `nm -u` (see test/encoding_symbols.sh, which fails the build
 // if this list grows):
-//   macOS arm64  : __ZdlPv, ___cxa_pure_virtual
-//   Linux glibc  : _ZdlPv, _ZdlPvm, __cxa_pure_virtual
-//   Linux musl   : _ZdlPv, _ZdlPvm, __cxa_pure_virtual
+//   macOS arm64 : __ZdlPv, ___cxa_pure_virtual
+//   Linux glibc : _ZdlPv, _ZdlPvm, __cxa_pure_virtual
+//   Linux musl  : _ZdlPv, _ZdlPvm, __cxa_pure_virtual
 //
 // Windows is NOT verified. The Itanium spellings below exist on MinGW and
 // GNullVM, which use the Itanium C++ ABI; MSVC uses its own ABI where the
@@ -35,7 +35,7 @@
 
 // MSVC ABI. vcruntime defines every `operator delete` overload and the
 // `_purecall` hook, so nothing is defined here; a definition would collide
-// with the CRT's. UNVERIFIED — see the file comment.
+// with the CRT's. UNVERIFIED: see the file comment.
 
 #else
 
@@ -56,7 +56,7 @@ __attribute__((weak)) void operator delete[](void* block, size_t) noexcept { fre
 
 extern "C" {
 // Reaching this means a pure virtual was called during construction or
-// destruction — impossible through this bridge, and a trap beats an
+// destruction: impossible through this bridge, and a trap beats an
 // undefined symbol at link time.
 __attribute__((weak)) void __cxa_pure_virtual(void) { abort(); }
 }

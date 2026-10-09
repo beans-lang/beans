@@ -22,7 +22,7 @@ require="${BEANS_LINUX_ARCH_REQUIRE:-0}"
 # ---- per-architecture configuration --------------------------------------
 # Every fact below (stack alignment, pointer width, ELF machine, whether decimal
 # or SIMD are refused) is read from `clang --target=...` and the target model, not
-# guessed. All targets link with lld — the platform GNU ld is built for one arch —
+# guessed. All targets link with lld, the platform GNU ld is built for one arch,
 # and none pass --sysroot: Ubuntu's cross libc is multiarch under /usr and its
 # absolute-path linker scripts would be double-prefixed (see cross_link.sh); the
 # sysroot is only the runtime QEMU_LD_PREFIX.
@@ -479,7 +479,7 @@ fi
 # A small fixed corpus of generated programs (seed recorded here, identical
 # bytes on every OS and architecture) is cross-built and executed on the
 # emulated machine, and its output is held to the generator's independent
-# oracle — not merely to the host interpreter.
+# oracle, not merely to the host interpreter.
 if command -v python3 >/dev/null 2>&1; then
     echo "== $arch: differential fuzz corpus (seed 42, cases 0..5) =="
     corpus="$tmp/dfuzz-corpus"

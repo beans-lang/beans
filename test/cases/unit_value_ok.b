@@ -1,7 +1,7 @@
 // The other half of the `unit` rule (issue #154): `unit` IS what a function
 // that returns nothing answers with, so every shape that only *names* a
-// result — a declared `-> unit`, a closure type, and the payload of a handle,
-// which is the result type of the call the handle runs — has to keep working,
+// result, a declared `-> unit`, a closure type, and the payload of a handle,
+// which is the result type of the call the handle runs, has to keep working,
 // on both backends, byte for byte.
 //
 // Every one of these builds and runs on 0.1.40. A refusal written on the
@@ -26,7 +26,7 @@ class Worker {
     }
 }
 
-// T binds to `unit` through a function RESULT — the slot where it belongs.
+// T binds to `unit` through a function RESULT, the slot where it belongs.
 // Nobody writes `unit` anywhere in the call.
 fn produced<T>(make: fn() -> T) -> int {
     make()

@@ -1,6 +1,6 @@
 // Issue #161: a generic whose type parameter sits inside a function-typed
-// parameter. The native backend refused the call — "LLVM emitter cannot infer
-// this generic call's types" — for a free function and for a static, while an
+// parameter. The native backend refused the call, "LLVM emitter cannot infer
+// this generic call's types", for a free function and for a static, while an
 // instance method with the identical signature emitted, and the interpreter
 // ran all three. So the two backends could not be compared on this shape at
 // all until the emitter could raise the instance.
@@ -127,29 +127,29 @@ class Holder<T> {
 fn main() {
     let seed: Cell = new Cell("seed")
 
-    // A — the free function, at a class argument and at an int argument.
+    // A, the free function, at a class argument and at an int argument.
     // The closure builds a value per round, so a body invoked the wrong
     // number of times is a marker imbalance rather than a silent pass.
     io.println("A {drive<Cell>(3, seed, fn(x: Cell) { let t: Cell = new Cell("a") })}")
     var total: int = 0
     io.println("A {drive<int>(2, 5, fn(v: int) { total += v })} {total}")
 
-    // A — the same call with no explicit type argument, which the checker
+    // A, the same call with no explicit type argument, which the checker
     // used to refuse for the same reason the emitter did
     io.println("A {drive(2, seed, fn(x: Cell) { let t: Cell = new Cell("b") })}")
 
-    // B — parameter spells the result, argument does not, and the reverse
+    // B, parameter spells the result, argument does not, and the reverse
     let via: fn(Cell) = fn(x: Cell) { let t: Cell = new Cell("c") }
     io.println("B {drive_spelled<Cell>(2, seed, via)}")
     io.println("B {drive<Cell>(1, seed, fn(x: Cell) { let t: Cell = new Cell("d") })}")
 
-    // C — a value carried through `fn(T) -> T`: two new cells, and the one
+    // C, a value carried through `fn(T) -> T`: two new cells, and the one
     // replaced each round released as it goes
     let folded: Cell =
         fold<Cell>(seed, fn(x: Cell) -> Cell { return new Cell("e") }, 2)
     io.println("C {folded.tag}")
 
-    // D — every receiver form: instance, static, and the static of a
+    // D, every receiver form: instance, static, and the static of a
     // generic class
     let host: Host = new Host()
     io.println("D {host.apply<Cell>(2, seed, fn(x: Cell) { let t: Cell = new Cell("f") })}")
@@ -157,18 +157,18 @@ fn main() {
     let holder: Holder<int> = new Holder<int>(9)
     io.println("D {Holder.stat_apply<Cell>(seed, fn(x: Cell) { let t: Cell = new Cell("h") })} {holder.held}")
 
-    // E — T bound through the function type and nowhere else, with the
+    // E, T bound through the function type and nowhere else, with the
     // value the callback builds released each round
     io.println("E {count_with<Cell>(2, fn() -> Cell { return new Cell("i") })}")
     io.println("E {count_with(2, fn() -> Cell { return new Cell("j") })}")
     io.println("E {feed(fn() -> Cell { return new Cell("k") }, fn(x: Cell) { let t: Cell = new Cell("l") })}")
 
-    // F — a type parameter shadowing a class name, at two arguments, with
+    // F, a type parameter shadowing a class name, at two arguments, with
     // the shadowed name inside the function type as well
     io.println("F {shadow_apply(seed, fn(x: Cell) { let t: Cell = new Cell("m") })}")
     io.println("F {shadow_apply<int>(3, fn(v: int) { total += v })} {total}")
 
-    // G — an owned value moved into a generic, released inside it
+    // G, an owned value moved into a generic, released inside it
     io.println("G {consume(new Cell("n"), fn(x: Cell) { let t: Cell = new Cell("o") })}")
     io.println("G {consume<Cell>(new Cell("p"), fn(x: Cell) {})}")
 

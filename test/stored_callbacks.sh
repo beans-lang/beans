@@ -149,7 +149,7 @@ diff -u "$tmp/c.layout" "$tmp/beans.layout"
 # None of the negatives call into the fixture, so their package does not link
 # it. Linking a library a program never uses still leaves a load-time
 # dependency behind, and the loader has to find it again by name when the
-# binary runs — which macOS does from the path recorded at link time and Linux
+# binary runs, which macOS does from the path recorded at link time and Linux
 # does not do at all.
 cat >"$tmp/negative.pot" <<'MOD'
 module stored_callbacks

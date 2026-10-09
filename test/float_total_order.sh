@@ -3,7 +3,7 @@
 # the operators stay IEEE (issue #84, spec/SYNTAX.md "Number rules").
 #
 # The transcript is checked three ways on purpose. Interpreter against native
-# catches the half of #84 where the two disagreed — a NaN map key was
+# catches the half of #84 where the two disagreed, a NaN map key was
 # write-only natively and every re-insert appended. Both against a committed
 # golden catches the other half, where both backends agreed and both were
 # wrong: a partial order silently mis-sorts and silently overwrites, and no

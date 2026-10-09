@@ -7,7 +7,7 @@ package main
 // HIR of the initializer, so the language's own typing decides what each
 // operator means and the fold cannot invent a promotion rule the rest of the
 // compiler does not have. What comes back is the spelling a literal of that
-// type is written in, which is what a use site materializes — so a constant
+// type is written in, which is what a use site materializes, so a constant
 // behaves exactly as if its value had been typed at the use site, in both
 // backends, with nothing left for them to disagree about.
 
@@ -17,7 +17,7 @@ struct ConstValue {
     // the exact value for "int"; 0 or 1 for "bool"
     number: int
     // the literal spelling a use site materializes: "42", "-42", "0xFF",
-    // "1.5", "true", "\"hi\"" — a leading '-' becomes unary minus over the
+    // "1.5", "true", "\"hi\"": a leading '-' becomes unary minus over the
     // magnitude, which is the shape source itself produces
     text: string
 }
@@ -95,7 +95,7 @@ fn const_int_text(value: int) -> string {
 
 // The one place a folded integer is narrowed. Every operation runs at 64
 // bits and lands here, so a constant answers what the same expression would
-// answer at run time on the same type — `1 << 31` is i32's minimum, not an
+// answer at run time on the same type: `1 << 31` is i32's minimum, not an
 // out-of-range error, because that is what the backends compute.
 fn const_wrap(value: int, type: HirType) -> int {
     let bits: int = integer_literal_bits(type.name)
@@ -109,7 +109,7 @@ fn const_wrap(value: int, type: HirType) -> int {
 // u64 is the one integer type a 64-bit signed accumulator cannot carry
 // whole. Rather than fold it to a different number than the program would
 // compute, folding stops at the first value whose bit pattern has run past
-// i64 — the literal path still works, so a mask written out in full is fine.
+// i64: the literal path still works, so a mask written out in full is fine.
 fn const_unsigned_64(type: HirType) -> bool {
     return canonical_hir_name(type.name) == "u64"
 }

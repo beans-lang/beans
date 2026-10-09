@@ -1,11 +1,11 @@
 // The HTTP/1.1 client: one connection, sequential exchanges, keep-alive.
 //
 // A `Client` is one TCP connection speaking HTTP/1.1. `request` writes the
-// message, then reads events until the response completes — bodies buffered
+// message, then reads events until the response completes: bodies buffered
 // up to the limit, because the caller who wants streaming has the parser
 // API. Keep-alive is the default: the same Client carries request after
 // request until the server says close, and `request` reports kind `closed`
-// after that. There is deliberately no connection pool here — a pool is a
+// after that. There is deliberately no connection pool here: a pool is a
 // policy, and this is the mechanism it would pool.
 package http
 
@@ -192,7 +192,7 @@ pub unique class Client implements Send {
             let at_eof: bool = data.len() == 0
             if at_eof {
                 // EOF: legitimate end for an until-close body, an error
-                // anywhere else — the parser knows which.
+                // anywhere else: the parser knows which.
                 self.alive = false
             }
             match self.drink(data, at_eof, answer, gathered) {

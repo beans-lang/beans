@@ -1,7 +1,7 @@
-// contained <call> — a catch frame on the CURRENT fiber (issue #145,
+// contained <call>, a catch frame on the CURRENT fiber (issue #145,
 // spec/CONCURRENCY.md). A panic raised anywhere under the call unwinds the
-// frames between it and the boundary — defers newest-first, owned values
-// dropped — and arrives at the call site as err(kind panic) with the report a
+// frames between it and the boundary, defers newest-first, owned values
+// dropped, and arrives at the call site as err(kind panic) with the report a
 // brewed fiber's join would have delivered. No fiber is spawned, nothing
 // switches, nothing is joined.
 //
@@ -92,7 +92,7 @@ fn with_moveonly() -> int {
 
 // A captured local lives in a heap cell shared with the closure; the cell and
 // the value it holds must be released on the unwind. The closure is never
-// called — only its capture matters here.
+// called, only its capture matters here.
 fn with_capture() -> int {
     let r: Res = new Res("captured-res")
     let f: fn() -> unit = fn() { io.println("  see {r.tag}") }
@@ -225,7 +225,7 @@ fn joins_a_failing_child() -> string {
 }
 
 // The child is never joined, so the synthesized scope join escalates its
-// panic into THIS frame — and that panic is the contained boundary's.
+// panic into THIS frame, and that panic is the contained boundary's.
 fn never_joins() -> int {
     brew always_fails("unjoined")
     return 4
@@ -410,8 +410,8 @@ fn in_nested_blocks() {
 // ---- 12. the fiber keeps running, many times over ------------------------
 
 // Quiet on the way out, so two hundred catches do not drown the golden. What
-// it proves is that the fiber is genuinely running again after each one — the
-// count is only reached if every catch returned to this loop — and, under the
+// it proves is that the fiber is genuinely running again after each one, the
+// count is only reached if every catch returned to this loop, and, under the
 // sanitize gate, that two hundred unwinds leak nothing: each carries an owned
 // buffer and a defer that has to run.
 fn quietly_fails(n: int) -> int {
@@ -460,7 +460,7 @@ class Dispatcher {
         if by == 0 { panic("dispatcher refused") }
         return self.base + by
     }
-    // `contained self.m(...)` — the receiver is `self`, which the contextual
+    // `contained self.m(...)`, the receiver is `self`, which the contextual
     // keyword has to accept the same way `brew` does.
     pub fn through_self(by: int) -> Result<int> {
         return contained self.risky(by)
@@ -473,8 +473,8 @@ fn generic_pick<T>(a: T, b: T, first: bool) -> T {
 }
 
 // An interface-typed receiver. The wall the hoist imposes is about copying,
-// and an interface value is an object whose first word is its descriptor —
-// only classes implement one — so the hoisted binding holds the same object
+// and an interface value is an object whose first word is its descriptor,
+// only classes implement one, so the hoisted binding holds the same object
 // the caller does and the dispatch reaches the same instance. Both verbs take
 // it; the brew line is here because both read the same rule.
 interface Worker {

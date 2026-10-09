@@ -1,7 +1,7 @@
 // A type name inside a string's `{}` piece is looked up, not composed
 // (#164). Every line here names something that is not a type this file can
 // reach, and every refusal has to be about the program: the name as
-// written, or the package the type really lives in — never a package the
+// written, or the package the type really lives in, never a package the
 // lookup invented by gluing the asking package onto the simple name.
 package main
 import std.io

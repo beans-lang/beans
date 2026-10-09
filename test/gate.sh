@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Gate (spec/CONCURRENCY.md, F3): a sticky broadcast flag on the fiber
-# scheduler. The differential case pins both engines byte-for-byte — two
+# scheduler. The differential case pins both engines byte-for-byte, two
 # watchers parked on one gate waking FIFO from a sibling fiber's open, the
 # sticky wait-after-open, and a fiber parked while an OS thread fires the
 # open. The deadlock probe proves a wait at a gate nothing will ever open
@@ -8,7 +8,7 @@
 set -euo pipefail
 
 # macOS runners ship no GNU timeout; stand in for it when absent. The
-# stand-in reports 137 (SIGKILL) where GNU prints 124 — every use here
+# stand-in reports 137 (SIGKILL) where GNU prints 124, every use here
 # only cares that a hang cannot pass, and neither code ever matches an
 # expected exit.
 if ! command -v timeout >/dev/null 2>&1; then

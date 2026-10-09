@@ -13,7 +13,7 @@ diff -u test/cases/syntax_v07_ok.out "$tmp/native.out"
 
 # #94: the construction-safety proof accepts branches and an exhaustive match
 # that assign on every arm, a method call once every field is assigned, and a
-# base initializer that calls a subclass override — safe because the subclass
+# base initializer that calls a subclass override, safe because the subclass
 # assigns its own field before super.init. Both backends must agree.
 ./build/beansc run test/cases/init_construction_ok.b >"$tmp/ic.interp"
 ./build/beansc build test/cases/init_construction_ok.b -o "$tmp/ic.native" \
@@ -24,7 +24,7 @@ diff -u test/cases/init_construction_ok.out "$tmp/ic.native.out"
 
 # The Makefile checks tools/bootstrap_probe.b against BEANSC_BOOT before every
 # build (Makefile: "too old to build these sources"), so it must stay valid
-# under the current checker — a construction rule that refused it would turn
+# under the current checker, a construction rule that refused it would turn
 # every `make` red with a message about `partial class` that is simply wrong.
 ./build/beansc check tools/bootstrap_probe.b >"$tmp/probe" 2>&1 || {
     echo "tools/bootstrap_probe.b no longer passes check — Makefile runs it before every build" >&2
@@ -104,7 +104,7 @@ fi
 check_bad init_construction_bad.b "'NeverAssigned' init returns with unassigned fields (b)"
 check_bad init_construction_bad.b "'SlotUnset' init returns with unassigned fields (p)"
 check_bad init_construction_bad.b "self is used here before the object is fully built"
-# a non-init method reached through super escapes self too — the super_call HIR
+# a non-init method reached through super escapes self too, the super_call HIR
 # node carries no `local self`, so this asserts the node-kind path catches it,
 # pinned to the super.describe() line so CallEarly's identical message can't
 # stand in for it.

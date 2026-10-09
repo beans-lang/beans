@@ -1,7 +1,7 @@
 // #94: the shapes the construction proof must accept, and both backends must
 // agree on. Branches and an exhaustive match that assign a field on every arm,
 // a method call and interpolation once every field is assigned, and a base
-// initializer that calls a method the subclass overrides — safe because the
+// initializer that calls a method the subclass overrides, safe because the
 // subclass assigns its own field before super.init, which is the whole reason
 // the order is fixed.
 import std.io

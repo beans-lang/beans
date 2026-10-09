@@ -7,7 +7,7 @@
 // Clang at run time. `TcpStream.write_from` has four parameters and
 // `write_vectored` has six, so every socket write under the interpreter
 // started a compiler. That is invisible wherever a matching toolchain exists
-// and fatal where one does not — the i686 and aarch64 Windows legs cannot link
+// and fatal where one does not, the i686 and aarch64 Windows legs cannot link
 // such a shim at all, and a program died on a socket write with "cannot find
 // dllcrt2.o". test/hosted_calls.sh runs this program with BEANS_CC pointed at
 // a path that does not exist, which turns any trip through the shim into a
@@ -17,7 +17,7 @@
 // The sizes cross the runtime's own edges rather than being small: nothing,
 // one byte, either side of the 8192-byte recv chunk, and a megabyte, which
 // macOS loopback splits into several sends and Linux loopback takes whole.
-// Both are correct, so nothing here asserts how many calls a write took — only
+// Both are correct, so nothing here asserts how many calls a write took, only
 // that what arrives is exactly what was sent, from every offset a short write
 // could have stopped at.
 import std.io
@@ -30,7 +30,7 @@ import std.thread
 // and what lets the two answers be compared.
 extern "C" fn beans_width_utf8(text: RawPtr<u8>, length: int) -> int
 
-// Bytes whose value repeats every 251 — a prime, so an offset that slips
+// Bytes whose value repeats every 251, a prime, so an offset that slips
 // shifts the pattern instead of landing back on it.
 fn pattern(count: int) -> Bytes {
     let out: Bytes = new Bytes(0)
@@ -102,7 +102,7 @@ fn write_from_case(size: int, start: int, waiting: bool) {
     io.println("write_from {size} from {start}: bytes {arrived.len()} identical {arrived == tail} calls>0 {calls > 0}")
 }
 
-// write_vectored: six words, three of them pointers — the shape that could
+// write_vectored: six words, three of them pointers, the shape that could
 // not be called directly at all, on any host.
 fn write_vectored_case(head_len: int, body_len: int, start: int,
                        waiting: bool) {
@@ -150,7 +150,7 @@ fn width_case(text: string) {
 }
 
 // std.term's four entries. Off a terminal every one of these is a refusal,
-// which is the answer the runtime gives — reached the same way as any other.
+// which is the answer the runtime gives, reached the same way as any other.
 // The pty legs that reach set_raw and restore belong to test/term.sh;
 // test/hosted_calls.sh runs that probe under the same broken BEANS_CC.
 fn term_case() {

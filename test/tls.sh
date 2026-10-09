@@ -2,13 +2,13 @@
 # std.tls end to end, against local Beans TLS servers, a local openssl
 # s_server and a generated certificate corpus:
 #
-#   the corpus matrix — expired, not-yet-valid, wrong-host and self-signed
+#   the corpus matrix, expired, not-yet-valid, wrong-host and self-signed
 #   certificates are refused, the valid control is accepted, and the
 #   refusals carry the same error kind whichever backend is underneath;
-#   the interop matrix — TLS 1.2 and 1.3, ALPN agreement and mismatch;
-#   truncation — a stream cut without close_notify is an error, never a
+#   the interop matrix, TLS 1.2 and 1.3, ALPN agreement and mismatch;
+#   truncation, a stream cut without close_notify is an error, never a
 #   clean end, during the handshake and mid-response alike;
-#   partial IO — the byte-at-a-time handshake fuzz, the test the plan calls
+#   partial IO, the byte-at-a-time handshake fuzz, the test the plan calls
 #   the one that matters.
 #
 # Everything is loopback: peers are local Beans TLS servers and `openssl
@@ -287,7 +287,7 @@ echo "  TLS 1.2: $got"
 # everywhere: macOS SecureTransport tops out at 1.2 (its SDK defines no
 # kTLSProtocol13), which is exactly the deprecation the API exists to
 # contain. What IS the contract is that an unsupported version fails
-# cleanly — a refusal, never a hang and never a silent downgrade. The
+# cleanly, a refusal, never a hang and never a silent downgrade. The
 # OpenSSL lane below proves 1.3 works where the backend has it.
 start_server valid -tls1_3
 tls13_port=$PORT
@@ -344,7 +344,7 @@ done
 # ---- second backend -------------------------------------------------------
 #
 # The OpenSSL lane, built from the same bridge with its POSIX path forced,
-# so two backends are held to one table on every host that has a libssl —
+# so two backends are held to one table on every host that has a libssl,
 # including macOS, where the shipped backend is SecureTransport and would
 # otherwise be the only one ever tested. This is what keeps the backends
 # honest against one contract rather than one implementation.

@@ -1,7 +1,7 @@
 // The HTTP/2 server h2spec points at.
 //
 // Prior-knowledge h2 over cleartext: no TLS, no h2c upgrade dance. That is
-// deliberate — the framing layer is what a conformance suite examines, and
+// deliberate, the framing layer is what a conformance suite examines, and
 // wrapping it in a handshake would only test the handshake. std.http's
 // public HTTP/2 surface is the same either way; TLS decides the transport,
 // not the protocol.
@@ -12,8 +12,8 @@
 // follows an idle one time out, which looks exactly like a protocol bug and
 // is not one.
 //
-// Every request gets 200 and a short body. Everything interesting —
-// preface, SETTINGS, HPACK, flow control, stream states, error codes — is
+// Every request gets 200 and a short body. Everything interesting,
+// preface, SETTINGS, HPACK, flow control, stream states, error codes, is
 // nghttp2's under std.http, which is the point of aiming h2spec at it.
 //
 // Usage: http2_echo_server <port> [seconds]

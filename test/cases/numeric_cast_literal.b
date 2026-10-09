@@ -1,6 +1,6 @@
 // `19.99 as decimal` is the decimal 19.99. It used to be the decimal nearest
 // to the f64 nearest to 19.99, because a decimal-point literal with no demand
-// is an f64 and the cast faithfully converted it — the exact mistake decimal
+// is an f64 and the cast faithfully converted it, the exact mistake decimal
 // exists to prevent, in the one spelling that reads like a decimal literal.
 //
 // The demand stops at the real-number types and at literals: a float variable
@@ -50,7 +50,7 @@ fn main() {
     io.println("negb  {-0xFF as decimal} {-0b101 as float}")
 
     // int.min's magnitude is one past int.max, the one value the fit check
-    // admits only with its sign — the digits must not wrap on the way through
+    // admits only with its sign, the digits must not wrap on the way through
     let minf: float = -0x8000000000000000
     let mind: decimal = -0x8000000000000000
     io.println("minb  {minf} {mind} {-0x8000000000000000 as f32}")

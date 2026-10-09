@@ -40,7 +40,7 @@ check_bad() {
 
 # Raw literals: route templates, regexes, Windows paths, hashed bodies with
 # quotes, multi-line blocks, raw inside interpolation, and reflected
-# annotation arguments — every one equal to its escaped spelling, on both
+# annotation arguments, every one equal to its escaped spelling, on both
 # backends, byte for byte.
 run_both raw_strings_ok
 

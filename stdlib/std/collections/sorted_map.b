@@ -1,7 +1,7 @@
 // The ordered half of the map story. `Map` and `OrderedMap` answer "is this
 // key here" and "what went in first"; neither answers "what is the next key
 // after this one", "how many keys are below it", or "give me every key in
-// this range" — the questions a leaderboard, a time series index or an expiry
+// this range": the questions a leaderboard, a time series index or an expiry
 // scan is made of. Sorting a `List` answers them once and is wrong the moment
 // the collection changes again.
 
@@ -50,7 +50,7 @@ class SortedNode<K implements Order & Clone, V implements Clone> {
 /// a different cost.
 ///
 /// `K` must be `Order & Clone`. `Order` is what lets the tree compare keys at
-/// all, and today the language grants it only to the primitives — the integer
+/// all, and today the language grants it only to the primitives: the integer
 /// and float types, `decimal`, `bool` and `string`. A class, struct or enum
 /// key is refused; order it by a primitive key it maps to.
 ///
@@ -60,8 +60,8 @@ class SortedNode<K implements Order & Clone, V implements Clone> {
 /// The tree is an AVL tree: every node keeps the height of its subtree and a
 /// rotation restores the invariant that the two sides differ by at most one,
 /// so the depth stays under 1.44 log2(n) no matter what order the keys arrive
-/// in. Sorted input — timestamps, sequence numbers, exactly the input a time
-/// series index has — is the case an unbalanced tree degrades to a linked list
+/// in. Sorted input: timestamps, sequence numbers, exactly the input a time
+/// series index has: is the case an unbalanced tree degrades to a linked list
 /// on, so balance is not optional here.
 pub class SortedMap<K implements Order & Clone, V implements Clone> {
     root: Option<SortedNode<K, V>> = none
@@ -254,7 +254,7 @@ pub class SortedMap<K implements Order & Clone, V implements Clone> {
         }
     }
 
-    /// Every key in `[from, to)` — `from` included, `to` excluded, ascending.
+    /// Every key in `[from, to)`: `from` included, `to` excluded, ascending.
     /// A range whose end is not after its start is empty.
     pub fn range_keys(from: K, to: K) -> List<K> {
         var out: List<K> = []
@@ -308,8 +308,8 @@ pub class SortedMap<K implements Order & Clone, V implements Clone> {
     // A new node carrying `source`'s key and value, sharing both of its
     // children as they stand. This is the one place a subtree is grafted from
     // the live tree into the one being built: `n.left = source.left` retains
-    // the child, it does not move it, so `source` — a node a reader may still be
-    // walking — keeps every child it had. The height and size are copied too;
+    // the child, it does not move it, so `source`: a node a reader may still be
+    // walking: keeps every child it had. The height and size are copied too;
     // a caller that changes a child refreshes them.
     fn fresh_copy(source: SortedNode<K, V>) -> SortedNode<K, V> {
         var n: SortedNode<K, V> = new SortedNode<K, V>(source.key, source.value)
@@ -379,15 +379,15 @@ pub class SortedMap<K implements Order & Clone, V implements Clone> {
     // `added` is the answer `insert` reports, and it is an `inout` on the
     // caller's own local rather than a field or a size difference. A stored
     // value's `deinit` can run while this recursion is in flight and mutate
-    // the same map, so anything shared between the two calls — a field, or
-    // `len()` read before and after — is not a record of what THIS call did.
+    // the same map, so anything shared between the two calls: a field, or
+    // `len()` read before and after: is not a record of what THIS call did.
     //
     // The recursion never writes the live tree. Each node on the path to the
     // change is copied fresh, with the child it does NOT descend into shared as
     // it stands, and only the copies are rebalanced; the original nodes keep
     // every child and every cached size. `set` and `insert` publish the whole
     // new spine with the single `self.root = ...` store, so until that store
-    // `self.root` is entirely the old tree — a reader between any two writes
+    // `self.root` is entirely the old tree: a reader between any two writes
     // here, including a `deinit` the collector runs at one of the allocations a
     // copy makes, walks a tree whose keys and whose `size` agree. That is #92:
     // an in-place insert linked the new node deep and refreshed `self.root`'s
@@ -434,7 +434,7 @@ pub class SortedMap<K implements Order & Clone, V implements Clone> {
     // both children is replaced by a fresh node carrying its in-order
     // successor's entry, and `remove` publishes the whole result with one
     // `self.root = ...` store. Until that store `self.root` is entirely the old
-    // tree, so a reader — or a value's `deinit` — sees a `size` that matches the
+    // tree, so a reader (or a value's `deinit`) sees a `size` that matches the
     // keys it can find, never the old count over a tree a node has already left.
     fn remove_from(node: Option<SortedNode<K, V>>, key: K,
                    inout unlinked: bool) -> Option<SortedNode<K, V>> {
@@ -465,7 +465,7 @@ pub class SortedMap<K implements Order & Clone, V implements Clone> {
                 }
                 // With two children, the in-order successor's entry moves up
                 // into a fresh node and the successor is removed from the right
-                // subtree instead — it has no left child, so that removal is the
+                // subtree instead: it has no left child, so that removal is the
                 // easy case. The left subtree is shared as it stands.
                 let successor: SortedNode<K, V> =
                     self.leftmost(

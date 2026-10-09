@@ -1,6 +1,6 @@
 // #61: writing through a Slice<T> by index. The checker accepts `view[i] = v`
 // and `view[i] += v`, the tree interpreter runs both, and the native backend
-// refused them at build time with a message about the emitter — one backend
+// refused them at build time with a message about the emitter, one backend
 // could not emit what the other ran. A Slice<T> is the borrowed-view type, so
 // an indexed write is the ordinary use, not an exotic one; it lowers to the
 // same address arithmetic the read already does, plus a store.
@@ -15,13 +15,13 @@
 //   * a struct element (an extern "C" struct copied in whole)
 //   * a subslice, whose write lands in the parent's memory
 //   * a compound `view[i] += v` whose index has a side effect, so the index
-//     is evaluated exactly once — the read of the old value goes through the
+//     is evaluated exactly once, the read of the old value goes through the
 //     hoisted key, not a re-evaluation of the whole target. The counter and
 //     the printed cell together prove it: a double-eval reads and writes
 //     different cells and advances the counter twice.
 //
 // Slice elements are held to the raw-pointee set by the checker, so they are
-// always POD: no ARC, hence no arc+/arc- markers — the answers carry the proof.
+// always POD: no ARC, hence no arc+/arc- markers, the answers carry the proof.
 package main
 
 import std.io
@@ -139,7 +139,7 @@ fn main() {
         q.free()
 
         // a compound with a side-effecting index: `Ctr.next()` returns 0 once,
-        // and the read of the old value must use that same 0 — not run
+        // and the read of the old value must use that same 0, not run
         // `Ctr.next()` again and read cell 1 while the store lands in cell 0.
         let s: RawPtr<i32> = RawPtr.alloc(4)
         s.offset(0).write(100 as i32)

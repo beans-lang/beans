@@ -1,4 +1,4 @@
-// stdlib phase 1: Bytes — the binary workhorse. Every accessor, the builder
+// stdlib phase 1: Bytes accessors and builder operations.
 // chains a database page would use, and the panic at the end.
 import std.io
 

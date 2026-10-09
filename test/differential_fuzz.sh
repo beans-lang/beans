@@ -35,7 +35,7 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-dfuzz.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
 # ---- pinned regressions ---------------------------------------------------
-# Divergences the fuzzer found that need a rejection or a panic message —
+# Divergences the fuzzer found that need a rejection or a panic message,
 # things examples/regress_semantics.b cannot pin because the example sweep
 # only accepts passing programs.
 pinned() {
@@ -305,7 +305,7 @@ done
 EOF
 
     # a temporary object made for a call argument or interpolation piece
-    # dies when that call returns, newest first — the stage-0 native
+    # dies when that call returns, newest first, the stage-0 native
     # backend used to defer every temp to the end of the statement
     cat >"$tmp/temp_timing.b" <<'EOF'
 import std.io
@@ -376,7 +376,7 @@ EOF
     done
 
     # a statement match's block arm may end in a call whose value is
-    # discarded — there is no implicit tail expression anywhere. The
+    # discarded, there is no implicit tail expression anywhere. The
     # self-hosted checker used to type the arm from that trailing call
     # and reject the match with "match arms have different types".
     cat >"$tmp/discard_arm.b" <<'EOF'

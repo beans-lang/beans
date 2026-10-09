@@ -6,7 +6,7 @@
 //     that goes through the structural thunk; only an enum in a field took
 //     the identity path.
 //   * a struct holding `Option<S>` where S itself holds Options failed to
-//     build at all — "PHI node entries do not match predecessors". The
+//     build at all, "PHI node entries do not match predecessors". The
 //     payload comparison opens blocks of its own, so the block that branch
 //     started in was not the block it ended in.
 package main

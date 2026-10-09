@@ -100,7 +100,7 @@ fn nonblocking_contract() -> Result<bool> {
         net.TcpStream.connect("127.0.0.1", listener.port()?)?
     // The connect returned, but on a saturated machine the loopback
     // handshake can reach the accept queue a beat after it. The contract
-    // under test is try_accept's quiet behaviour, checked above — so wait
+    // under test is try_accept's quiet behaviour, checked above, so wait
     // out the kernel here, bounded, rather than flake under load.
     var maybe_server: Option<net.TcpStream> = none
     var tries: int = 0

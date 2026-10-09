@@ -6,7 +6,7 @@
 # class is extended at a concrete argument. Every one of those dispatches
 # through the vtable or calls a body that only exists once its arguments
 # are bound, so the interpreter, a debug build and a release build must
-# agree byte for byte — a null row or an unbound `T` shows up as a
+# agree byte for byte, a null row or an unbound `T` shows up as a
 # difference here. The negative file locks the diagnostics that keep the
 # bindings honest.
 set -euo pipefail
@@ -60,7 +60,7 @@ check_bad test/cases/generic_interfaces_bad.b \
 check_bad test/cases/generic_interfaces_bad.b \
     "'through_bound' needs P implements main.Producer<int>, got main.BoxOf<string>"
 # and a generic class's bound is checked where the type is named, not left for
-# the backend — the same rule the collections rely on for Order and Clone keys
+# the backend, the same rule the collections rely on for Order and Clone keys
 check_bad test/cases/generic_interfaces_bad.b \
     "Keeper needs P implements main.Producer<int>, got main.BoxOf<string>"
 

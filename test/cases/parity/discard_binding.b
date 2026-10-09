@@ -1,5 +1,5 @@
 // `_` is a discard, not a name. Two of them may share a scope, none of them
-// can be read — and the value each one takes is still owned, so it is
+// can be read, and the value each one takes is still owned, so it is
 // released exactly once at the end of the scope it was bound in.
 //
 // That last part is the half a diff of answers cannot see: a discard that

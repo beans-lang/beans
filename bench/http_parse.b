@@ -1,4 +1,4 @@
-// HTTP/1.1 parse throughput — the trampoline-budget gate.
+// HTTP/1.1 parse throughput; also checks the trampoline budget.
 //
 // The same 465-byte request the raw-llhttp reference bench parses, pushed
 // through the public std.http RequestParser with all events consumed. The

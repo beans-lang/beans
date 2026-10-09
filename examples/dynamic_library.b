@@ -1,22 +1,5 @@
-// Loading a shared library at run time.
-//
-// Two decisions here, both about not lying to you.
-//
-// **Symbols never leak into the global namespace.** The library is opened `RTLD_LOCAL`.
-// `RTLD_GLOBAL` would publish its symbols where an `extern "C" fn` looks — and the
-// interpreter looks with `dlsym`, while a native build looks at link time. The same
-// program would link in one backend and not the other, which is precisely the failure
-// this project's whole test strategy exists to catch.
-//
-// **Calling an address requires `unsafe`, and there is no wrapper that hides it.** A
-// symbol is an address; nothing about it says what arguments it takes. The signature is
-// your guess, and a wrong guess corrupts the stack instead of raising an error. A
-// `dylib.call2(...)` helper would have to open its own `unsafe` block, and then the caller
-// would not need one — so calling goes straight to `std.dl` where the block is visible.
-//
-// Loading needs a library to load, and one cannot be committed as a binary, so the path
-// comes from BEANS_DYLIB_EXAMPLE. Without it this still exercises every failure path,
-// and `test/dylib.sh` builds a library and runs the whole thing.
+// Libraries open with `RTLD_LOCAL`; calling a symbol address requires caller-side `unsafe`.
+// Set `BEANS_DYLIB_EXAMPLE` to test a library; `test/dylib.sh` builds one for the example.
 
 import std.io
 import std.dl
@@ -28,7 +11,7 @@ fn use_library(path: string) -> Result<int> {
     let lib: dylib.Dylib = dylib.Dylib.open(path)?
     io.println("opened the library")
 
-    // Probing is safe and does not need unsafe — only *calling* does.
+    // Looking up a symbol is safe; calling its address requires `unsafe`.
     let present: bool = lib.has("plug_add")
     let absent: bool = lib.has("plug_nothing_here")
     io.println("has plug_add {present}, has a made-up name {absent}")
@@ -47,7 +30,7 @@ fn use_library(path: string) -> Result<int> {
         io.println("three arguments give {dl.call3(mix.address, 1, 2, 3)}")
     }
 
-    // A symbol that legitimately lives at address zero is not an error — which is why
+    // Address zero is valid; `find` reports lookup failure through `Result`.
     // `find` reports failure as an `err` rather than by handing back a null address.
     let zero: dylib.Symbol = lib.find("plug_zero")?
     unsafe {

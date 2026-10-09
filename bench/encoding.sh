@@ -7,7 +7,7 @@ set -euo pipefail
 #
 # Timing numbers are machine-dependent and are deliberately not a CI gate;
 # the checksums in the output are the only stable part. The claim-eligible
-# language benchmark stays bench/run.sh — this file exists so encoding
+# language benchmark stays bench/run.sh; this file runs encoding
 # changes can be measured before and after, on one machine.
 
 cd "$(dirname "$0")/.."

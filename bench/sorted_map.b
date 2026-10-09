@@ -1,13 +1,13 @@
 // SortedMap<int, int> against std::map: the ordered map under the loads that
-// make people reach for one. Two fills — ascending keys, which is the shape a
+// make people reach for one. Two fills: ascending keys, the shape a
 // time-series index actually sees and the case a balanced tree exists for, and
-// scattered keys, which is the ordinary one — then point lookups half of which
+// scattered keys, the ordinary shape. Then point lookups, half of which
 // miss, `ceiling_key` on keys that are not members, an ordered scan of every
 // key, a removal of half the entries, and an ordered scan of what survived.
 //
 // The C++ twin is std::map, a red-black tree: a different balance scheme over
 // the same ordered-map contract, so the row compares two balanced trees doing
-// the same work. `rank`, `key_at` and `range_count` are left out on purpose —
+// the same work. `rank`, `key_at`, and `range_count` are excluded because
 // SortedMap keeps subtree sizes and answers them in O(log n) while std::map
 // has to walk, and a row where the two sides run different algorithms measures
 // the algorithms, not the implementations.
@@ -23,7 +23,7 @@ import std.collections
 // A bijection on [0, 2^40): multiply by an odd constant modulo 2^40, then an
 // xor-shift finalizer. Ascending indices come out scattered, and because it is
 // a bijection the scattered map holds exactly as many keys as the ascending
-// one — the two fills differ in insertion order and nothing else.
+// one. The two fills differ only in insertion order.
 fn scatter(index: int) -> int {
     let mixed: int = (index * 2654435761) & 1099511627775
     return mixed ^ (mixed >> 20)
@@ -38,7 +38,7 @@ fn main() {
 
     // 1. Ascending fill. Every key is larger than every key already there, so
     //    each insert descends the right spine and the rebalance runs on the
-    //    way back out — the AVL's worst case and a time series' normal one.
+    //    way back out, the AVL's worst case and a time series' normal case.
     var series: collections.SortedMap<int, int> = new()
     var i: int = 0
     for i < n {
@@ -68,7 +68,7 @@ fn main() {
     }
 
     // 4. Neighbour queries. No `scatter(i) + 1` is a member, so every descent
-    //    has to carry a candidate down and answer with it — except the single
+    //    has to carry a candidate down and answer with it, except the single
     //    probe above the largest key, which answers none and folds -1.
     i = 0
     for i < n {
@@ -97,9 +97,9 @@ fn main() {
     checksum = checksum + removed * weight
     weight += 2654435761
 
-    // 7. Scan what survived. Counting the removals is not enough on its own —
+    // 7. Scan what survived. Counting removals alone is not enough;
     //    unlinking the wrong key leaves `removed` and `len` exactly right and
-    //    the contents wrong — so the surviving keys go into the answer too.
+    //    the contents could still be wrong, so include surviving keys too.
     let left: List<int> = index.keys()
     i = 0
     for i < left.len() {

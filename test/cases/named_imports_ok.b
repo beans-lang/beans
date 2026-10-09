@@ -1,5 +1,5 @@
 // Named imports: `import {name, other as alias} from path` binds exactly
-// the selection — functions, types, enums, sub-packages — and resolves at
+// the selection, functions, types, enums, sub-packages, and resolves at
 // compile time like the module-qualified form. Every shape here must run
 // identically interpreted and native.
 import {println} from std.io

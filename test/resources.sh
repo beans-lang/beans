@@ -7,7 +7,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 echo "checking move-only resources through Result in both backends"
 # This is the shape every OS handle in std uses, and until now `unique class` had no
-# users anywhere in the tree — nothing was protecting these semantics.
+# users anywhere in the tree, nothing was protecting these semantics.
 ./build/beansc run examples/resources.b >"$tmp/interp"
 ./build/beansc build examples/resources.b -o "$tmp/native" >"$tmp/build.log" 2>&1
 "$tmp/native" >"$tmp/native.out"

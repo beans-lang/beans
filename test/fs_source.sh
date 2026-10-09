@@ -9,7 +9,7 @@ echo "checking Beans-written high-level file helpers"
 mkdir "$tmp/interp" "$tmp/native" "$tmp/asan"
 # The second argument is a tag unique to this run. The case writes a probe file
 # into fs.temp_dir() to prove the directory it names is really writable, and
-# that directory is shared with every other program on the machine — including
+# that directory is shared with every other program on the machine, including
 # a second copy of this suite in another worktree. mktemp already made the name
 # unique, so the tag rides along rather than being invented again.
 tag=$(basename "$tmp")
@@ -77,7 +77,7 @@ grep -q 'call i64 @beans_file_exists' build/fs_source.ll
 grep -q 'call ptr @beans_dir_temp' build/fs_source.ll
 
 # Issue #167 was reported as "std.fs cannot delete a file". The capability was
-# there — File.remove has always existed — but std.fs stopped at a path's bytes
+# there, File.remove has always existed, but std.fs stopped at a path's bytes
 # and never named its life, so a competent reader concluded the language could
 # not delete at all and reached for a shell. The rule that closes it is that
 # std.fs names *every* path-taking File static. File.open is the one exception:

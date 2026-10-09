@@ -1,6 +1,6 @@
 // `super.method(...)` used to panic under the interpreter anywhere but the top
-// level of a method body — inside an `if`, a block, a loop, or either kind of
-// match arm — while the native backend compiled every one of them correctly.
+// level of a method body, inside an `if`, a block, a loop, or either kind of
+// match arm, while the native backend compiled every one of them correctly.
 // A lexical scope frame did not carry the enclosing function's `self`, and the
 // super call read it directly instead of walking up.
 //

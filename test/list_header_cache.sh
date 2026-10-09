@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# A loop that mutates a list it provably owns carries the list's header —
-# data, len, cap and the change word — in registers instead of reloading it
+# A loop that mutates a list it provably owns carries the list's header,
+# data, len, cap and the change word, in registers instead of reloading it
 # from the heap object every operation (beans #77, src/mir.b
 # analyze_list_header_cache).
 #
@@ -15,7 +15,7 @@
 #      fast path does not emit).
 #   3. the answers do not move. One golden file for both backends, over
 #      sizes past a list's first reallocation, plus two programs whose whole
-#      point is that the write-back is exact — an iteration of the same list
+#      point is that the write-back is exact, an iteration of the same list
 #      still has to notice a nested loop changing it, including when the
 #      change leaves the length alone and only the count can tell.
 set -euo pipefail
@@ -89,8 +89,8 @@ if bad:
 PY
 
 # 3b. The write-back has to be exact. A loop nested inside an iteration of
-#     the same list may cache — the iterator is not advanced while it is
-#     open — but only if the length and the change count it publishes on the
+#     the same list may cache, the iterator is not advanced while it is
+#     open, but only if the length and the change count it publishes on the
 #     way out are the ones the iteration would have seen without it. Both
 #     programs must refuse, identically, in both backends.
 refuses() {

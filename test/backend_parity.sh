@@ -1,46 +1,5 @@
 #!/usr/bin/env bash
-# The interpreter and the native backend must answer the same bytes for the
-# same program, and must do the same amount of work getting there.
-#
-# Four shipped bugs were exactly this disagreement and none were visible to a
-# test that ran only one side:
-#
-#   * an empty struct literal in field-default position, where the struct it
-#     builds is declared in a later-sorting file of the same package
-#   * `%` between floats, which the checker accepted and the interpreter
-#     refused
-#   * a Map whose value is move-only, read through get(key)
-#   * a class -> interface upcast at a `return`, which the interpreter took
-#     and the native backend refused
-#   * a class extending a generic base, whose release the native backend
-#     either called through a null pointer or never called at all
-#   * sorting a list of inline records, which the native backend refused
-#     because sort only ever handled slot-wide elements
-#   * `List<T> ==` and `List<T>.is_empty()`, refused natively while the
-#     interpreter answered both
-#   * `Option<T> ==` where T is a reference, which the native backend
-#     answered by address — a wrong answer rather than a refusal
-#   * an interface default reached through a super-interface, which the
-#     INTERPRETER got wrong while the native backend was right
-#
-# Each case runs on the interpreter, a debug build and a release build, and
-# all three have to match. There is no golden output on purpose: the claim is
-# that the backends agree, not that any one prints a chosen string.
-#
-# Diffing answers is not enough on its own. A fix for the first bug above was
-# once written twice — checker and interpreter — and every struct default then
-# ran twice. The field values were identical either way, so a gate that only
-# compared printed answers saw nothing; the sole trace was an extra construct
-# and an extra release per field. So the cases print `arc+tag` when a
-# value is built and `arc-tag` when it is released, and this gate checks:
-#
-#   * the markers balance — the same tags on both sides, so nothing leaked
-#     and nothing was released twice
-#   * the total matches a pinned count, so a change that runs something twice
-#     on BOTH backends still fails, which a backend-to-backend diff cannot see
-#
-# Answers catch wrong results. Markers catch wrong evaluation count, order and
-# lifetime. A case that carries no markers only gets the first.
+# Compare interpreter, debug, and release results; marker counts pin evaluation order and ownership effects.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -50,12 +9,12 @@ trap 'rm -rf "$tmp"' EXIT
 # The marker prefix is `arc+` / `arc-` rather than a bare sign: a case that
 # prints a negative number would otherwise read as a release.
 #
-# effects <file> <sign> — how many marker lines of one kind the run printed
+# effects <file> <sign>, how many marker lines of one kind the run printed
 effects() {
     grep -c "^arc$2" "$1" 2>/dev/null || true
 }
 
-# tags <file> <sign> — the marker tags of one kind, sorted
+# tags <file> <sign>, the marker tags of one kind, sorted
 tags() {
     grep "^arc$2" "$1" 2>/dev/null | cut -c5- | sort || true
 }
@@ -88,8 +47,8 @@ check_effects() {
 # agree <source> [expected-constructs]
 # A parity case that never returns is worse than one that answers wrongly: the
 # harness waits forever and the run reads as "still going" rather than red.
-# taskgroup_wide.b did exactly that — a try_next drain loop starved the fibers
-# it was polling for — and nothing here could say so. `alarm` is the portable
+# taskgroup_wide.b did exactly that, a try_next drain loop starved the fibers
+# it was polling for, and nothing here could say so. `alarm` is the portable
 # bound this tree already uses; GNU timeout is not on every host.
 bounded() {
     # 600s, not the 120s that failed bind_release.b on both runners: its three
@@ -188,7 +147,7 @@ agree test/cases/parity/generic_base_dispatch.b 4
 # middle that declares none. Thirteen objects built and released once.
 agree test/cases/parity/generic_base_deinit_chain.b 13
 # #123: a generic class that `extends` anything could not be laid out
-# natively at all — check passed, the interpreter ran it, and the build then
+# natively at all, check passed, the interpreter ran it, and the build then
 # blamed its own metadata capacity on a class with no fields. Every field
 # shape, a generic class over a generic base at the same parameter / a pinned
 # one / a reordered one, a plain leaf under a generic middle, a deinit on a
@@ -199,14 +158,14 @@ agree test/cases/parity/generic_base_deinit_chain.b 13
 # down under the collector. Fifteen marked objects, built and released once.
 agree test/cases/parity/generic_subclass.b 15
 # Found alongside #123: the chain walk gave up past 32 links and class_layout
-# reported that as the class shape exceeding runtime metadata capacity — a
+# reported that as the class shape exceeding runtime metadata capacity, a
 # build-time failure, with a message about the emitter, on a program check
 # passed and the interpreter ran. 41 links, generic at three depths, with a
 # deinit at the root and at one generic link so the release chain is walked the
 # whole way too.
 agree test/cases/parity/deep_chain.b 4
 # #119, the blocker half: a plain class *above* a generic base, whose deinit
-# the parent walk stepped over because a generic link has no plain symbol —
+# the parent walk stepped over because a generic link has no plain symbol,
 # dropping one deinit, chosen by declaration order. Both orders here (built in
 # main vs behind a Maker declared before its leaf), a leaf declaring none whose
 # raised base still chains up, and a five-link stack with two plain ancestors
@@ -237,7 +196,7 @@ agree test/cases/parity/map_replace_panic.b
 agree test/cases/parity/assign_eval_order.b
 # #61: an indexed write through a Slice<T>, the borrowed-view type. The
 # checker and the interpreter took `view[i] = v` and `view[i] += v`; the
-# native backend refused both at build time. Every store shape is here —
+# native backend refused both at build time. Every store shape is here,
 # plain and compound, constant and computed index, n=1/2/many, i32/i64/u8,
 # a struct element, and a subslice write landing in the parent's memory.
 agree test/cases/parity/slice_index_write.b
@@ -253,28 +212,28 @@ agree test/cases/parity/enum_order.b
 # rather than a list sort. A plain enum key and an enum(u8) key both appear.
 agree test/cases/parity/enum_order_containers.b
 # `?` crossing an error boundary: the source error is converted through
-# to_error or widened to a supertype, and both backends have to do it once —
+# to_error or widened to a supertype, and both backends have to do it once,
 # for a call operand, a local operand, a bare statement `f()?`, and each hop
 # of a nested `f()??`. The six source errors are the pinned construct count.
 agree test/cases/parity/error_conversion.b 6
 # A type's identity is not its spelling. `f64`/`float`, `i64`/`int` and
-# `byte`/`u8` are one type each, and HIR carries both names — an annotation
+# `byte`/`u8` are one type each, and HIR carries both names, an annotation
 # keeps what was written, a MIR local carries the canonical one. Six places in
 # the LLVM emitter asked whether two *renderings* matched, so the checker
 # accepted these and the native backend refused them at build time. Two source
 # errors are the pinned construct count.
 agree test/cases/parity/result_payload_spelling.b 2
 # The same rule on the reflection side, and the reason it is here rather than
-# in a golden: TWO tables answered Kind for a builtin scalar — the runtime's
-# beans_reflect_type_kind and the tree interpreter's own copy — and both were
+# in a golden: TWO tables answered Kind for a builtin scalar, the runtime's
+# beans_reflect_type_kind and the tree interpreter's own copy, and both were
 # missing i64, f64 and byte. Fixing one and not the other turns a wrong answer
 # into a backend disagreement, which only this gate can see.
 agree test/cases/parity/reflect_scalar_spelling.b 1
-# std failing its own users — a std.reflect failure crossing into a plain
+# std failing its own users, a std.reflect failure crossing into a plain
 # Result<T> through ReflectError.to_error, on both the ok and err paths.
 agree test/cases/parity/reflect_error_bridge.b
 # #169: whether one type name stands for another. The native runtime compared
-# base names in the chain, so an IntGrid — a Grid<int> — was assignable to
+# base names in the chain, so an IntGrid, a Grid<int>, was assignable to
 # Grid<string>; it compared exact strings at the top, so a Grid<int> was not
 # assignable to Grid, the declaration its own members are filed under. The
 # interpreter compared exact strings in both positions. Both legs were wrong,
@@ -303,16 +262,16 @@ agree test/cases/parity/settled_dispatch.b 10
 # name gave the interpreter one slot and the native backend two, which this
 # case would expose as a marker imbalance the moment the layouts diverged.
 agree test/cases/parity/inherited_field_slots.b 4
-# #160: the two backends cannot share a reflection error message — the
+# #160: the two backends cannot share a reflection error message, the
 # interpreter stores a literal at each failure site, a native build asks the
-# runtime's code-to-text table — and one entry of that table was built a byte
+# runtime's code-to-text table, and one entry of that table was built a byte
 # short, so the same failure printed 27 bytes natively and 28 under the
 # interpreter. Every reflection error a program can reach is provoked here,
 # through every shape that reaches it, and each one prints its kind, its
 # message and the message's byte length. Sixteen receivers are boxed into
 # reflect values, so the refusing paths are held to the lifetime rule too.
 agree test/cases/parity/issue160_reflect_error_messages.b 18
-# #158 — reflection over members a generic class declares. The registry files
+# #158, reflection over members a generic class declares. The registry files
 # one row per OPEN declaration, so the interpreter served these off the live
 # object while the native backend, with no instantiation to name in a
 # monomorphic pointer, answered `unsupported`. Two instantiations whose
@@ -322,9 +281,9 @@ agree test/cases/parity/issue160_reflect_error_messages.b 18
 # the wrong reference.
 agree test/cases/parity/issue158_reflect_generic.b 8
 # #163: a reflective box records the type the value IS, not the type of the
-# binding it came from. The two backends get there by different routes — the
+# binding it came from. The two backends get there by different routes, the
 # native one reads the class descriptor at the object's first word, the
-# interpreter reads the class name the object records for itself — so only a
+# interpreter reads the class name the object records for itself, so only a
 # parity case checks they agree. Four boxing routes (reflect.value, a field
 # read, a call result, a construction), a three-link chain plus an interface
 # binding, a middle instance that must refuse the leaf, closed generics that
@@ -332,9 +291,9 @@ agree test/cases/parity/issue158_reflect_generic.b 8
 # change. Four marked objects, built and released once.
 agree test/cases/parity/issue163_reflect_runtime_type.b 4
 # A type parameter inside a function-typed parameter. The native backend
-# refused the call for a free function and for a static — `fn(T)` and
+# refused the call for a free function and for a static, `fn(T)` and
 # `fn(T) -> unit` are one type, and only the spelled form carries the result
-# in the type's argument list — while an instance method with the identical
+# in the type's argument list, while an instance method with the identical
 # signature emitted and the interpreter ran all three, so this shape could
 # not be compared across the backends at all. Twenty-six values built and
 # released: what a closure handed to a generic does is build and release, so
@@ -354,7 +313,7 @@ agree test/cases/parity/issue161_generic_fn_parameter.b 26
 agree test/cases/parity/issue162_static_factory.b 5
 # #167: std.fs could name a file's bytes but not its life, so a program could
 # create a temp file it could never release. The shape that needed it is a
-# deinit that removes a spooled part — dropped on an ordinary scope exit and
+# deinit that removes a spooled part, dropped on an ordinary scope exit and
 # again on a contained panic, where the unwind runs the same hooks. Both
 # backends have to remove the same files at the same points: each release
 # reports whether the bytes were actually gone, so a hook that ran but removed
@@ -367,7 +326,7 @@ agree test/cases/parity/issue167_fs_lifecycle.b 5
 # parameter dies at the callee's frame exit. The interpreter left the spent
 # binding pointing at the value and released it at the caller's scope exit
 # instead. The markers balanced on both sides, so the count below saw nothing
-# — only the ordered diff catches it, which is why the case prints a line
+# Only the ordered diff catches it, so the case prints a line
 # between every call and what follows. Forty values: a plain class and a
 # `unique` one, the temporary and borrowed controls, forwarding, storing,
 # returning, an early return, three moved-in parameters (reverse declaration
@@ -379,7 +338,7 @@ agree test/cases/parity/issue155_move_drop_point.b 40
 
 # #172: a class extending a closed generic and writing no `init` of its own
 # passed check, ran under the interpreter, and failed the native build with a
-# message about the emitter's internals — a generic class's bodies are raised
+# message about the emitter's internals, a generic class's bodies are raised
 # under the rendered instance name while the lookup asked the declaration's
 # open one. The control that writes `fn init` is beside every shape, because
 # declaring one was the only difference between a program that built and one
@@ -389,19 +348,19 @@ agree test/cases/parity/issue155_move_drop_point.b 40
 agree test/cases/parity/inherited_generic_init.b 9
 
 # #195: `as?` with an interface target. The checker accepted it, the native
-# emitter refused to build it — a message about the emitter for a program
-# check had passed — and the tree interpreter answered `none` for a downcast
+# emitter refused to build it, a message about the emitter for a program
+# check had passed, and the tree interpreter answered `none` for a downcast
 # that holds, silently, because its instance test walked `extends` and never
 # `implements`. Each interface here is reached and missed by at least two
 # classes, through `implements` directly, through a base, through a
 # grandparent and through an interface's own extends chain; `Unused` is
-# implemented by nobody, so its table is all zeros — the row a wrong table
+# implemented by nobody, so its table is all zeros, the row a wrong table
 # gets right by accident. Ten objects built and released once, because `as?`
 # retains what it wraps.
 agree test/cases/parity/interface_downcast.b 10
 
 # #186: os.args() is a fact about the process, and the tree interpreter gave a
-# spawned thread's interpreter an empty argument list — the real arguments
+# spawned thread's interpreter an empty argument list, the real arguments
 # natively, nothing under `beansc run`, silently. Run WITH arguments, or both
 # backends answer an empty list and the case passes proving nothing; the
 # answers are pinned as well, so both being wrong together is caught too. The
@@ -412,8 +371,8 @@ agree_with_args test/cases/parity/args_across_threads.b "" \
     alpha "two words" "" "ünïcode"
 
 # A List buried inside another value compares by its elements, not by its
-# address. A bare `xs == ys` was always structural; one level down — a struct
-# field, an Option payload, a Result arm, a map key — the native backend
+# address. A bare `xs == ys` was always structural; one level down, a struct
+# field, an Option payload, a Result arm, a map key, the native backend
 # compared the two pointers while the interpreter walked the elements, so two
 # values equal in every field answered false in a built binary with no
 # diagnostic. Carries the Map and Result fields that took the same branch, and
@@ -425,7 +384,7 @@ agree test/cases/parity/nested_list_equality.b
 # that into the runtime call: `ptr , ptr )`, a module clang rejects. Every map
 # operation reaches those two symbols and every one of them is here.
 agree test/cases/parity/map_wide_keys.b
-# Printing an Option whose payload is wider than a slot — an optional struct,
+# Printing an Option whose payload is wider than a slot, an optional struct,
 # decimal, nested Option or inline Result. The interpreter printed it; the
 # native build refused a debug print.
 agree test/cases/parity/show_wide_option.b
@@ -454,7 +413,7 @@ fi
 
 # The cross-file default needs a real package, so it is its own tree and is
 # run from inside it the way a user's project would be. Running from there
-# loses the repo-relative source roots, so they are pinned first — the same
+# loses the repo-relative source roots, so they are pinned first, the same
 # thing the Makefile does when it bootstraps against this tree.
 root=$(pwd -P)
 export BEANS_RUNTIME="$root/runtime/beans_rt.c"
@@ -496,8 +455,8 @@ grep -q "tags 12 atlas atlas" "$tmp/$name.interp" || {
 echo "  agree: test/cases/$name (super.init argument ownership)"
 
 # Static fields initialise before main, in file order. The forward case is
-# ordinary; the backward one — reading a static whose initialiser has not run
-# yet — used to answer the zero it was born with in a native build while the
+# ordinary; the backward one, reading a static whose initialiser has not run
+# yet, used to answer the zero it was born with in a native build while the
 # interpreter panicked.
 name=parity_statics
 ( cd "test/cases/$name" && "$root/build/beansc" run main.b ) \
@@ -539,7 +498,7 @@ echo "  agree: test/cases/$name (generic-base dispatch across packages)"
 # `peek` carries the selector `lib:peek`; a subclass in another package
 # declares its own `peek`, which answers a different selector and so is not an
 # override. The base's row was raised under the subclass's plain name, collided
-# with the subclass's own `peek`, and was dropped — leaving the base's vtable
+# with the subclass's own `peek`, and was dropped, leaving the base's vtable
 # row null. It is latent at runtime today (the call devirtualizes), so this
 # asserts the emitted descriptor row directly rather than trusting the answer:
 # the leaf's table must carry a real symbol in the base's slot, not `ptr null`.
@@ -589,8 +548,8 @@ echo "  agree: test/cases/$name (generic base's method row survives a cross-pack
 # classes that reach it spread across two. The native test is a byte table
 # filled from the emitter's conformance walk, so a relation written across a
 # package boundary is what that walk could most easily miss. Written from
-# both sides — inside the package that owns the interface, and outside it,
-# where the declaration is reached by a different name — over a class that
+# both sides, inside the package that owns the interface, and outside it,
+# where the declaration is reached by a different name, over a class that
 # implements it here, one that implements it there, one that reaches it
 # through a base declared in the other package, and one that does not reach
 # it at all.
@@ -614,12 +573,12 @@ echo "  agree: test/cases/$name (an interface downcast across packages)"
 
 # #123: a generic class extending a generic base in *another* package. The
 # override lives on a generic class, so the record of which slots a name
-# declares had no entry for it — a template carries no symbol, and the record
-# was written only for names that got one — and matching that class against a
+# declares had no entry for it, a template carries no symbol, and the record
+# was written only for names that got one, and matching that class against a
 # `Base<int>` receiver by its written arguments, which say `Base<T>`, answered
 # no. Both told the emitter nothing could replace the base body, so the call
 # compiled direct while the interpreter dispatched to the override: a wrong
-# answer, not a refusal. The package-private `secret` is the other half — its
+# answer, not a refusal. The package-private `secret` is the other half, its
 # selector carries lib, so no subclass elsewhere can replace it, and its row on
 # a foreign generic subclass's descriptor must still be the base's own body.
 name=generic_subclass_pkg
@@ -682,7 +641,7 @@ grep -Fq "was read before initialization" "$tmp/early.interp" || {
 echo "  refused: reading a static before its initialiser ran, both backends"
 
 # A move-only map value is not symmetric between the two bracket forms. The
-# write moves a value in — the same transfer m.set(k, v) does — and is
+# write moves a value in, the same transfer m.set(k, v) does, and is
 # accepted; the read would have to copy the map's own value and stays refused
 # with the message that names the way out. The two are checked in separate
 # files on purpose: proving the write is accepted needs a file that does not
@@ -740,7 +699,7 @@ grep -Fq "is not defined for Map<string, int>" "$tmp/mapeq.out" || {
 echo "  refused: comparing two maps, in the caller's own terms"
 
 # A defer is a function-exit hook (spec/SYNTAX.md): registered inside a
-# nested block it would run after the block's locals dropped — the native
+# nested block it would run after the block's locals dropped, the native
 # run-site read a released cell and crashed on any owned capture. The
 # checker refuses the shape; the primitive-capture case that happened to
 # work is refused with it.
@@ -775,8 +734,8 @@ echo "  refused: a defer inside a nested block, both backends"
 # interpreter panicked at run time, so a program whose control flow never
 # reached the line shipped fine, and the native build refused at compile time
 # talking about the LLVM emitter rather than about the program. Neither backend
-# has ever had a decimal remainder — the runtime exposes add, sub, mul, div,
-# cmp, round, abs and neg and no rem — so this is the language's own answer at
+# has ever had a decimal remainder, the runtime exposes add, sub, mul, div,
+# cmp, round, abs and neg and no rem, so this is the language's own answer at
 # check time, the shape `+` on a string has. Every position that reaches a
 # decimal `%` is here: the operator, and `%=` against a local, a class field, a
 # static and a struct field.
@@ -840,7 +799,7 @@ echo "  kept: '%' on integers and floats"
 # answered a plain `err(... "unsupported")` under `beansc run`, so a program
 # that branches on the result took a different branch on each backend with
 # nothing said; the interpreter stops the program there now instead. The JSON
-# half is closed — test/cases/parity/json_typed_decode.b — because both
+# half is closed, test/cases/parity/json_typed_decode.b, because both
 # backends parse through one vendored yyjson; XML has no such shared floor.
 cat >"$tmp/xmldecode.b" <<'EOF'
 package main

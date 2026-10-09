@@ -4,7 +4,7 @@
 // beans_alloc_bytes, which pools blocks under 1024 bytes total (16 of header
 // plus the bytes plus the NUL, rounded to 16) and takes a non-pooled arm above
 // that. Both arms are freed by one release path, and that path frees a
-// non-pooled block through rt_obj_free — which reads the 16-byte origin prefix
+// non-pooled block through rt_obj_free, which reads the 16-byte origin prefix
 // rt_obj_alloc writes in front of the object. An arm that allocated without
 // that prefix therefore freed a pointer no allocator ever returned.
 //

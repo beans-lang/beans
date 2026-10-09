@@ -37,7 +37,7 @@ pub class LocalChild extends Local {
 // The enclosing type parameters are the third thing the checker hands the
 // resolver. Nothing in the cross-package battery reaches them, because a
 // type parameter is not qualified by a package and so cannot be composed
-// into a wrong name — which is exactly why it needs pinning here.
+// into a wrong name, which is exactly why it needs pinning here.
 pub class Crate<T> {
     item: T
     pub fn init(item: T) { self.item = item }
@@ -209,7 +209,7 @@ fn main() {
 
     // The three arguments `bind_interpolated_type` hands the resolver that
     // the cross-package battery above never reaches: the enclosing owner
-    // (`Self`), the enclosing type parameters, and a builtin name — which
+    // (`Self`), the enclosing type parameters, and a builtin name, which
     // the old rule skipped outright and the new one resolves like any
     // other. None of them can be composed into a wrong package name, so
     // none of them fails on the old code; they are here so that dropping

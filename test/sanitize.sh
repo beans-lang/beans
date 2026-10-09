@@ -421,7 +421,7 @@ run_asan examples/stdlib_beans.b stdlib_beans
 run_asan examples/ffi.b ffi
 run_asan test/cases/move_ok.b move_ok
 # A discard still owns and drops its value, and a struct field is written
-# through the storage the struct lives in — including a reference stored into
+# through the storage the struct lives in, including a reference stored into
 # a record inside a heap object, which takes the publication barrier. Both are
 # lifetime claims the arc-marker parity gate counts; here the same programs run
 # under ASan/UBSan so a drop that lands on the wrong address or a barrier that
@@ -435,7 +435,7 @@ run_asan test/cases/parity/record_place.b record_place
 run_asan test/cases/parity/static_place.b static_place
 run_asan test/cases/parity/try_ownership.b try_ownership
 # #123: a generic class that extends another lays its fields out through the
-# chain its `extends` pins, and mints a pointer mask per argument list — the
+# chain its `extends` pins, and mints a pointer mask per argument list, the
 # same class traces a field in one instantiation and must not in the other.
 # The arc markers count releases; only a sanitizer says whether the collector
 # followed a word that was never a pointer, or skipped one that was. The chain
@@ -508,7 +508,7 @@ run_bridge_asan() {
 }
 
 # A contained panic (issue #44) must reclaim everything the fiber owned on the
-# way out — the unwind pad drops each owned local, each in-flight temporary
+# way out, the unwind pad drops each owned local, each in-flight temporary
 # and each half-built object exactly once. Two hundred rounds of three
 # contained panics, each holding a 64 KiB buffer (in a local behind an armed
 # defer, in a temporary argument, and inside an object whose init panicked),
@@ -520,7 +520,7 @@ run_bridge_asan test/cases/brew_unwind_leak.b brew_unwind_leak \
 
 # The same unwind stopped one frame earlier (issue #145): a `contained` call
 # catches in the CALLING frame, so on top of everything the pads drop, the
-# catch path has to release the closure box the hoisted arguments ride in —
+# catch path has to release the closure box the hoisted arguments ride in,
 # on the caught path, where the callee never took them, as much as on the
 # returning one. Two hundred rounds of four shapes, 800 caught panics, each
 # holding a filled 64 KiB buffer.
@@ -968,7 +968,7 @@ BEANS_SANITIZE_CALLBACKS=1 bash ./test/stored_callbacks.sh
 # interface_downcast.b is here because `as?` retains what it wraps and the
 # interface arm is a new way in (#195): a missed retain is a use-after-free
 # the arc markers in the parity gate would see, and a missed release is a
-# leak they would not — the tags balance either way when the Option is
+# leak they would not, the tags balance either way when the Option is
 # dropped by the same code that would have released it.
 #
 # map_wide_keys.b, taskgroup_wide.b, show_wide_option.b and
@@ -1051,7 +1051,7 @@ if [[ "$(uname -s)" == Darwin ]] && command -v leaks >/dev/null 2>&1; then
     fi
     echo "resident set ok test/cases/brew_unwind_leak.b (${rss} bytes)"
     # A contained call catches on a live stack, so `leaks` does see what it
-    # holds — but the witness that scales is the same one: 800 caught panics
+    # holds, but the witness that scales is the same one: 800 caught panics
     # that each held (and filled) 64 KiB stand above 50 MB when the unwind or
     # the catch path leaks them, and under 2 MB when they are reclaimed.
     echo "resident set checking test/cases/contained_unwind_leak.b"

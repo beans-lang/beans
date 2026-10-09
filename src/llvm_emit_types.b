@@ -2,8 +2,8 @@ package main
 
 partial class LlvmTextEmitter {
     // enum(u8): a payload-free enum that declared a fixed representation is
-    // a bare i8 tag, not a pointer to a tag object. Everything downstream —
-    // ARC, pointer masks, slots, matching — branches on this one predicate.
+    // a bare i8 tag, not a pointer to a tag object. Everything downstream:
+    // ARC, pointer masks, slots, matching: branches on this one predicate.
     fn enum_has_fixed_repr(type: HirType) -> bool {
         match self.declaration_for(type) {
             some(declaration) => {
@@ -476,7 +476,7 @@ partial class LlvmTextEmitter {
         type: HirType) -> string {
         // decimal is {i128, i64, i64}, ABI-aligned to 16. The i64 spare word
         // also avoids broken s390x lowering of an equivalent [8 x i8] argument.
-        // No `target datalayout` is emitted, so LLVM aligns i128 from the triple default — powerpc64le
+        // No `target datalayout` is emitted, so LLVM aligns i128 from the triple default: powerpc64le
         // drops i128:128, leaving a decimal stack slot 8-aligned. The 16-aligning
         // runtime then reads or writes it wrong, silently zeroing the coefficient
         // half on ppc64le (the scale, an i64 at offset 16, survives). State the
@@ -589,7 +589,7 @@ partial class LlvmTextEmitter {
     }
 
     // Bind one generic call's type parameters. Every route that raises an
-    // instance asks this — a free function, a static and a method all bind
+    // instance asks this: a free function, a static and a method all bind
     // the same way.
     //
     // Explicit type arguments come first: they are the only way to bind a
@@ -598,8 +598,8 @@ partial class LlvmTextEmitter {
     // types then fills whatever the source left unwritten.
     //
     // Unification is inference, not a check. A parameter's declared type may
-    // legitimately fail to line up with the argument's — passing a subclass
-    // to a plain class parameter matches nothing at all — and a walk that
+    // legitimately fail to line up with the argument's: passing a subclass
+    // to a plain class parameter matches nothing at all, and a walk that
     // binds nothing is no reason to refuse a call. What the instantiation
     // needs is only that every type parameter the template declares ends up
     // with a type, so that is what this answers: "" when they all do, else
@@ -654,7 +654,7 @@ partial class LlvmTextEmitter {
     // the moment a type parameter shadows a class: `fn wrap<Label>(v: Label)`
     // beside a `class Label` resolves `Label` to the class, so the parameter
     // reads as a concrete type, matches nothing, and the call is refused at
-    // build time on a program the checker took — the checker decides openness
+    // build time on a program the checker took: the checker decides openness
     // from the declared list (ExpressionChecker.generic_name_in) and never
     // sees the shadow. `declared` is that list; a name the template never
     // declared still falls back to type_is_open, which is how a class's own
@@ -681,8 +681,8 @@ partial class LlvmTextEmitter {
         }
         // A function type is its parameters and its result, never its raw
         // arg list: an unwritten result is `unit` and takes no slot in
-        // `args`, so `fn(T)` and `fn(main.Hint) -> unit` — the shapes an
-        // annotation and a closure literal produce for the same type — line
+        // `args`, so `fn(T)` and `fn(main.Hint) -> unit`: the shapes an
+        // annotation and a closure literal produce for the same type: line
         // up only when both sides are read through hir_fn_result.
         if open.name == "fn" {
             if open.fn_sendable != concrete.fn_sendable ||
@@ -909,12 +909,12 @@ partial class LlvmTextEmitter {
 
     // The built-in Error object: {show ptr, type_id i64, msg ptr, kind ptr}
     // after the header, offsets moving with the target pointer width like
-    // the runtime's Error layout — a hardcoded 24 for kind reads past
+    // the runtime's Error layout: a hardcoded 24 for kind reads past
     // msg on a 32-bit target.
     fn error_field_offset(field: string) -> int {
         let pointer: int =
             self.program.target.pointer_size()
-        // type_id is an i64; its alignment is the target's scalar cap — 4 on the
+        // type_id is an i64; its alignment is the target's scalar cap: 4 on the
         // i386 System V ABI, 8 everywhere else. On i386 it therefore sits at
         // offset 4 and pulls msg/kind in by one slot, matching the C `BError`
         // Clang lays out and the runtime's Error layout.
@@ -1290,7 +1290,7 @@ partial class LlvmTextEmitter {
                 return new LlvmSlotConversion("", value)
             }
             // the runtime orders slots as signed i64, so signed
-            // narrows must sign-extend — zext sorted List<i8>
+            // narrows must sign-extend: zext sorted List<i8>
             // [1, -2, 0] as 0, 1, -2. bool keeps zext: sext of
             // i1 true is -1, not 1.
             let extend: string =
@@ -1501,7 +1501,7 @@ partial class LlvmTextEmitter {
         // A fallible/optional row is declared in its portable form: <sym>_out
         // returns i64 and takes the output pointer as a trailing ptr argument,
         // matching what aggregate_c_call emits at the call site. No target
-        // conditioning — the same declaration on every target.
+        // conditioning: the same declaration on every target.
         if returned == "\{ i64, i64 \}" ||
            returned == "\{ i64, ptr \}" {
             parameters.push("ptr")
@@ -1576,7 +1576,7 @@ partial class LlvmTextEmitter {
             let id: int = self.encoding_intrinsic_id(short_name)
             if id == 0 { continue }
             // 3. only the three shipped encoding packages, named by their
-            // canonical import path — a user package called json has a
+            // canonical import path: a user package called json has a
             // different identity and never matches
             if package != "std.encoding.json" &&
                package != "std.encoding.xml" &&

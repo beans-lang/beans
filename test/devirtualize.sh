@@ -110,7 +110,7 @@ static_source=test/cases/static_dispatch.b
 static_binary=build/test-static-dispatch-native
 ./build/beansc build "$static_source" -o "$static_binary" >/dev/null
 
-# emitted <file> <name> — the body of one function, found by the IR comment
+# emitted <file> <name>, the body of one function, found by the IR comment
 # that names it by its import path. A name that is not there is a broken
 # check, not a passing one, so it stops the run.
 emitted() {
@@ -179,7 +179,7 @@ expect_dispatch main.Caller.shout reads-the-table
 expect_dispatch main.via_producer reads-the-table   # a generic implementor
 # A method with generics of its own has no row at all: its symbol is raised
 # per instantiation, so the body is the one the receiver's static type names
-# and the call is settled on that instantiation — this call's own type
+# and the call is settled on that instantiation, this call's own type
 # arguments, never the ones raise_tally raised first (#89).
 expect_dispatch main.ask_generic settled
 # A body inherited from a generic base is raised under each subclass's own
@@ -195,7 +195,7 @@ diff -u test/cases/static_dispatch.out <("$static_binary" 2>&1)
 # speculates on is a property of the program. Every call in guarded_dispatch.b
 # is declared before anything builds the classes it names, so a rule that
 # counted only the classes whose `new` had already been emitted found nothing
-# for any of them — early_op below emitted a plain descriptor read while
+# for any of them, early_op below emitted a plain descriptor read while
 # late_op, its twin one function later, emitted the switch.
 #
 # An arm is a direct call chosen by class id, so a wrong one is the wrong
@@ -206,7 +206,7 @@ guarded_source=test/cases/guarded_dispatch.b
 guarded_binary=build/test-guarded-dispatch-native
 ./build/beansc build "$guarded_source" -o "$guarded_binary" >/dev/null
 
-# arms_in <file> <name> — how many class ids the call in <name> names.
+# arms_in <file> <name>, how many class ids the call in <name> names.
 # awk counts rather than `grep -c`, which exits 1 on none and would end the
 # run before the zero could be compared.
 arms_in() {

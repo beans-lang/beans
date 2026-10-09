@@ -1,4 +1,4 @@
-// `beansc sem-probe` — the semantic workspace as plain text, so a test can
+// `beansc sem-probe`: the semantic workspace as plain text, so a test can
 // assert on exact symbol identity instead of on rendered editor output.
 //
 //     beansc sem-probe symbol   file.b:line:col

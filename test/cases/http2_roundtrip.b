@@ -1,6 +1,6 @@
 // HTTP/2 over loopback in one process: a client opens a stream, the server
 // answers it, and both sides agree on what crossed. The exchange is the
-// point — HPACK, the connection preface, SETTINGS, flow control and stream
+// point, HPACK, the connection preface, SETTINGS, flow control and stream
 // state all have to work before a single `:status` comes back.
 //
 // Only the port number crosses the thread boundary; sockets stay where they

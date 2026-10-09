@@ -1,11 +1,11 @@
 // Issue #123: a generic class that `extends` anything could not be laid out
 // by the native backend at all. `beansc check` passed, the interpreter ran the
 // program, and the build then failed talking about the emitter's own metadata
-// capacity — on a class with no fields. Fields were never the reason; having a
+// capacity, on a class with no fields. Fields were never the reason; having a
 // base was.
 //
 // Nothing in test/cases exercised this before, because every generic class
-// there either stands alone or is extended by a non-generic subclass — the one
+// there either stands alone or is extended by a non-generic subclass, the one
 // arrangement that already worked. The OOP fuzzer builds inheritance chains out
 // of non-generic classes only, so it could not reach these shapes either.
 //
@@ -74,7 +74,7 @@ fn describe(b: BRoot) -> string {
 }
 
 // ---- C: a generic class extending a generic base. Same parameter, a pinned
-// argument, and two parameters where only the second reaches the base — the
+// argument, and two parameters where only the second reaches the base, the
 // base's fields have to be laid out at the arguments this link pinned, not at
 // the leaf's.
 class CBase<T> {
@@ -101,7 +101,7 @@ class CPair<A, B> extends CBase<B> {
     }
 }
 
-// ---- D: the full chain the issue reported — a non-generic class below a
+// ---- D: the full chain the issue reported, a non-generic class below a
 // generic middle below a generic base, every link chaining through super.init.
 // The middle's own `super.init` names a template whose arguments only this
 // instantiation knows, which is what the parent-method lookup could not find.
@@ -172,8 +172,8 @@ class FBox<T> extends FRoot {
 
 // ---- G: `as?` has to walk *through* a generic link. The runtime table maps a
 // class id to its parent's id, and a generic class is a different class per
-// argument list. Reading the parent off the declaration named the template —
-// an id no object carries — so the walk stopped at the generic link and `as?`
+// argument list. Reading the parent off the declaration named the template,
+// an id no object carries, so the walk stopped at the generic link and `as?`
 // answered none for an object that really was one.
 class GRoot { fn init() {} }
 class GMid extends GRoot { fn init() { super.init() } }
@@ -203,7 +203,7 @@ fn is_leaf(r: GRoot) -> string {
 // ---- H: an override declared on a *generic* subclass of a *generic* base,
 // reached through a receiver written at the base. The receiver's static type
 // is only a generic base, so the emitter asks whether any class that could
-// stand behind it replaces the method — and a generic link answered no twice
+// stand behind it replaces the method, and a generic link answered no twice
 // over: its methods were left out of the record of which slots a name
 // declares (a template has no symbol, but its class still declares the
 // method), and a generic class was matched against the receiver by its
@@ -242,7 +242,7 @@ fn hefted(b: HBase<int>) -> string {
 
 // ---- I: the override sits on an *abstract* generic class between the base
 // and the concrete leaf. An abstract class is never the runtime class behind a
-// receiver, so it is passed over as a candidate — which leaves the concrete
+// receiver, so it is passed over as a candidate, which leaves the concrete
 // leaf's chain walk as the only place its override can be noticed, and that
 // walk reads the record of which slots a name declares. A template's name got
 // no entry in that record, so the override was invisible and the call
@@ -276,7 +276,7 @@ fn i_heft_str(b: IBase<string>) -> int { return b.heft() }
 // generic subclass is the only class that can stand behind the receiver, and
 // it is matched against `JBase<int>` by arguments it writes as `JBase<T>`.
 // Comparing those as written says no, the candidate is skipped, and the call
-// is compiled direct to the base body — the override never runs. Two
+// is compiled direct to the base body, the override never runs. Two
 // instantiations, and a second generic link below the first, so the walk has
 // more than one link to weigh.
 class JBase<T> {
@@ -300,7 +300,7 @@ fn j_heft_str(b: JBase<string>) -> int { return b.heft() }
 // The cycle is the pointer mask under the collector rather than under scope
 // exit: `KCell<KPay>` traces its held field and `KCell<int>` must not, and the
 // two are the same generic class. The chain is there because a generic link
-// can sit anywhere — above a plain one, below one, between two — and each
+// can sit anywhere, above a plain one, below one, between two, and each
 // arrangement lays the fields out through a different composition.
 class KPay {
     tag: string
@@ -347,12 +347,12 @@ fn who_of(x: L0) -> string { return x.who() }
 // ---- L: the three things the spec now promises about an instantiation, with
 // every instantiation of one generic class live in the same program.
 //
-//   own field offsets  — `held: T` is 8 bytes at `int`, 8 at `string` and 16 at
+//   own field offsets , `held: T` is 8 bytes at `int`, 8 at `string` and 16 at
 //                        a two-int struct, so `after` sits at a different byte
 //                        in each; one shared layout reads the wrong bytes back
-//   own method table   — `get()` is inherited, not overridden, and returns `T`,
+//   own method table  , `get()` is inherited, not overridden, and returns `T`,
 //                        so each instantiation runs a different raised body
-//   own row in the walk `as?` reads — a non-generic leaf under each is a type
+//   own row in the walk `as?` reads, a non-generic leaf under each is a type
 //                        of its own, and neither the other leaf nor a bare
 //                        instantiation answers to it
 struct LPair {
@@ -394,7 +394,7 @@ fn l_is_str(b: LBase) -> string {
 }
 
 // ---- M: `as?` from a receiver written at an instantiation. The source is
-// only a static type — the test reads the object's runtime class — so an
+// only a static type, the test reads the object's runtime class, so an
 // instantiation is as good a source as a plain class, and this is the one
 // downcast a generic hierarchy can express. The target must stay non-generic:
 // a run-time test cannot tell `MBox<int>` from `MBox<string>`, because an
@@ -433,7 +433,7 @@ fn m_str(b: MBox<string>) -> string {
 }
 
 fn main() {
-    // A — every field shape, twice over
+    // A, every field shape, twice over
     let a1: AEmpty<int> = new AEmpty<int>("a_empty_int")
     let a2: AEmpty<string> = new AEmpty<string>("a_empty_str")
     let a3: APlain<int> = new APlain<int>("a_plain_int", 4)
@@ -442,13 +442,13 @@ fn main() {
     let a6: AHeld<string> = new AHeld<string>("a_held_str", "six")
     io.println("A {a3.n} {a4.n} {a5.held} {a6.held} {a1.kind()} {a2.tag}")
 
-    // B — dispatch through a base-typed receiver
+    // B, dispatch through a base-typed receiver
     io.println("B {describe(new BRoot())} {describe(new BPlain())}")
     io.println("B {describe(new BGen<int>("i"))} {describe(new BGen<string>("s"))}")
     let bg: BGen<int> = new BGen<int>("direct")
     io.println("B {bg.kind()} {bg.speak()}")
 
-    // C — generic over generic
+    // C, generic over generic
     let c1: CSame<int> = new CSame<int>(11)
     let c2: CSame<string> = new CSame<string>("twelve")
     let c3: CPinned<string> = new CPinned<string>("pinned")
@@ -458,42 +458,42 @@ fn main() {
     io.println("C {c1.render()} {c2.render()} {c1.v} {c2.v} {c3.v} {c3.other} {c4.v} {c4.other}")
     io.println("C {c5.first} {c5.v} {c6.first} {c6.v} {c1.base_name()}")
 
-    // D — a plain leaf under a generic middle, and a generic one
+    // D, a plain leaf under a generic middle, and a generic one
     let d1: DOuter = new DOuter()
     let d2: DDeep<string> = new DDeep<string>("deep")
     let d3: DDeep<int> = new DDeep<int>(17)
     io.println("D {d1.render()} {d2.render()} {d3.render()} {d1.v} {d2.v} {d3.v}")
 
-    // E — a deinit on the generic middle, two instantiations
+    // E, a deinit on the generic middle, two instantiations
     let e1: ELeaf = new ELeaf()
     let e2: EStr = new EStr()
     let e3: EMid<int> = new EMid<int>(18)
     io.println("E {e1.held} {e2.held} {e3.held}")
 
-    // F — the pointer mask, per instantiation
+    // F, the pointer mask, per instantiation
     let f1: FBox<FCell> = new FBox<FCell>(1, 2, new FCell("f_cell"))
     let f2: FBox<int> = new FBox<int>(3, 4, 5)
     io.println("F {f1.seq} {f1.weight} {f1.held.tag} {f2.seq} {f2.weight} {f2.held}")
 
-    // G — as? through a generic link
+    // G, as? through a generic link
     io.println("G {is_mid(new GRoot())} {is_mid(new GMid())}")
     io.println("G {is_mid(new GGen<int>(19))} {is_mid(new GLeaf())}")
     io.println("G {is_leaf(new GLeaf())} {is_leaf(new GGen<int>(20))}")
 
-    // H — an override on a generic subclass, through a base-typed receiver
+    // H, an override on a generic subclass, through a base-typed receiver
     io.println("H {hefted(new HBase<int>(1))} {hefted(new HGenSub<int>(2))}")
     io.println("H {hefted(new HLeaf())} {hefted(new HDeepGen<int>(3))}")
     io.println("H {hefted(new HPlainSub())} {new HGenSub<string>("s").heft()}")
 
-    // I — the override on an abstract generic link
+    // I, the override on an abstract generic link
     io.println("I {i_heft(new IConc())} {i_heft(new IBase<int>(2))}")
     io.println("I {i_heft_str(new IStr())} {new IConc().name()} {new IStr().name()}")
 
-    // J — the override on a generic subclass with no plain class below it
+    // J, the override on a generic subclass with no plain class below it
     io.println("J {j_heft(new JBase<int>(1))} {j_heft(new JSub<int>(2))}")
     io.println("J {j_heft(new JMore<int>(3))} {j_heft_str(new JSub<string>("t"))}")
 
-    // K — a cycle through a traced T, an int T that must not be traced, and
+    // K, a cycle through a traced T, an int T that must not be traced, and
     // a five-link chain with a generic class nested inside another
     // both payloads carry the same tag: the order two objects of one killed
     // cycle are released in is not specified, and pinning it would assert
@@ -512,24 +512,24 @@ fn main() {
     io.println("K {l1.a} {l1.b} {l1.c} {l1.d} {l2.c} {l3.c} {l3.d}")
     io.println("K {who_of(l1)} {who_of(l3)} {who_of(new L2())} {nested.a.c} {nested.a.d}")
 
-    // L — own field offsets: `after` follows a T of three different widths,
+    // L, own field offsets: `after` follows a T of three different widths,
     // and the base's own `seq` sits ahead of all of them
     let m1: LSub<int> = new LSub<int>(3, 33, 303)
     let m2: LSub<string> = new LSub<string>(4, "qq", 404)
     let m3: LSub<LPair> = new LSub<LPair>(5, LPair { a: 55, b: 56 }, 505)
     io.println("L {m1.seq} {m1.held} {m1.after} {m2.seq} {m2.held} {m2.after}")
     io.println("L {m3.seq} {m3.held.a} {m3.held.b} {m3.after} {m3.width()}")
-    // L — own method table: `get` is inherited and returns T, so each
+    // L, own method table: `get` is inherited and returns T, so each
     // instantiation runs its own raised body
     io.println("L {m1.get()} {m2.get()} {m3.get().b} {m1.width()} {m2.width()}")
-    // L — own row in the class-parent walk: each leaf answers only to itself,
+    // L, own row in the class-parent walk: each leaf answers only to itself,
     // and a bare instantiation answers to neither
     let mi: LIntLeaf = new LIntLeaf()
     let ms: LStrLeaf = new LStrLeaf()
     io.println("L {l_is_int(mi)}{l_is_str(mi)} {l_is_int(ms)}{l_is_str(ms)} {l_is_int(m1)}{l_is_str(m2)}")
     io.println("L {mi.get()} {mi.after} {ms.get()} {ms.after} {mi.seq} {ms.seq}")
 
-    // M — `as?` from a receiver written at an instantiation, to a plain class
+    // M, `as?` from a receiver written at an instantiation, to a plain class
     // under it. MDeep is below MIntLeaf, so it answers too; MIntOther does not.
     io.println("M {m_int(new MIntLeaf())} {m_int(new MIntOther())} {m_int(new MDeep())} {m_int(new MBox<int>(3))}")
     io.println("M {m_str(new MStrLeaf())} {m_str(new MBox<string>("t"))}")

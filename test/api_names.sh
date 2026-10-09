@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The public API name rule: a name that was renamed is *gone*, not aliased, and
 # the replacement means exactly what the old one did. Both compilers have to
-# agree on both halves — one of them still answering to an old spelling is how a
+# agree on both halves, one of them still answering to an old spelling is how a
 # rename half-lands and stays half-landed.
 #
 # Every removed name below is checked twice: refused identically by stage 0 and
@@ -17,7 +17,7 @@ trap 'rm -rf "$tmp"' EXIT
 BEANSC=${BEANSC:-./build/beansc}
 
 # Windows binaries write \r\n and spell a path separator they built themselves
-# differently; neither is what this sweep is about. Line:col is dropped too —
+# differently; neither is what this sweep is about. Line:col is dropped too,
 # what has to match here is which name the compiler refuses and how it says so.
 diagnostics() { # <compiler> <source>
     local status
@@ -66,7 +66,7 @@ reject_builtin_static() { # <label> <owner> <name> <body...>
     }
 }
 
-# <label> <fragment> <body...> — the body is a main() that must not compile.
+# <label> <fragment> <body...>, the body is a main() that must not compile.
 reject() {
     local label=$1 fragment=$2
     shift 2
@@ -290,7 +290,7 @@ reject xml_new_document "has no static 'new_document'" \
 
 echo "checking the replacements mean what the old names meant"
 # One program over the whole renamed surface that does not need the network,
-# a child process or a signal — those live in their own suites, which this file
+# a child process or a signal, those live in their own suites, which this file
 # does not duplicate. Run in both interpreters and natively: a rename that
 # reached only one backend shows up as a diff, not as a silent pass.
 cat >"$tmp/renamed.b" <<'RENAMED'

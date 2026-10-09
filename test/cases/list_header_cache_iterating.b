@@ -1,5 +1,5 @@
 // A cached loop nested inside an iteration of the same list. The cache is
-// allowed here — the iterator is not advanced while it is open — but only
+// allowed here, the iterator is not advanced while it is open, but only
 // because the write-back on the way out is exact: the outer loop compares
 // the change word on its next turn, and a count still sitting in a register
 // would let it walk a list that moved under it.

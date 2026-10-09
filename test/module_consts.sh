@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Module constants (#37): a `const NAME: T = <expr>` is folded once by the
 # checker and every use is that value, so a const of type T behaves exactly
-# like a `let: T` holding the same expression — proved by folding an
+# like a `let: T` holding the same expression, proved by folding an
 # expression into a const and computing it at run time, on both backends,
 # and asserting equal. A non-foldable initializer is refused with a message
 # that names what was not constant.
@@ -41,7 +41,7 @@ check_bad() {
 }
 
 run_both const_ok
-# #59: a constant sizes a fixed array, with the same value on both backends —
+# #59: a constant sizes a fixed array, with the same value on both backends,
 # once for every way a length can be written and every way a constant can be
 # reached, and once for every position a fixed array type can sit in.
 run_both const_arraylen_ok
@@ -74,7 +74,7 @@ check_bad const_assign_bad.b \
 
 # An array length is an integer literal or a module constant (#59). Every
 # other name, and every constant that cannot supply a length, is refused here
-# — each told which of those it is, at the name, exactly once. The count is
+# Each diagnostic names the rejected form once, at its source location. The count is
 # the guard against a cascade: a poisoned array type must not go on to be
 # reported as a length nobody wrote.
 check_bad const_arraylen_bad.b \
@@ -100,7 +100,7 @@ fi
 test "$(grep -c ': error:' "$tmp/bad")" -eq 17
 
 # The value a constant supplies is the same one wherever the type is written,
-# including inside a string's `{}` piece — which is parsed after every other
+# including inside a string's `{}` piece, which is parsed after every other
 # length in the file has been substituted, so it is the one path that has to
 # look the constant up for itself.
 check_bad const_arraylen_interp_bad.b \
@@ -111,7 +111,7 @@ test "$(grep -c ': error:' "$tmp/bad")" -eq 3
 
 # A parameter default is still a literal and not a constant: it is read while
 # the signature holding it is lowered, and the fold runs at the end of that
-# stage — which is where an array length reads it (#59). The message says
+# stage, which is where an array length reads it (#59). The message says
 # which name it is and why the two positions differ, rather than "must be a
 # constant literal" for a constant. The array length in the same file is the
 # control: the same constant, in the position the ordering does reach.
@@ -121,7 +121,7 @@ check_bad const_default_bad.b \
 test "$(grep -c ': error:' "$tmp/bad")" -eq 2
 
 # `beansc hir` prints the signature stage, and constants are folded in it
-# (#59) — an array length reads one before any type is laid out. So the value
+# (#59), an array length reads one before any type is laid out. So the value
 # is there, narrowed to the constant's own type: 100 + 100 is -56 in i8.
 ./build/beansc hir test/cases/const_ok.b >"$tmp/hir" 2>&1
 grep -q "^const main::C_ADD i8 = -56$" "$tmp/hir" ||
@@ -143,7 +143,7 @@ done
 
 # pub const is the library case: a consumer in another package folds it,
 # reaches it qualified and through an import binding, and uses it in a match
-# arm — on both backends, against one golden. A non-pub const stays private.
+# arm, on both backends, against one golden. A non-pub const stays private.
 ./build/beansc run test/cases/const_pkg/main.b >"$tmp/pkg.interp"
 ./build/beansc build test/cases/const_pkg/main.b -o "$tmp/pkg.native" \
     >"$tmp/pkg.build" 2>&1
@@ -159,7 +159,7 @@ fi
 grep -Fq "constant 'secret.HIDDEN' isn't pub in package 'priv_app.secret'" \
     "$tmp/priv" ||
     { echo "private const message wrong:" >&2; cat "$tmp/priv" >&2; exit 1; }
-# once for the read, once for the array length — a length is a constant use
+# once for the read, once for the array length, a length is a constant use
 # and gets the same refusal, not a "no such constant"
 test "$(grep -c "isn't pub in package" "$tmp/priv")" -eq 2
 

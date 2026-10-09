@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # macOS runners ship no GNU timeout; stand in for it when absent. The
-# stand-in reports 137 (SIGKILL) where GNU prints 124 — every use here
+# stand-in reports 137 (SIGKILL) where GNU prints 124, every use here
 # only cares that a hang cannot pass, and neither code ever matches an
 # expected exit.
 if ! command -v timeout >/dev/null 2>&1; then
@@ -25,7 +25,7 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-fiber-core.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
 # The fiber runtime core (runtime/beans_fiber.c) is pure C and tested
-# without the compiler — the F1 gate of spec/CONCURRENCY.md: semantics,
+# without the compiler, the F1 gate of spec/CONCURRENCY.md: semantics,
 # 10k-fiber churn, panic containment under load, cross-thread wakes, the
 # guard-page report, the switch budget, and both sanitizers.
 

@@ -1,15 +1,15 @@
 /*
-Does ThreadSanitizer reach the code the compiler emitted? (issue #168)
+ThreadSanitizer must report unsynchronized writes and ignore the atomic control.
 
-`sanitize_thread` is a separate attribute from `sanitize_address` and was
-missing for the same reason, so the answer could have differed and did not:
-two OS threads writing one word four hundred thousand times with no
-synchronisation at all was reported by nothing.
 
-`race` is that program. `clean` is the same program with the one change that
-makes it correct — an atomic read-modify-write instead of a plain one — and it
-must stay silent, because a race detector that reports everything says as
-little as one that reports nothing.
+
+
+
+
+
+
+
+
 */
 
 package main

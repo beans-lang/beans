@@ -5,7 +5,7 @@ package main
 // itself keeps a single owner.
 //
 // The entry order of this map IS the object's storage order, because the
-// host runtime releases a map's entries back to front — so it has to be
+// host runtime releases a map's entries back to front, so it has to be
 // the order a native build lays the same class out in: every declared
 // field takes its slot when the object is built, base class first and in
 // declaration order within each class. A slot nothing has written yet
@@ -542,7 +542,7 @@ fn tree_value_key(value: TreeValue) -> string {
     // `simd` is deliberately not here. Its lanes compare with IEEE `==`, not
     // by their bits (see tree_value_total_equal), so a bit-exact key would
     // separate two vectors the language calls equal. It is not a valid map
-    // key either — the checker refuses one for want of `Hash`.
+    // key either: the checker refuses one for want of `Hash`.
     if value.kind == "variant" ||
        value.kind == "some" ||
        value.kind == "ok" ||
@@ -566,7 +566,7 @@ fn tree_value_key(value: TreeValue) -> string {
 // A runtime type name for a diagnostic. A value carrying no type at all
 // renders as a phrase rather than as nothing: printed bare it becomes two
 // spaces in the middle of a sentence, which reads like a formatting slip.
-// A dispatch bug hid behind exactly that gap — the message said what was
+// A dispatch bug hid behind exactly that gap: the message said what was
 // wrong and nobody could see it.
 fn tree_type_label(name: string) -> string {
     if name == "" { return "a value with no type" }
@@ -575,8 +575,8 @@ fn tree_type_label(name: string) -> string {
 
 // `==` and `!=` as the source wrote them. A bare float pair is the one place
 // IEEE still decides: `nan == nan` is false and `-0.0 == 0.0` is true, which
-// is what numeric code needs. Everything else — including a struct, list,
-// Option or enum that happens to hold a float — is the `Eq` interface, and
+// is what numeric code needs. Everything else: including a struct, list,
+// Option or enum that happens to hold a float: is the `Eq` interface, and
 // `Eq` on a float is bit equality (spec/SYNTAX.md, "Number rules"), because
 // that is the equality that belongs with the totalOrder `Order` uses.
 fn tree_value_equal(left: TreeValue,
@@ -760,7 +760,7 @@ fn tree_value_less(left: TreeValue,
     }
     // `Order` on a payload-free enum is the declaration-order tag, which a
     // variant carries in int_data. Only payload-free enums satisfy Order, so
-    // sort, min and max reach this with no payload to break the tie — the
+    // sort, min and max reach this with no payload to break the tie: the
     // same i8/loaded-i64 tag compare the native backend's slot_cmp does.
     if left.kind == "variant" &&
        right.kind == "variant" {
@@ -799,7 +799,7 @@ fn tree_float_truncate(value: float) -> float {
 // The truncated remainder LLVM's frem and C's fmod both produce: the sign
 // follows the dividend, so -7.5 % 2.0 is -1.5 and 7.5 % -2.0 is 1.5. The
 // floored substitute `a - (a / b).floor() * b` disagrees on exactly those
-// operands, which is why it is not used here — the two backends have to
+// operands, which is why it is not used here: the two backends have to
 // print the same bytes.
 fn tree_float_remainder(left: float,
                         right: float) -> float {

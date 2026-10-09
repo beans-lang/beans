@@ -434,7 +434,7 @@ partial class LlvmTextEmitter {
                 // either way, and method_slot_symbol walks the base chain and
                 // the interface defaults behind it. A generic class used to
                 // get a lookup of its own that asked only its instance name
-                // and its own `implements` relations — so a method it
+                // and its own `implements` relations, so a method it
                 // inherited from a base and did not override left a null row,
                 // and dispatching to it jumped to address zero.
                 slots.push(
@@ -756,8 +756,8 @@ partial class LlvmTextEmitter {
     // agree: `class Slot<T> { item: T; tail: int }` puts `tail` at 16 in
     // `Slot<int>` and at 32 in `Slot<Wide>`, because the field before it is as
     // wide as the argument. A subclass of one instantiation answers with the
-    // same offset its base does — base fields are laid out first, so a
-    // subclass pointer is usable wherever the base is — but it still needs its
+    // same offset its base does: base fields are laid out first, so a
+    // subclass pointer is usable wherever the base is, but it still needs its
     // own row here, because the switch matches the receiver's own class id.
     fn reflection_field_classes(
         declaration: HirDeclaration,
@@ -791,7 +791,7 @@ partial class LlvmTextEmitter {
         // A union's slots overlap: a reflected write to one leaves the others
         // reading bytes they never stored.
         if declaration.kind == "union" { return "null" }
-        // Out of reflection's reach because the owner is generic — the one
+        // Out of reflection's reach because the owner is generic: the one
         // question both backends ask, so neither can answer it differently.
         if hir_field_reflection_erased(
                declaration, field) {
@@ -852,7 +852,7 @@ partial class LlvmTextEmitter {
 
     // The bodies held back until the layout set was complete. A generic class
     // with no laid-out instance and no subclass answers with no arms at all,
-    // which is a thunk that refuses — and nothing can reach it, because a
+    // which is a thunk that refuses, and nothing can reach it, because a
     // receiver of a class the program never lays out cannot exist.
     fn emit_deferred_field_actions() {
         for pending: LlvmReflectFieldAction in
@@ -1035,7 +1035,7 @@ partial class LlvmTextEmitter {
         // The receiver names it: word 0 of an object is its class descriptor,
         // and the method table sits behind the class id, so an ordinary
         // virtual call through the receiver's own slot reaches the right
-        // instantiation — and the right override — with one row serving every
+        // instantiation (and the right override) with one row serving every
         // one of them. `dispatch` is that selector index, or -1 for the direct
         // call every non-generic owner keeps emitting unchanged.
         let owner: Option<HirDeclaration> =
@@ -1350,12 +1350,7 @@ partial class LlvmTextEmitter {
         }
         match self.class_layout(owner_type) {
             some(layout) => {
-                // A class that writes no `init` of its own inherits the
-                // base's, and a generic base's is a template filed under no
-                // symbol. `class_initializer_symbol` raises it under this
-                // class's own instance name — the same body `new` calls —
-                // so the reflective constructor and the written one run the
-                // same code instead of one of them refusing.
+                // Raise the inherited initializer under this instance key, matching the initializer that `new` calls.
                 // A stand-in for the `new` this thunk replaces: the raise
                 // helpers report a failed instantiation against a position,
                 // and the class's own declaration is the only one there is.
@@ -1718,7 +1713,7 @@ partial class LlvmTextEmitter {
 // ---- the module's own startup ---------------------------------------------
 
 partial class LlvmTextEmitter {
-    /// `@beans_module_start` — everything a module has to do before any of its
+    /// `@beans_module_start`: everything a module has to do before any of its
     /// code runs.
     ///
     /// Three things, and they were `main`'s prologue until now: register the
@@ -1732,7 +1727,7 @@ partial class LlvmTextEmitter {
     ///
     /// Two of the three survived that anyway: a static field and a singleton
     /// each carry a guard, and the first read of either runs its initializer.
-    /// Reflection has none and cannot have one — nothing reads "the registry",
+    /// Reflection has none and cannot have one: nothing reads "the registry",
     /// it is read by name, and a name that was never registered looks exactly
     /// like a name that does not exist. So the whole registry was silently
     /// empty, and the symptom was a component tree that could not activate a
@@ -1747,7 +1742,7 @@ partial class LlvmTextEmitter {
         // The guard lives in `module_globals` beside `@beans_deinit_sel`, not
         // in this body. A chunked build hoists a global that leads a body into
         // the definitions and then declares it `external global i8` in every
-        // other chunk — so an `internal` one here is defined in one chunk and
+        // other chunk, so an `internal` one here is defined in one chunk and
         // declared, with a different type, in the rest.
         let lines: List<string> = [
             "define void @beans_module_start() \{",

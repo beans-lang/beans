@@ -4,8 +4,8 @@
 // net.TcpStream.write_vectored_text checks the offset and the socket's state
 // itself and returns before it ever calls the builtin, so the suite that drives
 // the handle cannot reach the builtin's own guards: breaking every one of them
-// leaves that suite green. std.sock is not private, though — it is a module a
-// program may import, and the handles are written in Beans on top of it — so
+// leaves that suite green. std.sock is not private, though, it is a module a
+// program may import, and the handles are written in Beans on top of it, so
 // those guards are a public contract. An offset that is not checked there is a
 // send that reads past the end of the head or the body.
 //
@@ -47,7 +47,7 @@ fn main() {
     let total: int = head.len() + body.len()
     let empty: Bytes = new Bytes(0)
 
-    // Nothing left to send: not an error, and nothing goes on the wire — the
+    // Nothing left to send: not an error, and nothing goes on the wire, the
     // last turn of a caller that resumes a short write lands exactly here.
     say("at-end", sock.send_pair_text(client_fd, head, body, total))
     // The same answer when the pair itself is empty.
@@ -73,7 +73,7 @@ fn main() {
     io.println("whole arrived {whole.to_string()}")
 
     // A descriptor that is not one is closed, and that answer comes before the
-    // offset is looked at at all — including when the offset is bad too.
+    // offset is looked at at all, including when the offset is bad too.
     say("closed-fd", sock.send_pair_text(-1, head, body, 0))
     say("closed-fd-bad-offset", sock.send_pair_text(-1, head, body, -1))
 

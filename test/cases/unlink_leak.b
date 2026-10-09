@@ -1,6 +1,6 @@
 // The #60 repro for the leak sweeps: a fixed 8-node chain is built and fully
 // emptied on every round by the three removal shapes that bind the node in a
-// pattern arm and drop it on an early return — the recursive unlink, the
+// pattern arm and drop it on an early return, the recursive unlink, the
 // iterative splice and a cast arm. The live set never exceeds eight nodes, so
 // a native build that leaks one node per removal shows up as thousands of
 // individual allocations under `BEANS_NO_POOL=1 leaks` (macOS) and as an

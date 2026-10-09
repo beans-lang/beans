@@ -1,23 +1,6 @@
-// A WebSocket client and server in one process, over loopback.
-//
-// Three things to notice:
-//
-//   The upgrade is HTTP, so `std.http` parses it and `std.websocket` takes
-//   the socket from there. That split is why the handshake gets the same
-//   strict parser every other HTTP message gets.
-//
-//   `receive` yields whole messages. Fragmentation and interleaved control
-//   frames are handled underneath — protocols care about messages, not
-//   frames.
-//
-//   A ping is answered before you see it. The pong is already on the wire
-//   by the time the `ping` arrives in your loop, because a library that
-//   makes you remember produces dead connections.
-//
-//   A server chooses how much compression costs it. permessage-deflate is
-//   off unless asked for, and when it is on a server may still answer with
-//   fewer parameters than the client offered — the second exchange below
-//   keeps compression while giving back most of what it costs.
+// A loopback WebSocket client and server; HTTP parses the upgrade and `receive` yields messages.
+// Control frames are handled by the library, which replies to pings automatically.
+// The second exchange negotiates permessage-deflate with reduced context limits.
 package main
 
 import std.http
@@ -101,10 +84,7 @@ fn upgrade(listener: net.TcpListener) -> Result<websocket.Connection> {
     return websocket.Connection.accept(move stream, request)
 }
 
-// What this server is willing to agree to, rather than what a client asks
-// for. A browser offers `permessage-deflate; client_max_window_bits`, which
-// means a 32 KiB DEFLATE context in each direction — about a third of a
-// megabyte on every connection, held for as long as the connection lives.
+// Limit negotiated DEFLATE context size to reduce per-connection memory use.
 //
 // RFC 7692 lets a server answer an offer with *fewer* parameters than it
 // asked for, and that is all `prefer` is: a `true` flag asks for something
@@ -128,9 +108,7 @@ fn upgrade_narrowed(listener: net.TcpListener) -> Result<websocket.Connection> {
                                        thrifty())
 }
 
-// The client side of that. It offers compression and takes whatever the
-// server answers with — which is the whole point: the parameters are the
-// server's to choose, and both ends end up reading the same ones back.
+// The client offers compression and uses the parameters returned by the server.
 fn squeeze(port: int) -> int {
     var failures: int = 0
     let body: string = "the same sentence, over and over. ".repeat(500)

@@ -1,7 +1,7 @@
 // std.collections under the macOS `leaks` sweep in test/sanitize.sh: every
 // operation here frees what it drops, including SortedMap's structural remove.
-// That removal used to be left out — it tripped the native ARC codegen leak
-// filed as #60 — so the one path most likely to leak was the one path nothing
+// That removal used to be left out, it tripped the native ARC codegen leak
+// filed as #60, so the one path most likely to leak was the one path nothing
 // swept. #60 has landed, collections_models.b joins the sweep alongside this
 // file, and a leak from any of it is a real regression.
 import std.io
@@ -42,7 +42,7 @@ fn exercise() {
 
     // Deque past two full 512-blocks on each end, then drained both ways, so
     // the block map, both crossovers and the recycled spare are all built and
-    // torn down under the leak sweep — the small churn above never leaves one
+    // torn down under the leak sweep, the small churn above never leaves one
     // block. Every element is popped, so a leak here is a real regression.
     var big: collections.Deque<int> = new()
     var grow: int = 0
@@ -79,7 +79,7 @@ fn exercise() {
     // Set algebra allocates where the core operations do not: union_with clones
     // a whole map, and the other three build a fresh set by walking. Every
     // result here is a temporary whose length is read and then dropped, so the
-    // leaks sweep sees the clone and the walked sets freed — including the
+    // leaks sweep sees the clone and the walked sets freed, including the
     // self-union, whose clone is walked against its own source.
     var other: collections.Set<int> = new()
     var pick: int = 0

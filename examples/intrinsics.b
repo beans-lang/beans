@@ -1,14 +1,5 @@
-// Machine intrinsics.
-//
-// An intrinsic is a *named* machine operation with a fixed signature — not a way to
-// write assembly or LLVM. `std.intrinsic` is a closed allowlist: every entry states
-// its parameter and return types, the architecture it exists on, and the CPU feature
-// it needs. A name that is not on the list is a compile error, so nothing can be
-// smuggled through as text.
-//
-// The interpreter computes every one of these exactly, including the edge cases the
-// instructions have, which is what lets them be differential-tested like anything
-// else. They need `unsafe` because they are raw hardware.
+// `std.intrinsic` is a closed, typed allowlist of architecture and feature-specific operations.
+// The interpreter models each operation; calls require `unsafe`.
 
 import std.io
 import std.cpu
@@ -16,8 +7,7 @@ import std.intrinsic
 
 fn main() {
     unsafe {
-        // Bit counting. Note the zero cases: the instructions report the full width,
-        // and so do these — not 63, and not undefined.
+        // Bit-count operations define zero inputs and full-width results.
         io.println("popcount {intrinsic.popcount(255)} of zero {intrinsic.popcount(0)}")
         io.println("leading zeros {intrinsic.leading_zeros(1)} of zero {intrinsic.leading_zeros(0)}")
         io.println("trailing zeros {intrinsic.trailing_zeros(8)} of zero {intrinsic.trailing_zeros(0)}")
@@ -53,8 +43,8 @@ fn main() {
         //
         // A feature-gated intrinsic goes through exactly the same guard rule as a
         // `feature "x" fn`: calling one where the feature is not known present is a
-        // compile error. But the feature *name* is per architecture — the one gated
-        // intrinsic here, `crc32c`, needs `crc` on arm64 and `sse4.2` on x86-64 — and
+        // compile error. Feature names are architecture-specific: `crc32c` needs
+        // `crc` on arm64 and `sse4.2` on x86-64.
         // Beans has no conditional compilation, so a single source cannot name both.
         // The guarded call is therefore exercised in test/intrinsics.sh, which picks
         // the right name for the machine it is running on. An example that only

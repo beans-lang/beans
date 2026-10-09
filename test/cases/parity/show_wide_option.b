@@ -3,12 +3,12 @@
 // `io.println("{v}")` on an `Option<Point>` prints `some(Point { x: 1, y: 2 })`
 // under `beansc run`. The native build refused it: show_value handed the
 // payload to the show driver as a slot, and a struct, a decimal, a nested
-// Option or an inline Result has no slot form — request_show answered "" and
+// Option or an inline Result has no slot form, request_show answered "" and
 // the whole build failed on a debug print of an optional struct.
 //
 // A wide payload crosses by address instead, the way every other wide value is
-// shown: the Option is spilled whole and request_show_wide_step — which already
-// reads an inline Option's tag and pushes its payload — is run against that
+// shown: the Option is spilled whole and request_show_wide_step, which already
+// reads an inline Option's tag and pushes its payload, is run against that
 // address. Both arms of every shape are here, because the tag decides which
 // half of that step runs, and an Option inside a Result and a Result inside an
 // Option are here because the two wrap each other.

@@ -22,11 +22,7 @@ class MirLocal {
     // A non-escaping closure whose environment lives in this function's
     // stack frame. -1 keeps the ordinary heap-owned closure path.
     stack_closure_id: int
-    // The `.live` flag is a runtime i1 the backend allocates beside the
-    // slot. verify_local_ownership clears this when every drop and every
-    // assignment for the local knows the flag's value statically, and the
-    // backend then leaves the flag — its alloca and all of its stores —
-    // out of the module entirely.
+    // Keep the `.live` flag only when runtime ownership checks need it; otherwise omit its alloca and stores.
     live_flag_used: bool
 
     fn init(id: int, binding_id: int,
@@ -92,7 +88,7 @@ class MirInstruction {
     // verify_local_ownership's fixpoint sees it: 0 clear on every path,
     // 1 set on every path, 2 unknown. Only drops and assignments read it.
     // 2 is the safe default, and is what an unreached or synthesized
-    // instruction keeps — it reproduces the flag-checking code exactly.
+    // instruction keeps: it reproduces the flag-checking code exactly.
     live_state: int
     // Explicit generic bindings for a call, as name/type pairs from the
     // checked HIR. Empty unless the source wrote type arguments.
@@ -264,9 +260,7 @@ class MirFunction {
     value_ownership: List<string>
     value_alias: List<int>
     blocks: List<MirBlock>
-    // The function's own generic parameter names, straight from the HIR.
-    // Nonempty marks a template even when no signature type mentions them
-    // — those bind only through explicit type arguments at call sites.
+    // Function generic names from HIR; nonempty marks a template even when only call-site type arguments bind them.
     generics: List<string>
 
     fn init(name: string, result: HirType,
@@ -311,7 +305,7 @@ class MirProgram {
     entry_symbol: string
     // Does this program start a fiber anywhere? Only a brewed fiber can
     // contain a panic, so this is exactly the question "can a failure ever
-    // have to unwind instead of ending the process" — and the answer gates
+    // have to unwind instead of ending the process", and the answer gates
     // every cleanup pad the backend emits. A program that never brews emits
     // none of it and is byte-for-byte what it was.
     uses_fibers: bool
@@ -484,7 +478,7 @@ class MirLocalState {
     // packed two bits apart in one word each, so a round costs the same
     // array traffic as the single lattice did.
     //
-    // Bits 0-1 are MIR's own notion of an owned local being initialized —
+    // Bits 0-1 are MIR's own notion of an owned local being initialized:
     // what the ownership verifier reports against. Bits 2-3 track the
     // backend's runtime `.live` flag, which differs in one place: an
     // ownership-transferring retain hands the reference away and clears

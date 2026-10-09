@@ -7,14 +7,14 @@ fn semantic_dot_node(node: AstNode, line: int, col: int,
     if node.kind == "field" {
         var hit: bool = false
         if node.value == "" {
-            // `value.` — the dot is the last thing written.
+            // `value.`: the dot is the last thing written.
             hit = node.line == line && node.col == col - 1
         } else {
             hit = node.name_line == line &&
                   node.name_col <= col &&
                   col <= node.name_col + node.value.len()
             // the chain continued onto a later line, so the cursor right
-            // behind the dot is still this member access — with nothing
+            // behind the dot is still this member access: with nothing
             // of the name typed yet
             if !hit && node.name_line > node.line {
                 hit = node.line == line && node.col == col - 1
@@ -81,7 +81,7 @@ fn semantic_completion_context(
                    receiver.kind == "field" &&
                    receiver.children.len() != 0 &&
                    receiver.children[0].kind == "name" {
-                    // `pkg.Type.` — the package binding decides the type.
+                    // `pkg.Type.`: the package binding decides the type.
                     context.static_owner =
                         semantic_qualified_type(
                             snapshot, path,

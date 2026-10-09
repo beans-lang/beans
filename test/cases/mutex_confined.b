@@ -1,6 +1,6 @@
 // A Mutex owns what it locks. `new Mutex(move v)` consumes a move-only value
 // and with_lock hands the body a borrow the checker will not let it store, so
-// the lock is the only way in — which is what makes the Mutex Send and Sync
+// the lock is the only way in, which is what makes the Mutex Send and Sync
 // without the class ever promising anything. Nothing here says
 // `implements Send`; every counter is exact because the lock serializes.
 import std.io

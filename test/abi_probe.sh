@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Clang ABI probe — the evidence behind the portable fallible-builtin boundary.
+# Clang ABI probe, the evidence behind the portable fallible-builtin boundary.
 #
 # For every target Beans compiles for, this shows two things about the C runtime's
 # fallible-return shapes (test/fixtures/abi_probe.c):
@@ -8,7 +8,7 @@
 #      by value is an sret pointer on some targets (Win64, i686, ARMv7, s390x) and
 #      a register pair on others (SysV x86-64, AAPCS64 incl. ARM64 *Windows*,
 #      RISC-V64, PPC64LE). Hard-coding that from the object format is the bug this
-#      work removes — it wrongly grouped ARM64 Windows with x86-64 Windows.
+#      work removes, it wrongly grouped ARM64 Windows with x86-64 Windows.
 #
 #   2. The `_out` wrapper ABI is scalar plus a pointer EVERYWHERE: `define i64
 #      @probe_*_out(..., ptr)`, no sret, on every target. That is why generated
@@ -27,7 +27,7 @@ mkdir -p "$tmp"
 trap 'rm -rf "$tmp"' EXIT
 
 # The registered triples the boundary has to be correct for, with the native aggregate
-# return each one uses — recorded so the probe's finding can be checked against
+# return each one uses, recorded so the probe's finding can be checked against
 # the documented ABI, not just printed.
 targets=(
     "x86_64-unknown-linux-gnu:register-pair"

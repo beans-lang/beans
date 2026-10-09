@@ -1,7 +1,4 @@
-// What a program can still do with no operating system underneath it.
-//
-// Built with `--runtime freestanding`, this links against a runtime that calls no libc
-// at all. Memory, output and exit come from five hooks the surrounding program supplies:
+// The freestanding runtime uses no libc; the host supplies these five hooks:
 //
 //     void* beans_host_alloc(unsigned long long size, unsigned long long align)
 //     void* beans_host_realloc(void* block, unsigned long long size)
@@ -9,13 +6,7 @@
 //     void  beans_host_write(int stream, const char* bytes, unsigned long long len)
 //     void  beans_host_exit(int code)
 //
-// Everything below is arithmetic, containers, strings and decimal — none of which needs
-// a kernel. What is *absent* is the point: no files, no sockets, no processes, no clocks,
-// no threads, no environment. The compiler refuses those at check time under this
-// profile, naming the capability, rather than letting the link fail on a mangled symbol.
-//
-// This is the same source `make test` runs on the full runtime, so the output being
-// identical either way is the actual claim.
+// The compiler rejects OS capabilities at check time. `make test` runs this source under both runtimes.
 
 import std.io
 import std.collections
@@ -76,8 +67,7 @@ fn containers() {
     io.println("cleared, now {words.len()}")
 }
 
-// Decimal is exact arithmetic on a 128-bit coefficient. It needs the compiler's 128-bit
-// division helpers — which every freestanding toolchain provides — and nothing else.
+// Decimal uses a 128-bit coefficient; division helpers are its only runtime support.
 fn money() {
     let price: decimal = 19.99
     let quantity: decimal = 3

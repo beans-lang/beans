@@ -333,7 +333,7 @@ fn lsp_dump_json(value: BindgenJson) -> string {
     return lsp_object(fields)
 }
 
-// `beansc lsp [--stdio]` — argument handling included, so that changing it
+// `beansc lsp [--stdio]`: argument handling included, so that changing it
 // is an editor-tooling change and nothing else. It lived in main.b, which is
 // the dispatcher for every command; a diff there is a diff to the compiler's
 // whole command line, and CI has to treat it as one.
@@ -354,7 +354,7 @@ fn run_self_lsp(args: List<string>) -> int {
     return run_beans_lsp()
 }
 
-// `beansc lsp-probe file.b:line:col` — the hover a person would see, printed
+// `beansc lsp-probe file.b:line:col`: the hover a person would see, printed
 // to a terminal. Same path as the editor's: a position becomes an exact
 // symbol, and the symbol renders itself.
 fn run_self_lsp_probe(spec: string) -> int {

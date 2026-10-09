@@ -1,4 +1,4 @@
-// stdlib phase 2: File and Dir — statics, handles, positional I/O, errors.
+// stdlib phase 2: File and Dir statics, handles, positional I/O, and errors.
 // Everything happens inside a scratch dir under Dir.temp_path(); output is
 // deterministic, so run vs build must be byte-identical.
 import std.io
@@ -39,7 +39,7 @@ fn main() {
     // walk is recursive: relative paths, sorted, files only
     io.println(Dir.walk(base).expect("walk"))
 
-    // Path is pure string math — join/parent/base/ext/stem
+    // Path helpers perform string operations: join, parent, base, ext, and stem.
     let deep: string = path.join(path.join(base, "sub"), "a.txt")
     io.println("{path.name(deep)} {path.extension(deep)} {path.stem(deep)}")
     io.println("{path.parent("/a/b/c")} {path.join("a/", "/abs")} {path.extension(".bashrc")}")
@@ -53,7 +53,7 @@ fn main() {
     io.println("{File.exists("{base}/moved.txt")}")
 
     // std.fs names a file by its path for the whole of its life, not only for
-    // its bytes: where to put it, whether it is there, how big it is, moving
+    // its bytes, where to put it, whether it is there, how big it is, moving
     // it, and ending it. Before issue #167 the package stopped at the bytes,
     // so a program could create a temp file it could never release.
     let temp: string = fs.temp_dir()

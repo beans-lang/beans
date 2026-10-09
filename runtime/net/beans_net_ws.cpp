@@ -1,30 +1,22 @@
-// WebSocket framing for std.websocket — wslay behind a byte-pump ABI.
+// WebSocket framing for std.websocket: wslay behind a byte-pump ABI.
 //
 // wslay does framing, masking and fragmentation and no IO of its own, so
 // this bridge gives it memory buffers instead of sockets: ciphertext-free
 // bytes in from the transport, frames out to the transport, and completed
 // messages accumulated into an event queue the Beans side drains. Every
-// wslay callback is a C static reading and writing those buffers — nothing
+// wslay callback is a C static reading and writing those buffers, nothing
 // calls back into Beans, so there is no stored-callback machinery and no
 // thread contract to get wrong.
 //
-// RFC 6455 requires text payloads to be valid UTF-8, checked on the
-// ASSEMBLED message rather than per frame, because a code point may straddle
-// a fragment boundary. The check is written here against Unicode Table 3-7
-// rather than borrowed from the vendored simdutf: that copy is built with
-// SIMDUTF_FEATURE_UTF8 off (std.encoding.base64 needs only the base64 lane),
-// so reusing it would mean either compiling simdutf a second time —
-// duplicate symbols the moment a program uses both packages — or making
-// every base64 user carry UTF-8 tables. Autobahn's section 6 is the gate
-// either way, and it is a far harder examiner than provenance.
+// Validate assembled text messages per Unicode Table 3-7 because code points can cross frame boundaries; the base64 bridge disables simdutf's UTF-8 lane.
 //
 // permessage-deflate (RFC 7692) is negotiated in Beans and compressed in
 // Beans, because the DEFLATE codec lives in the zlib bridge and two bridges
 // cannot share a translation unit. What belongs here is the framing half:
 // telling wslay that RSV1 is a legal bit, setting it on a message this side
 // sends, and reporting the bit a received message carried. wslay already
-// polices where RSV1 may appear — never on a control frame, never on a
-// continuation — and skips its own UTF-8 validation for a message that
+// polices where RSV1 may appear: never on a control frame, never on a
+// continuation, and skips its own UTF-8 validation for a message that
 // carries it, since the text is still compressed at that point. The Beans
 // side inflates and then calls beans_ws_valid_utf8 here, so one table
 // answers for both.
@@ -98,7 +90,7 @@ enum {
 // bridges stay independent translation units.
 // Plain data with helpers: no constructors, no virtuals, so one calloc
 // makes a valid object and this bridge links with the C driver like every
-// other one — no C++ runtime, exactly the rule the encoding bridges follow.
+// other one: no C++ runtime, exactly the rule the encoding bridges follow.
 struct WsBuf {
     uint8_t* data;
     size_t len;
@@ -252,7 +244,7 @@ static void ws_on_msg_cb(wslay_event_context_ptr ctx,
         s->failure = BEANS_WS_TOO_LARGE;
         return;
     }
-    // The assembled-message UTF-8 check RFC 6455 requires — but a
+    // The assembled-message UTF-8 check RFC 6455 requires, but a
     // compressed message is not text yet, so the Beans side runs the same
     // check on what comes out of the inflater instead.
     if (arg->opcode == WSLAY_TEXT_FRAME && arg->msg_length > 0 &&

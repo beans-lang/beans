@@ -1,4 +1,4 @@
-// stdlib phase 3: the container extras — List first/last/min/insert/remove/
+// stdlib phase 3: List first/last/min/insert/remove/
 // index_of/reverse/clear/slice, stable sort + sort_by, Map remove/keys/
 // values/clear, and Bytes value equality. Ends on the remove() panic, so the
 // message and position must match the native binary byte for byte.
@@ -52,7 +52,7 @@ fn main() {
     io.println(keyed.join(" "))
 
     // narrow elements ride slots sign-extended; the comparator thunk
-    // truncates them back before calling the closure — an untruncated
+    // truncates them back before calling the closure. An untruncated
     // slot once fed `call i1 %fp(..., i8 %a)` with %a still i64 and
     // clang rejected the module
     var bytes_desc: List<i8> = [3 as i8, -1 as i8, 2 as i8]

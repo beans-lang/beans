@@ -165,7 +165,7 @@ partial class LlvmTextEmitter {
                     }
                     if declaration.repr != "" {
                         // enum(u8): the value is the bare tag, like
-                        // MemoryOrder above — no tag object exists
+                        // MemoryOrder above: no tag object exists
                         values[instruction.result] = "{tag}"
                         return ""
                     }
@@ -336,7 +336,7 @@ partial class LlvmTextEmitter {
             }
             if self.type_is_reference(element) {
                 // MIR elides the pair when the source outlives the match:
-                // no scheduled release for the Option, so no count here —
+                // no scheduled release for the Option, so no count here:
                 // and no owned reference in the slot, so the flag stays
                 // clear, which is what transfer_local_state models.
                 if instruction.borrow_elided {

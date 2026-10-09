@@ -1,22 +1,6 @@
-// Waiting on many descriptors at once.
-//
-// This is the shape a server has: one thread, many connections, and a call that sleeps
-// until something needs attention. The poller is `epoll` on Linux and `kqueue` on
-// macOS behind one API.
-//
-// Two decisions are worth understanding before the code:
-//
-//   **Level-triggered.** While a socket has data, every `wait` reports it. That means a
-//   handler that reads *some* of what arrived is still correct — it just gets told again.
-//   Edge-triggered would be faster and would require reading until `EAGAIN` on every
-//   event without exception, or the connection stalls with data sitting in it.
-//
-//   **Events carry your token, not a descriptor.** A descriptor number is reused the
-//   instant it is closed, so an event holding one can name something else entirely by
-//   the time you look at it. The token is whatever you decide it means.
-//
-// Everything below runs on loopback in one process, so the output is exactly the same
-// every run.
+// `Poller` waits for descriptor readiness (`epoll` on Linux, `kqueue` on macOS).
+// It is level-triggered: unread data is reported again. Events return caller tokens because descriptors can be reused.
+// Loopback keeps this example's output deterministic.
 
 import std.io
 import std.net
@@ -31,7 +15,7 @@ fn accept_when_ready() -> Result<int> {
     watch.add(server.poll_handle(), 100, poll.Interest.read_only())?
 
     // Nothing has connected, so a bounded wait comes back empty. Empty is not an
-    // error — "nothing is ready" is an ordinary answer.
+    // error; "nothing is ready" is an ordinary answer.
     let quiet: List<poll.Event> = watch.wait(8, 50)?
     io.println("nothing ready yet {quiet.len() == 0}")
 
@@ -55,7 +39,7 @@ fn accept_when_ready() -> Result<int> {
 //
 // Note what this function does *not* do: keep a token-to-session table. A `List` of a
 // move-only type accepts `push` and gives values back through `pop` and `remove`, but
-// there is no `get` — that would be a copy, and a copy of a resource is the thing
+// there is no `get`, because that would copy a resource and violate unique ownership.
 // `unique` exists to prevent. So a resource cannot be *used* while it sits in a
 // container. The sessions here live in a list only to stay open, and the answers are
 // checked against the tokens, which is all the poller promises anyway.
@@ -87,7 +71,7 @@ fn only_the_ready_ones() -> Result<int> {
     //
     // The budget is wall-clock, not a round count, and that is not a detail. The
     // clients that already spoke stay readable, so `wait` has something to return
-    // the instant it is called and never reaches its timeout — twenty rounds go by
+    // the instant it is called and never reaches its timeout. Twenty rounds can pass
     // in under a millisecond, which is no time at all for a straggler's bytes to
     // land. Counting rounds here would mean the loop's patience depends on how
     // fast the machine is, which is the opposite of what a retry budget is for.
@@ -128,8 +112,8 @@ fn hangup_is_its_own_signal() -> Result<int> {
     client.shutdown_write()?
 
     // The same wall-clock rule as above, and for the same reason. `bye` is left
-    // unread on purpose — the point being made is that hangup and readable are
-    // separate signals — so the socket is readable throughout and every `wait`
+    // unread on purpose to show that hangup and readable are
+    // separate signals. The socket stays readable, and every `wait`
     // returns immediately. The peer's FIN is a second thing the kernel has to
     // notice, and on a busy machine it can arrive after the data it followed; a
     // round count would give it no time to.
@@ -176,7 +160,7 @@ fn interest_can_change() -> Result<int> {
     // program sees the same thing on both.
     //
     // Both flags can only be true once the bytes have *arrived*, and a connected socket
-    // is writable the whole time — so watching for `both` in a retry loop spins on
+    // is writable the whole time. Watching for `both` in a retry loop spins on
     // writable-only events, which a level-triggered poller returns instantly, and can
     // burn every retry before the data lands. Waiting for readability first, with
     // writability out of the picture, is what makes the merge deterministic.
@@ -210,7 +194,7 @@ fn interest_can_change() -> Result<int> {
 fn waking_a_blocked_wait() -> Result<int> {
     let watch: poll.Poller = poll.Poller.open()?
     // Nothing is registered, so this would wait the full second. A wake issued before
-    // the wait still counts — the byte is already in the pipe.
+    // the wait still counts because the byte is already in the pipe.
     watch.wake()?
     let batch: List<poll.Event> = watch.wait(8, 1000)?
     io.println("a wake returns immediately with no events {batch.len() == 0}")
@@ -229,7 +213,7 @@ fn waking_a_blocked_wait() -> Result<int> {
 
 // The real use of a wake: a worker on another thread telling the waiter to stop.
 //
-// A `Poller` cannot cross `thread.spawn` — it does not implement `Send`.
+// A `Poller` cannot cross `thread.spawn` because it does not implement `Send`.
 // `wake_handle()` gives the worker a scalar instead. It is deliberately *not*
 // the descriptor: after the poller closes, the number belongs to something else, and a
 // late wake would write a stray byte into an unrelated file. The handle names a slot and

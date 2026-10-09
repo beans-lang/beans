@@ -80,7 +80,7 @@ pub fn is_finite32(value: f32) -> bool {
 }
 
 /// The larger of two floats. NaN is not ordered, so a NaN argument answers
-/// whichever side the comparison falls through to — test with `is_nan` first
+/// whichever side the comparison falls through to: test with `is_nan` first
 /// when that matters.
 pub fn fmax(left: float, right: float) -> float {
     if left > right {
@@ -232,7 +232,7 @@ pub fn hypot32(x: f32, y: f32) -> f32 {
 //     sin   2 ulp
 //     cos   2 ulp
 //
-// and 0 ulp — bit-identical to libm — at the multiples of pi/2, where the
+// and 0 ulp (bit-identical to libm) at the multiples of pi/2, where the
 // answer is made almost entirely of the reduction residual and a shorter
 // constant would have built it from bits that were rounded away.
 //
@@ -344,7 +344,7 @@ pub fn exp32(power: f32) -> f32 {
     return exp(power as float) as f32
 }
 
-/// The part of `left + right` that did not fit in the sum — Knuth's two-sum.
+/// The part of `left + right` that did not fit in the sum: Knuth's two-sum.
 ///
 /// Exact for any two floats, with no fast-math anywhere in the emitted IR to
 /// optimize it away: the compiler emits plain `fadd`/`fsub` with no reassociation
@@ -422,7 +422,7 @@ class QuarterTurn {
 }
 
 /// pi/2 as seven successive pieces, each with its low 32 bits clear, so every
-/// product `n * piece` is exact and only the subtractions round — and two-sum
+/// product `n * piece` is exact and only the subtractions round, and two-sum
 /// keeps what they dropped. Seven pieces carry pi/2 to about 260 bits. Four
 /// would be enough for a result of ordinary size; the extra three are for the
 /// answers near a multiple of pi/2, which are made almost entirely of the
@@ -436,8 +436,8 @@ fn reduce_quarter(radians: float) -> QuarterTurn {
         n = (scaled - 0.5).ceil() as int
     }
     let whole: float = n as float
-    // Each product below is exact — the piece has 21 significant bits and `n`
-    // fits in 20 — so only the subtractions round, and two-sum keeps what they
+    // Each product below is exact: the piece has 21 significant bits and `n`
+    // fits in 20, so only the subtractions round, and two-sum keeps what they
     // dropped. Without the tail, sin near a multiple of pi is made of bits
     // that were thrown away, and the answer looks right while being wrong by
     // most of itself.

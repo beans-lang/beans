@@ -1,11 +1,11 @@
-/* ARM MPS2-AN386 (Cortex-M4) under QEMU.
- *
- * Two regions, as on the real board: code and read-only data are placed in the ZBT SRAM
- * at address 0, which is where the CPU fetches its vector table out of reset, and writable
- * data lives in the SRAM at 0x20000000. .data is *loaded* into the first and *runs* from
- * the second, which is why the startup code copies it — the three __data_* symbols below
- * are what it copies between.
- */
+/* MPS2 boots from CODE at 0; startup copies initialized data from CODE to SRAM. */
+
+
+
+
+
+
+
 MEMORY {
     CODE (rx)  : ORIGIN = 0x00000000, LENGTH = 4M
     SRAM (rwx) : ORIGIN = 0x20000000, LENGTH = 4M

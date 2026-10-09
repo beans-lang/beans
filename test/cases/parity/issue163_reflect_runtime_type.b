@@ -1,13 +1,13 @@
 // #163: a reflective box records the type the value IS, not the type of the
 // binding it was handed. Boxing a subclass through a base-class binding used
-// to produce a Value that reported the base and could not be downcast back —
+// to produce a Value that reported the base and could not be downcast back,
 // the runtime type was lost, not hidden, and virtual dispatch on the very
 // same binding already answered with the leaf.
 //
 // This is a parity case because the two backends reach the answer by
 // different routes and have to arrive at the same one. The native emitter
-// reads the class descriptor at the object's first word — the same word `as?`
-// reads — and turns its class id into a name through @beans_class_names. The
+// reads the class descriptor at the object's first word, the same word `as?`
+// reads, and turns its class id into a name through @beans_class_names. The
 // tree interpreter reads the class name the object records for itself and
 // rebuilds a generic instantiation from the bindings it captured. Neither is
 // checkable against the other except here.
@@ -22,7 +22,7 @@
 //
 // What must NOT change is the other half. A struct, an enum, a primitive, a
 // List, a Map and an Option are at runtime exactly the type their binding
-// declares, so their boxes still record the static type — including
+// declares, so their boxes still record the static type, including
 // `Option<Component>` holding a leaf, whose stored value really is an option
 // of the base. And a closed generic has to keep its arguments: an
 // instantiation is its own runtime class, so `Grid<int>` may never come back
@@ -38,7 +38,7 @@
 // this case measures its own rule and nothing else. Keep the bindings: they
 // are what makes an ownership disagreement elsewhere unable to fail this
 // case, and #155's markers balanced either way, so check_effects would not
-// have caught it — only the answer diff would.
+// have caught it, only the answer diff would.
 package main
 
 import std.io
@@ -87,7 +87,7 @@ class Holder {
 }
 
 // A closed generic is its own runtime class, so its box has to carry the
-// arguments. IntGrid is a plain class under a generic base — the leaf a
+// arguments. IntGrid is a plain class under a generic base, the leaf a
 // generic-base binding holds.
 class Grid<T> {
     pub title: string

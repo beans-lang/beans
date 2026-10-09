@@ -1,24 +1,10 @@
-// Floats have two different comparisons in Beans, and knowing which one you
-// are getting is the whole point of this file.
+// Operators use IEEE comparisons; sorting and collections use IEEE totalOrder and bitwise equality.
 //
-// The operators `==`, `<`, `<=`, `>` and `>=` are IEEE 754: a NaN operand
-// makes all of them false, and `-0.0 == 0.0` is true. That is what you want
-// when you are doing arithmetic.
-//
-// Anything that *orders* or *keys* — `sort`, `sort_by_key`, a `Map` key, a
-// `Set` member, `min`/`max` — goes through Order and Eq instead, and those
-// use IEEE 754 totalOrder: every float has a place on one line,
+// totalOrder orders every float, including NaNs and signed zero:
 //
 //     -NaN < -inf < ... < -0.0 < +0.0 < ... < +inf < +NaN
 //
-// and two floats are equal exactly when their bits are. An IEEE compare is
-// not an order at all — NaN is unordered with everything — so a container
-// that sorted or searched on it gave wrong answers rather than merely
-// unsorted ones.
-//
-// The NaNs here are built from their bit patterns on purpose: the sign of
-// `0.0 / 0.0` is the platform's choice, so this file would print differently
-// on x86 and arm64 if it used that.
+// Collection equality compares float bit patterns; these NaNs use explicit bit patterns for stable output.
 import std.io
 import std.encoding.binary
 

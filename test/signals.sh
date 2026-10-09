@@ -41,7 +41,7 @@ done
 EXPECTED
 
 echo "checking the process survives every run"
-# The failure mode this catches is not a wrong answer — it is death. A signal that is not
+# The failure mode this catches is not a wrong answer, it is death. A signal that is not
 # properly blocked, or that is left pending when the watch is dropped, terminates the
 # process at whatever moment it is delivered. Exit code 0 is the assertion.
 for run in 1 2 3 4 5; do
@@ -53,7 +53,7 @@ echo "  (five native runs and the interpreter all exited 0)"
 
 echo "checking an unwatched signal still does its default thing"
 # This is what proves the watch is doing the work. Without it, the same raise must kill
-# the process — otherwise the test above could be passing for an unrelated reason, such as
+# the process, otherwise the test above could be passing for an unrelated reason, such as
 # the signal never being delivered at all.
 cat >"$tmp/unwatched.b" <<'UNWATCHED'
 import std.io
@@ -104,7 +104,7 @@ done
 echo "checking a taken signal cannot come back at teardown"
 # The bug that made this necessary: reading a signalfd *consumes* the signal, but a kqueue
 # EVFILT_SIGNAL event is only a notification and the signal stays pending in the process.
-# Unblocking then delivers it — so a program that had handled a signal died at exit, on
+# Unblocking then delivers it, so a program that had handled a signal died at exit, on
 # macOS only. The fix drains the pending set, and this is its regression test: take a
 # signal, then drop the watch, and the program must reach the end and exit 0.
 cat >"$tmp/teardown.b" <<'TEARDOWN'
@@ -175,13 +175,13 @@ overlap ok
 EXPECTED
 
 echo "checking no watched signal is ever handled"
-# The design claim, checked against the source: no Beans code — and no reference
-# counting or cycle collection — ever runs in async-signal context. A watched signal
+# The design claim, checked against the source: no Beans code, and no reference
+# counting or cycle collection, ever runs in async-signal context. A watched signal
 # is blocked and read from a descriptor, so it needs no disposition at all.
 #
 # One handler exists, and it is fenced off in the source between two markers: the
-# fault reporter. SIGSEGV and SIGBUS cannot be blocked and read — each names an
-# instruction that has already failed, and returning to it faults again forever — so
+# fault reporter. SIGSEGV and SIGBUS cannot be blocked and read, each names an
+# instruction that has already failed, and returning to it faults again forever, so
 # the choice there is between saying what happened and dying silently with the
 # program's buffered output still in stdio. Everything below holds that handler to
 # what makes it safe: only those two signals, no Beans entry point but the output
@@ -317,7 +317,7 @@ rm -f build/signals_ffi.c
 ./build/beansc build examples/signals.b --emit ir >/dev/null
 # The example imports std.net, which stands on the sockx bridge, so a hand
 # link compiles that source and the generated extern wrappers beside the
-# runtime — the same set the driver links from its caches.
+# runtime, the same set the driver links from its caches.
 extra_sources=(runtime/net/beans_net_sockx.c)
 if [[ -f build/signals_ffi.c ]]; then extra_sources+=(build/signals_ffi.c); fi
 BEANS_SANITIZE=address ./build/beansc llvm "examples/signals.b" \

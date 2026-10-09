@@ -2,7 +2,7 @@
 // patterns including infinities, NaN and negative zero, varint boundaries
 // matching Go, truncated and overflowing input, and the cursor types.
 // Interpreter and native output must be byte-identical, and the pure-Beans
-// implementation behaves the same on little- and big-endian targets — the
+// implementation behaves the same on little- and big-endian targets, the
 // big-endian proof rides the hosted CI gates that execute the whole test
 // suite under qemu on s390x and ppc64.
 

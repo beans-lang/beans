@@ -139,7 +139,7 @@ grep -q '^duplicate tokens stay separate true$' "$tmp/merge_cap.interp"
 
 echo "checking a wait with nothing ready sleeps instead of spinning"
 # The failure this catches is a poller that returns immediately in a loop until the
-# deadline: elapsed time would look right while a core burns. So both are measured — the
+# deadline: elapsed time would look right while a core burns. So both are measured, the
 # wall clock must reach the timeout, and the CPU time must stay near zero.
 cat >"$tmp/idle.b" <<'IDLE'
 import std.io
@@ -178,7 +178,7 @@ fi
 
 echo "checking wake works from another thread, safely"
 # This is the poller's main job: a worker telling a blocked waiter to stop. A `Poller`
-# cannot cross thread.spawn — every class is a local ARC reference, so only a scalar can —
+# cannot cross thread.spawn, every class is a local ARC reference, so only a scalar can,
 # which is what wake_handle() is for.
 #
 # It is deliberately not the descriptor. A stale descriptor would write a stray byte into
@@ -281,8 +281,8 @@ if grep -q 'WARNING: ThreadSanitizer' "$tmp/tsan.err"; then
     cat "$tmp/tsan.err" >&2
     exit 1
 fi
-# TSan needs personality(ADDR_NO_RANDOMIZE) to place its shadow memory, and qemu-user —
-# which runs an x86-64 container on an arm64 host — does not emulate it, so TSan aborts
+# TSan needs personality(ADDR_NO_RANDOMIZE) to place its shadow memory, and qemu-user,
+# which runs an x86-64 container on an arm64 host, does not emulate it, so TSan aborts
 # during start-up and never runs the program. That is the emulator, not this code, so it
 # is reported and skipped. The race check above still runs first and always fails.
 if grep -q 'ThreadSanitizer: CHECK failed' "$tmp/tsan.err"; then
@@ -472,7 +472,7 @@ cap ok
 EXPECTED
 
 echo "checking a poller closes exactly once, even when nobody says so"
-# Three descriptors per poller — the kernel object plus both ends of the wake pipe — so
+# Three descriptors per poller, the kernel object plus both ends of the wake pipe, so
 # a leak here costs three at a time and shows up fast under a low limit.
 cat >"$tmp/drop.b" <<'DROP'
 import std.io
@@ -560,7 +560,7 @@ fi
 echo "checking no memory errors under ASan"
 rm -f build/poller_ffi.c
 ./build/beansc build examples/poller.b --emit ir >/dev/null
-# poller.b imports std.net, which stands on the sockx bridge — a hand link
+# poller.b imports std.net, which stands on the sockx bridge, a hand link
 # compiles the bridge source and the generated extern wrappers beside the
 # runtime, the same set the driver links from its caches.
 extra_sources=(runtime/net/beans_net_sockx.c)

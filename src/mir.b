@@ -809,7 +809,7 @@ class MirLowerer {
         return result
     }
 
-    // brew — the checked node carries the hoisted argument bindings and a
+    // brew: the checked node carries the hoisted argument bindings and a
     // fabricated zero-parameter closure (spec/CONCURRENCY.md). The temps
     // lower as ordinary lets of the enclosing scope, the closure lowers
     // exactly as a thread-spawn closure would, and the instruction takes
@@ -839,14 +839,14 @@ class MirLowerer {
         return result
     }
 
-    // contained — the same hoisted bindings and fabricated closure a brew
+    // contained: the same hoisted bindings and fabricated closure a brew
     // carries, run on this fiber instead of a child one
     // (spec/CONCURRENCY.md). The closure is NOT consumed here: brew hands it
     // to the runtime, which releases it when the child is done, while a
     // contained call returns to this frame with the closure still standing.
     // Leaving it to the plan is what puts its release on both the ok and the
     // caught path, and what puts it in the cleanup pad's list for a panic
-    // that escapes the boundary — the emitter cannot reach either from
+    // that escapes the boundary: the emitter cannot reach either from
     // inside one instruction's text.
     fn lower_contained(node: HirNode) -> int {
         var closure: int = -1
@@ -868,7 +868,7 @@ class MirLowerer {
             [closure])
     }
 
-    // group.brew — the fleet flavor: the group reference rides as a first
+    // `group.brew` passes the group reference as a first
     // operand ahead of the closure, and the hoisted temps lower as
     // ordinary lets exactly as a lone brew's do. The group operand is a
     // borrow; only the closure is consumed.
@@ -1022,7 +1022,7 @@ class MirLowerer {
 
     // The propagate side of a `?` whose error has to be converted. The
     // operand box stays owned by the try, exactly as it is on the plain
-    // path — the binding takes its own count, the conversion reads it, and
+    // path: the binding takes its own count, the conversion reads it, and
     // the fresh error goes out in a Result of this function's type.
     fn lower_try_conversion(node: HirNode, operand: int) {
         let bridge: HirNode = node.children[1]
@@ -2568,7 +2568,7 @@ class MirLowerer {
                     // stored it without retaining, so the field was left
                     // pointing at freed memory. Reading it worked or
                     // crashed depending on whether anything had reused the
-                    // block yet — which is why moving the call changed the
+                    // block yet, which is why moving the call changed the
                     // outcome.
                     if instruction.removed ||
                        (instruction.op != "new" &&
@@ -3535,7 +3535,7 @@ class MirLowerer {
     // interpreter releases locals at scope end. A transfer is therefore
     // only taken when the moved reference provably lands in storage
     // that lives at least as long: another local's slot, an assignment
-    // target, or the function's return value — possibly wrapped through
+    // target, or the function's return value: possibly wrapped through
     // aggregates or a constructed object on the way. A chain ending in
     // a call argument, an iterator, or anything else may die before the
     // source's scope drop would have run, so those keep the retain.
@@ -3576,7 +3576,7 @@ class MirLowerer {
             }
             if consumer.op == "local_init" ||
                consumer.op == "assign" {
-                // a weak-field store keeps no count on the referent —
+                // a weak-field store keeps no count on the referent:
                 // the moved reference dies inside the store, so the
                 // source local must keep its own retain and its drop
                 return !consumer.text.starts_with(
@@ -4167,7 +4167,7 @@ class MirLowerer {
     // `len` and the change word back every operation. `for i < n { xs.push(i) }`
     // becomes thirteen instructions against `std::vector::push_back`'s six,
     // and the per-operation change-word store is what stops a `pop` drain
-    // from vectorizing. The runtime call is not the cost — the escaping
+    // from vectorizing. The runtime call is not the cost: the escaping
     // header is.
     //
     // When nothing else in a loop can reach the list, the loop may hold the
@@ -4356,8 +4356,8 @@ class MirLowerer {
                 // Where the borrow is read decides which rule it answers
                 // to, and it may not answer to both: `apply` marks exactly
                 // the borrows this loop owns, so one that reaches across
-                // the boundary — read inside a loop it was taken outside
-                // of, or the reverse — would leave a read on the wrong
+                // the boundary: read inside a loop it was taken outside
+                // of, or the reverse: would leave a read on the wrong
                 // side of the cache.
                 let uses: List<MirPosition> =
                     self.uses_for(
@@ -4422,8 +4422,8 @@ class MirLowerer {
 
     // The operations the cache serves: the ones whose generated code reads
     // `data`, `len` or the change word out of the list object directly.
-    // Everything else — insert, remove, sort, clear, a slice, the list
-    // handed to anything at all — reaches the object through the runtime
+    // Everything else: insert, remove, sort, clear, a slice, the list
+    // handed to anything at all: reaches the object through the runtime
     // and would read what the cache is still holding.
     fn list_header_cached_use(borrowed: int,
                               user: MirInstruction) -> bool {
@@ -4459,7 +4459,7 @@ class MirLowerer {
     // Outside the loop the list may be used freely, with one exception: a
     // use may not hand out a second name for it that survives into the loop.
     // The shape of this whitelist is `stable_iterable_use`'s, for the same
-    // reason — a call taking the list could store it, and then something the
+    // reason: a call taking the list could store it, and then something the
     // loop calls could read the length the cache is holding.
     // -2 rejects the loop; -1 accepts the use; anything else accepts it and
     // names an iterator this list now has, which the caller refuses to let
@@ -4734,7 +4734,7 @@ class MirLowerer {
                     continue
                 }
                 // A borrow of the counter before the loop can be an `inout`
-                // argument, and the callee may store any value behind it —
+                // argument, and the callee may store any value behind it:
                 // including a negative one that still satisfies
                 // `index < len`. The entry value is no longer provable, so
                 // the counted-loop proof has to give up here.
@@ -4800,8 +4800,8 @@ class MirLowerer {
                         }
                     }
                     // The body's single `+= 1` was proven above. Anything
-                    // else that writes the counter — including a write in
-                    // the guard block, which that scan never saw — leaves
+                    // else that writes the counter: including a write in
+                    // the guard block, which that scan never saw: leaves
                     // the induction unknown.
                     if instruction.local == index_local.id &&
                        instruction.op != "borrow" &&
@@ -5105,7 +5105,7 @@ class MirLowerer {
     // The conditions are the same shape borrowed iteration already uses,
     // including refusing a PARAMETER as the source. A parameter's slot belongs
     // to the caller, and nothing inside the callee can prove what the caller
-    // does with it for the duration of the call — so the retain there is real
+    // does with it for the duration of the call, so the retain there is real
     // work, not redundant work.
     fn analyze_borrowed_downcasts(function: MirFunction) {
         if function.declaration || function.external ||
@@ -5204,7 +5204,7 @@ class MirLowerer {
             bound.ownership = "borrowed"
             // The bind takes its own count to pair with the Option
             // temporary's scheduled release. Neither happens now, so the
-            // retain here has to go with the drop below — leaving one
+            // retain here has to go with the drop below: leaving one
             // without the other is a leak, not a saving.
             bind.borrow_elided = true
             bind.ownership = "borrowed"
@@ -5591,7 +5591,7 @@ class MirLowerer {
 
             // a release scheduled on the instruction that hands out
             // a borrow of the released storage would free the value
-            // while the borrow is still unretained — `let first =
+            // while the borrow is still unretained: `let first =
             // make_list()[0]` releases the list on the index, one
             // instruction before the element's retain. Sink such a
             // release to the borrow's last use in the block.
@@ -5720,8 +5720,8 @@ class MirLowerer {
             // emit_local_store always finishes with `store i1 true`
             state.set_flag(local, 1)
         } else if instruction.op == "pattern_bind" {
-            // every arm — Option, Result, enum, and the Option a cast
-            // makes — stores its payload and then `store i1 true`. An
+            // every arm: Option, Result, enum, and the Option a cast
+            // makes: stores its payload and then `store i1 true`. An
             // elided bind stores a borrow the frame never releases, so
             // the flag it leaves is the clear one the prologue wrote.
             state.set_flag(
@@ -5814,8 +5814,8 @@ class MirLowerer {
     // result is an interface it implements. Walk every relation, both
     // kinds: a class reaches an interface through `implements`, an
     // interface reaches its parents through `extends`, and a subclass
-    // inherits both chains. Every other position — argument, list
-    // element, `some(...)` — already lowered these; `return` was the
+    // inherits both chains. Every other position: argument, list
+    // element, `some(...)`: already lowered these; `return` was the
     // one that did not.
     fn class_return_upcast(got: HirType, want: HirType) -> bool {
         let target: string = self.upcast_key(want)
@@ -6067,8 +6067,8 @@ class MirLowerer {
     // normal exits carry: a panic can land before a local is initialized,
     // between its initialization and its move, or after it. The fixpoint
     // below folds a flag away whenever the drops it can see all know the
-    // answer statically, so the flag is pinned on here — before the fixpoint
-    // runs — for every owned local the cleanup pad will have to consider.
+    // answer statically, so the flag is pinned on here: before the fixpoint
+    // runs: for every owned local the cleanup pad will have to consider.
     // The pins cost stores the optimizer promotes out of memory; they buy
     // the pad the only thing that makes it safe to run at an arbitrary
     // instruction.
@@ -6083,7 +6083,7 @@ class MirLowerer {
             if local.captured || local.escapes {
                 // a cell local's slot is the cleanup unit: the prologue
                 // stores null, every drop stores null back, and releasing
-                // a null cell is nothing — so the slot is already its own
+                // a null cell is nothing, so the slot is already its own
                 // flag and a second one would only disagree with it
                 continue
             }

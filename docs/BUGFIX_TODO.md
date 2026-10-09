@@ -142,7 +142,7 @@ behaviour 0.1.51 already had, except the BOM message and the `0x` errors.
   CD-1, CD-2, CD-3, CD-14 and CD-16 as expected. Its evidence is
   `docs/COMPILER_DISCOVERY_REPORT.md`; CD-17 to CD-20 were found by that run.
 
-## Local discovery fixes follow-up — 2026-10-07
+## Local discovery fixes follow-up - 2026-10-07
 
 The campaign section above is the original 0.1.51 (`d7adc86`) triage and
 measurement record. The current working-tree fix index, combined validation
@@ -168,7 +168,7 @@ fix branches merged; bootstrap: the 0.1.51 release binary): `make test-compiler-
 
 **Released as 0.1.52 on 2026-10-09 with the fast gate, by the owner's decision.** The release workflow's `fast` dispatch skipped the two-hour candidate soak and the hosted fixed-point and differential runs under qemu, and the Unix packages ran `make test-quick` instead of `make test`; every target was still built, packaged and install-tested. No new Linux/macOS two-hour candidate soak, Windows deterministic replay or Autobahn run has covered this compiler. On the final tip (`f8c6ad0` plus `main`'s README), discovery 325/325, every issue and CD test, `make test-quick`, `make test-frontend`, `make test-fixpoint`, `test/tls.sh` with LibreSSL and `make test-core` passed on macOS ARM64; `make test-self-host`, `make test-sanitize` and the campaign sanitizer check ran on each fix branch but were not rerun on the final tip. The combined gates above predate CD-22 to CD-29.
 
-## GitHub issue audit — 2026-10-09
+## GitHub issue audit - 2026-10-09
 
 Audited the 14 open issues against `main` at `876b66f` (0.1.52). The
 following seven were already implemented on that commit and were closed with

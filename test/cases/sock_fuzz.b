@@ -1,4 +1,4 @@
-// The socket sequence fuzzer — random op interleavings over live loopback
+// The socket sequence fuzzer, random op interleavings over live loopback
 // pairs, driven by a seeded PRNG so every run replays exactly from its seed.
 // Three invariants stand over any interleaving, with or without failpoint
 // injection (BEANS_SOCK_FAILPOINTS):
@@ -9,7 +9,7 @@
 //   corruption, whatever else was going on.
 //
 //   **Errors come from the documented set.** timeout, reset, eof, closed,
-//   io — anything else is a new behaviour the API never promised.
+//   io, anything else is a new behaviour the API never promised.
 //
 //   **Descriptors balance to zero.** The census counts open fds before and
 //   after; a leak is a failure even when every answer was right.
@@ -264,7 +264,7 @@ fn run_fuzz(seed: int, ops: int) -> bool {
             return false
         }
     }
-    // Everything still open is dropped here by scope end — deinit closes.
+    // Everything still open is dropped here by scope end, deinit closes.
     io.println("data integrity held {integrity}")
     io.println("error kinds documented {kinds_ok}")
     io.println("closed handles always report closed {closed_ok}")

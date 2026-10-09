@@ -1,28 +1,5 @@
-# A reproducible Linux environment for the Beans correctness gate.
-#
-# Built for whatever platform Docker is asked for. On an Apple-silicon host,
-# linux/arm64 runs natively and linux/amd64 runs under emulation — correctness
-# only, never a performance number. test/linux_docker.sh says which is which.
-#
-# Why the cross toolchains are here: `beansc build --target` can always compile
-# to an object without target libraries, but a cross *link* needs a libc. The
-# gcc-*-linux-gnu packages supply exactly that — for aarch64, x86-64, riscv64,
-# powerpc64le, i686 and armv7 — and qemu-user-static then runs the result so a
-# cross build can be proven to execute, not just to link. test/linux_arch.sh
-# drives that per architecture, and test/linux_hosted.sh drives the stronger
-# hosted gate (beansc itself running as that architecture's binary).
-#
-# The embedded targets need the *system* emulators instead. A bare-metal Cortex-M
-# or RISC-V image has no OS and makes no syscalls, so qemu-user cannot run it —
-# it needs a machine with a UART, which is what qemu-system-arm and
-# qemu-system-misc (riscv32) provide.
-#
-# The two bare-metal GCCs are here for one file each: libgcc.a. Ubuntu's
-# compiler-rt package covers the host architecture only, and `int` is 64 bits and
-# `float` is a double in Beans, so a 32-bit target needs the soft-float and
-# 64-bit-integer helpers from somewhere. Hand-writing IEEE-754 soft float would be
-# reimplementing — worse — what every embedded toolchain already ships. Only the
-# library is used; Clang stays the compiler and ld.lld the linker.
+# Linux correctness image for cross-target, hosted, and embedded gates.
+
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -76,8 +53,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc-riscv64-unknown-elf \
     # The big-endian PowerPC64 cross compiler only exists in Ubuntu's
     # amd64 archive; the arm64 ports archive has never carried it. The
-    # default gate never uses it — only the explicit ppc64 arch/hosted
-    # gates do, and those fail by name if the tool is absent — so an
+    # default gate never uses it. Only the explicit ppc64 arch/hosted gates
+    # require it, and those fail by name if the tool is absent, so an
     # arm64 host still runs the full default gate.
     && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
         apt-get install -y --no-install-recommends \

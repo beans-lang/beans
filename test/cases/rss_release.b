@@ -3,7 +3,7 @@
 // Allocates 32 live one-mebibyte backings at once, holds them while the shell
 // samples resident memory, frees them all, and holds again while the shell
 // samples once more. Every backing is *touched* (filled), so its pages are
-// really resident — an untouched mmap backing is demand-paged and would never
+// really resident, an untouched mmap backing is demand-paged and would never
 // show up in `ps`. A backing past the runtime's mmap threshold is unmapped
 // when it is freed, so the second sample falls back near the first; a freed
 // block left on a MADV_FREE page the OS still counts as resident would not.
@@ -52,7 +52,7 @@ fn main() {
     marker("freed-lists")
 
     // 32 live 1 MiB strings. A large string is a non-pooled beans_alloc object,
-    // so it takes the rt_obj map path, not the backing path — this checks that
+    // so it takes the rt_obj map path, not the backing path, this checks that
     // path returns RSS too. repeat builds and touches the whole string.
     var str_hold: List<string> = []
     for i: int in 0..count {
@@ -64,7 +64,7 @@ fn main() {
 
     // Records-sized backings. 262144 bytes each, which is not a round number
     // chosen for the test: a Bytes grows by doubling, so a 247 KB response body
-    // — the /records route's — ends up in a backing of exactly this size. It is
+    // the /records route ends at a backing of exactly this size. It is
     // the first doubling step at or above the map threshold, so this phase is
     // the tripwire directly above it: raise the threshold past 256 KB and a
     // real response body stops returning its pages, and this phase says so.

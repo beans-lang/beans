@@ -2,7 +2,7 @@ package main
 
 partial class LlvmTextEmitter {
     // A free function's or a static's generic call. It binds its types
-    // through bind_generic_call, exactly as a method's does — the two routes
+    // through bind_generic_call, exactly as a method's does: the two routes
     // used to differ, and a free call refused whatever the unifier failed to
     // line up even when the call site had already written every type
     // argument out. The only thing that stops an instance being raised is a
@@ -86,7 +86,7 @@ partial class LlvmTextEmitter {
             return false
         }
         // A declared generic list marks a template even when no signature
-        // type mentions it — such generics bind only through explicit
+        // type mentions it: such generics bind only through explicit
         // type arguments at the call site.
         if function.generics.len() != 0 {
             return true
@@ -210,7 +210,7 @@ partial class LlvmTextEmitter {
 
     // exactly the domain to_slot/from_slot can carry in one
     // eight-byte runtime slot; every caller must refuse anything
-    // else. The old fallbacks stored 0 and rebuilt undef — a
+    // else. The old fallbacks stored 0 and rebuilt undef: a
     // Result<Option<int>> box silently answered none, then
     // trapped branching on the undef.
     fn slot_compatible(type: HirType) -> bool {
@@ -441,8 +441,8 @@ partial class LlvmTextEmitter {
         // walker still counts four-byte pointer slots, so a cell at
         // byte 8 is mask slot 2, not slot 1. The inline header mask
         // covers 58 pointer-width slots; a closure too wide for it
-        // chains the excess through annex boxes — ordinary masked
-        // objects hanging off the last inline slot — so the walkers
+        // chains the excess through annex boxes: ordinary masked
+        // objects hanging off the last inline slot, so the walkers
         // never need a shape the header cannot spell.
         let positions: int = (58 * pointer_size) / 8
         values[instruction.result] = result
@@ -851,8 +851,8 @@ partial class LlvmTextEmitter {
                 if allocation == "" { return "" }
                 return "  %cell.old{id} = load ptr, ptr %l{local.id}\n  call void @beans_release(ptr %cell.old{id})\n{allocation}  store {type} {stored}, ptr %cell.new{id}\n  store ptr %cell.new{id}, ptr %l{local.id}\n"
             }
-            // assignment writes through the shared cell — that is the
-            // whole point of the cell — and a never-made cell (a bind
+            // assignment writes through the shared cell: that is the
+            // whole point of the cell, and a never-made cell (a bind
             // the checker proved dead on this path, or one a move(...)
             // closure took, CD-28) gets one lazily
             let allocation: string =
@@ -903,7 +903,7 @@ partial class LlvmTextEmitter {
             return "  %assign.live{id} = load i1, ptr %l{local.id}.live\n  br i1 %assign.live{id}, label %assign.release{release_block}, label %assign.store{store_block}\nassign.release{release_block}:\n  {old} = load {type}, ptr %l{local.id}\n{release}  br label %assign.store{store_block}\nassign.store{store_block}:\n  store {type} {stored}, ptr %l{local.id}\n{live}"
         }
         // The slot holds nothing on any path reaching here, so the
-        // overwrite owes no release — just the store.
+        // overwrite owes no release: just the store.
         if replace &&
            self.type_has_owned_refs(local.type) &&
            local.needs_live_flag &&
@@ -970,7 +970,7 @@ partial class LlvmTextEmitter {
         // different. A bare `a == b` never had the problem because it goes
         // through the structural thunk; only an enum sitting in a field took
         // the identity path, so a struct wrapping one disagreed with the
-        // interpreter — silently, and whatever the payload was.
+        // interpreter: silently, and whatever the payload was.
         match self.declaration_for(type) {
             some(declaration) => {
                 if declaration.kind == "enum" &&
@@ -993,7 +993,7 @@ partial class LlvmTextEmitter {
             none => {}
         }
         // A List is a reference, and the identity branch below would compare
-        // two of them by address — which is a different question from the
+        // two of them by address, which is a different question from the
         // one the interpreter answers. tree_value_total_equal walks a list
         // element by element wherever it meets one, so `Outer { inner: Inner
         // { tail: [1] } } == Outer { inner: Inner { tail: [1] } }` was true
@@ -1016,24 +1016,24 @@ partial class LlvmTextEmitter {
         // A Map has no equality (spec/SYNTAX.md; the checker refuses a bare
         // `m == n` outright). One reached through a field is the same rule:
         // the interpreter answers false for every pair, and request_value_eq
-        // answers 0 for the same reason, so the identity branch below —
+        // answers 0 for the same reason, so the identity branch below:
         // which called a struct equal to a copy of itself because both held
-        // the one map pointer — must not have it.
+        // the one map pointer: must not have it.
         if name == "Map" || name == "OrderedMap" {
             return new LlvmSlotConversion("", "false")
         }
         // A Result compares by tag and then by the live arm, at the top
         // level and one level down alike. A boxed Result is a reference, so
         // without this the identity branch below compared two of them by
-        // address — the same silent wrong answer a List field gave — and an
+        // address (the same silent wrong answer a List field gave) and an
         // inline one reached the record walk at the bottom, which has no
         // layout for it and refused the whole struct.
         if name == "Result" && type.args.len() >= 1 {
             return self.emit_result_equal(
                 type, left, right)
         }
-        // Not Option. A niche-encoded `Option<T>` — one whose payload is a
-        // reference — is a bare pointer, so type_is_reference answers true
+        // Not Option. A niche-encoded `Option<T>`: one whose payload is a
+        // reference: is a bare pointer, so type_is_reference answers true
         // for it and this branch used to swallow it and compare the two
         // payloads by address. `Option<string>` then said false for equal
         // strings held at different addresses, silently and with no
@@ -1089,8 +1089,8 @@ partial class LlvmTextEmitter {
             if compared.value == "" {
                 return new LlvmSlotConversion("", "")
             }
-            // The payload comparison may open blocks of its own — a nested
-            // Option does exactly that — so the block this branch started in
+            // The payload comparison may open blocks of its own: a nested
+            // Option does exactly that, so the block this branch started in
             // is not the block it ends in. Naming the start block in the phi
             // below produced "PHI node entries do not match predecessors".
             // Landing on a block of our own first makes the predecessor
@@ -1385,7 +1385,7 @@ partial class LlvmTextEmitter {
             }
         // A table that can only ever hold one symbol for this slot decides
         // nothing, so read the answer here and call it. The receiver being
-        // a class of its own is not what makes this safe — a base-typed
+        // a class of its own is not what makes this safe: a base-typed
         // receiver, an interface-typed one and `self` are all covered, and
         // an overridden method or a second implementor takes the guarded
         // path below exactly as before.
@@ -1581,7 +1581,7 @@ partial class LlvmTextEmitter {
         // base raised under the instance's plain name because no class from
         // that base to the instance declares one (it stands at that base). A
         // raised `{instance}@{link}.deinit` stands at `link`. Deriving the
-        // position from the name — not from a fixed chain top — is what lets a
+        // position from the name (not from a fixed chain top) is what lets a
         // raised base body find *its* parent rather than the leaf's, and lets
         // a class above a generic link be reached at all.
         let stem: string =
@@ -1598,12 +1598,12 @@ partial class LlvmTextEmitter {
             none => {}
         }
         // The instance as a type. A generic class's body is filed under its
-        // rendered instance — `main.Mid<int>.deinit` — which is not a
+        // rendered instance (`main.Mid<int>.deinit`) which is not a
         // declaration key, so looking the name up in `declarations` found
         // nothing and the parent call was dropped: a deinit written on a
         // generic class that is itself built never chained into its base, and
         // whatever that base held leaked. instance_key_type answers both
-        // spellings. The arguments matter beyond the lookup — the chain below
+        // spellings. The arguments matter beyond the lookup: the chain below
         // this instance is laid out at them.
         let root: HirType =
             self.instance_key_type(instance_name)
@@ -1664,7 +1664,7 @@ partial class LlvmTextEmitter {
             index -= 1
             let link: HirDeclaration = chain[index]
             // A link that declares no deinit is not in the chain of bodies;
-            // step over it. The first link that does is the parent — and the
+            // step over it. The first link that does is the parent, and the
             // walk stops there whether it already has a symbol or has to raise
             // one. Stepping past it (as an earlier walk did for a generic link
             // with no plain symbol) bound a farther ancestor and dropped this
@@ -1684,7 +1684,7 @@ partial class LlvmTextEmitter {
                     self.function_symbols[plain]
                 break
             }
-            // A declaring link with no symbol yet is a generic one — a
+            // A declaring link with no symbol yet is a generic one: a
             // template until a site raises it. This is that site, so a deinit
             // written on a generic class in the middle of a chain is never
             // dropped for want of a symbol, whatever order bodies emit in.
@@ -1994,7 +1994,7 @@ partial class LlvmTextEmitter {
         let subprogram: int = self.debug_subprogram(function)
         self.open_debug_scope(function, subprogram)
         // blocks are emitted first so spill slots they request can land as
-        // entry allocas — a mid-loop alloca would grow the stack every pass
+        // entry allocas: a mid-loop alloca would grow the stack every pass
         var values: Map<int, string> = {}
         // The cleanup pad has to exist by name before the body is written:
         // every call in it is rewritten to name the pad as its exception
@@ -2046,12 +2046,12 @@ partial class LlvmTextEmitter {
                 " \"target-features\"=\"+{function.required_feature}\""
             }
         // `uwtable` is what makes the unwinder able to step through this
-        // frame at all — clang adds it for C, but IR handed to it as text
+        // frame at all: clang adds it for C, but IR handed to it as text
         // carries only what the emitter wrote.
         let unwind_attribute: string =
             if self.unwind_enabled() { " uwtable" } else { "" }
         // A `contained` catch pad is a landing pad too, and a landing pad
-        // without a personality does not verify — so the definition names one
+        // without a personality does not verify, so the definition names one
         // whether the frame's own cleanup pad was used or the catch pad was.
         let personality: string =
             if self.unwind_used ||

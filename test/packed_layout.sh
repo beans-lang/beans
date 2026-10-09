@@ -84,7 +84,7 @@ fi
 ./build/beansc build test/cases/packed_c_abi.b -o "$tmp/abi_unlinked" \
     >"$tmp/abi.generate" 2>&1 || true
 test -f build/packed_c_abi.ll
-# Clang, not Beans, classifies the aggregate for the target ABI — so the modifiers
+# Clang, not Beans, classifies the aggregate for the target ABI, so the modifiers
 # have to reach the generated C or Clang would classify a different record.
 grep -q '__attribute__((packed))' build/packed_c_abi_ffi.c
 clang -O2 -pthread -Wno-override-module build/packed_c_abi.ll \

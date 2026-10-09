@@ -1,4 +1,4 @@
-// rusage_wrap.c — run a command and report its CPU time and peak memory, even
+// rusage_wrap.c: run a command and report its CPU time and peak memory, even
 // when it is killed rather than allowed to finish.
 //
 // `/usr/bin/time -l` prints nothing but `real` when its child is terminated by
@@ -7,8 +7,8 @@
 //     time: command terminated abnormally
 //             3.41 real
 //
-// A benchmark server is always terminated by a signal — it serves until it is
-// told to stop — so `time -l` can never report the one number the ledger is
+// A benchmark server runs until stopped, so `time -l` cannot report the one
+// number the ledger is
 // built on. wait4() carries the same rusage out whichever way the child died,
 // so this wrapper reads it there instead.
 //
@@ -20,7 +20,7 @@
 // finds the file complete knows the numbers are final.
 // wait4 is a BSD extension and sigaction is POSIX; on glibc both are hidden
 // unless a feature set is requested. Without this a strict -std=c11 build gets
-// an implicit wait4, which on LP64 is a real bug and not just a warning — the
+// an implicit wait4, which on LP64 truncates the
 // 64-bit `struct rusage*` argument is passed as int and truncated. macOS
 // declares them regardless, so the define is a no-op there.
 #define _DEFAULT_SOURCE

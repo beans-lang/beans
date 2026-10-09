@@ -13,14 +13,14 @@ import std.collections
 // goes further and skips the modulo altogether, because `__constrain_hash`
 // answers `h < bucket_count() ? h : h % bucket_count()`. Measured on libc++ at
 // n = 1,000,000, all 250,000 keys took that no-modulo path and no bucket ever
-// held more than one key — std::unordered_set was a direct-index array — while
+// held more than one key. std::unordered_set was a direct-index array, while
 // Beans ran mix64 on every one of them.
 //
 // `scatter` is a bijection on [0, 2^40): a multiply by an odd constant modulo
 // 2^40, then an xor-shift finalizer. Both sides run the identical function on
 // the identical indices, so `a` and `b` hold exactly the members they held
-// before under another name — the sizes, the overlap and every count in the
-// checksum are unchanged, and the row's expected hash did not move — but the
+// before under another name. The sizes, overlap, and counts in the
+// checksum are unchanged, and the row's expected hash did not move. The
 // keys now sit far above any bucket count, and they hash into a distribution
 // indistinguishable from a random one (54.5% empty buckets, against 54.5% for
 // keys drawn from std::mt19937_64 and 54.5% for the Poisson ideal).

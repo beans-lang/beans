@@ -1,4 +1,4 @@
-// bun shapes.js — mirror of shapes.b / shapes.go (virtual dispatch)
+// Bun mirror of shapes.b and shapes.go (virtual dispatch).
 class Circle {
     constructor(r) { this.r = r; }
     area() { return 3.14159265 * this.r * this.r; }

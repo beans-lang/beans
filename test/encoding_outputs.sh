@@ -6,7 +6,7 @@ set -euo pipefail
 # archives and shared libraries loaded through their exported C API, and the
 # optimized modes run against the same goldens as the default build.
 #
-# Nothing here is asserted by inspection alone — if a mode is listed, it was
+# Nothing here is asserted by inspection alone, if a mode is listed, it was
 # built and executed in this run.
 
 cd "$(dirname "$0")/.."

@@ -111,7 +111,7 @@ class TreeSingletonState {
 // Where a finished program's statics and singletons go to stay alive. A
 // static of the compiler's own is the one place with process lifetime in a
 // reference-counted host, and the compiler's statics are not torn down
-// either — the same rule this parks in order to keep (spec/SYNTAX.md, issue
+// either: the same rule this parks in order to keep (spec/SYNTAX.md, issue
 // #74). One entry per interpreted program, and `beansc run` runs one.
 class TreeExitRoots {
     pub static kept: List<TreeSingletonState> = []
@@ -146,7 +146,7 @@ unique class TreeThreadWork implements Send {
     }
 
     // A thread carries no outcome but its value. A panic that reaches this
-    // entry ends the process here, which is what the native backend does —
+    // entry ends the process here, which is what the native backend does:
     // thread_main has no capture, so beans_panic reports and exits (issue
     // #75, spec/CONCURRENCY.md). The failure used to be carried in fields of
     // its own and re-raised at join, which lost it entirely when the thread
@@ -180,7 +180,7 @@ unique class TreeThreadWork implements Send {
 // fiber core only schedules the stack; every outcome fact lives here at
 // tree level: run() contains an interpreted panic before the walker's
 // failed flag could cross a park, and join or the scope join read the
-// answer back out. A plain aliased class on purpose — every touch is on
+// answer back out. A plain aliased class on purpose: every touch is on
 // the one worker thread (the entry rides a LocalStoredCallback), and a
 // lock here would be held across the child's parks: the first parked
 // child would deadlock its own join.
@@ -190,7 +190,7 @@ class TreeBrewState {
     node: HirNode
     fiber: u64
     // The BStoredCallback record behind the fiber's entry, closed by
-    // address at the reap — the Beans-level handle is trivial and cannot
+    // address at the reap: the Beans-level handle is trivial and cannot
     // be closed through a borrowed field.
     entry_context: u64
     done: bool
@@ -202,7 +202,7 @@ class TreeBrewState {
     joined: bool
     reaped: bool
     // TaskGroup rows only: the group clock's completion order, 0 while
-    // the child still runs. Stamped by the group entry's tail — an
+    // the child still runs. Stamped by the group entry's tail: an
     // interpreted panic still returns through run(), so a panicked child
     // gets its stamp too, exactly like native's fiber done hook.
     done_stamp: int
@@ -255,7 +255,7 @@ class TreeBrewState {
             self.owner.invoke_closure(
                 self.node, self.closure, [])
         if self.owner.failed {
-            // The body panicked and its frames have already unwound to here —
+            // The body panicked and its frames have already unwound to here:
             // the fiber entry, where a contained unwind ends: defers ran and
             // owned locals dropped on the way up. Deliver the failure to the
             // join and put the interpreter back to a running state.
@@ -356,7 +356,7 @@ class TreeStoredCallback {
 // One registered defer: the expression and the scope frame it was
 // registered in. The frame reference keeps that scope's locals alive past
 // the block's pop, so a defer inside a nested block (or a brew's
-// synthesized scope join) still sees its bindings at function exit — the
+// synthesized scope join) still sees its bindings at function exit: the
 // same thing native's stack slots give for free. The back-reference makes
 // a frame cycle; the collector owns those.
 class TreeDeferred {
@@ -397,8 +397,8 @@ class TreeFrame {
     //
     // It is the SAME function, so it has the same `self`. Without carrying it,
     // `super.method(...)` panicked with "has no self" anywhere but the top
-    // level of a method body — inside an `if`, a block, a loop or a match arm
-    // — while the native backend compiled all of them correctly.
+    // level of a method body: inside an `if`, a block, a loop or a match arm
+    //, while the native backend compiled all of them correctly.
     static fn scope(parent: TreeFrame) -> TreeFrame {
         let result: TreeFrame = new TreeFrame()
         result.parent = some(parent)

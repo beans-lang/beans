@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# espresso_profile.sh — what a route's user time is actually spent on.
+# Profile a route's user time by subsystem.
 #
 # The ledger says /json costs 3.13 microseconds of user time per request. This
 # says which code that is. It puts the server under the benchmark's own load,
 # samples it with macOS `sample` while the load is steady, and collapses the
-# report into groups a change can target — the allocator, reference counting,
+# report into groups a change can target: the allocator, reference counting,
 # the JSON codec, the fiber scheduler, copies.
 #
 # It reads the user microseconds per request from a ledger run rather than

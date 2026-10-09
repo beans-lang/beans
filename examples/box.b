@@ -1,5 +1,5 @@
 /*
-Box<T> — one heap slot with exactly one owner.
+Box<T> is one heap slot with exactly one owner.
 
 What it is:
   `new Box(v)` allocates one slot and owns it. `get()` reads the value out,

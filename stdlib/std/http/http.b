@@ -1,7 +1,7 @@
 // HTTP/1.1, on llhttp.
 //
-// `std.http` wraps Node's llhttp — vendored under runtime/net, eleven years
-// of hostile-input hardening included — behind an API with no C in it. Four
+// `std.http` wraps Node's llhttp: vendored under runtime/net, eleven years
+// of hostile-input hardening included: behind an API with no C in it. Four
 // decisions shape the package:
 //
 //   **The parser is push-based and cannot block.** `feed(bytes)` hands the
@@ -12,7 +12,7 @@
 //
 //   **Strict mode is the only mode.** llhttp's lenient flags exist for
 //   ancient peers and request-smuggling papers; none of them are exposed.
-//   What llhttp rejects, this package rejects — a parse error is kind
+//   What llhttp rejects, this package rejects: a parse error is kind
 //   `protocol`, and the connection it came from is done.
 //
 //   **The limits llhttp does not own live here.** Header count, header
@@ -58,7 +58,7 @@ pub class Field {
 
 /// Rejects a header name or value that would change the shape of the
 /// message once written. A value carrying CR or LF splices arbitrary extra
-/// headers — or a whole extra response — into the wire format, so both
+/// headers (or a whole extra response) into the wire format, so both
 /// writers check every field before serializing it. The read side of this
 /// package is strict about what it accepts; the write side has to match, or
 /// an application that puts user input in a `Location` hands an attacker the
@@ -206,7 +206,7 @@ fn intern_method(pending: Bytes) -> string {
 }
 
 // The shared literal for a common header name, or "" for no match. Only an
-// exact byte match interns — the parser preserves case, so "host" stays a
+// exact byte match interns: the parser preserves case, so "host" stays a
 // caller-visible spelling and simply pays for its own string.
 fn intern_field_name(pending: Bytes) -> string {
     let size: int = pending.len()
@@ -250,9 +250,9 @@ fn ascii_lower_equals(a: string, b: string) -> bool {
     return true
 }
 
-/// Ordered, case-preserving header collection. Order is meaning in HTTP —
+/// Ordered, case-preserving header collection. Order is meaning in HTTP:
 /// repeated fields combine in order, and a proxy that reorders them changes
-/// the message — so this is a list with case-insensitive lookup, not a map.
+/// the message, so this is a list with case-insensitive lookup, not a map.
 pub class Headers {
     names: List<string>
     values: List<string>
@@ -282,7 +282,7 @@ pub class Headers {
         return self.values[index]
     }
 
-    /// The first value whose name matches, ASCII-case-insensitively — the
+    /// The first value whose name matches, ASCII-case-insensitively: the
     /// match a compliant reader must use when a field repeats.
     pub fn get(name: string) -> Option<string> {
         for index: int in 0..self.names.len() {
@@ -356,7 +356,7 @@ pub class Limits {
     pub max_header_count: int = 128
     pub max_header_bytes: int = 65536
     pub max_target_bytes: int = 8192
-    /// Caps every other head field llhttp does not bound itself — the status
+    /// Caps every other head field llhttp does not bound itself: the status
     /// reason phrase and the chunk-extension name and value. Each of those
     /// can otherwise run for as long as the peer keeps sending.
     pub max_head_span_bytes: int = 16384
@@ -369,7 +369,7 @@ pub class Limits {
 /// What `feed` can hand back, in message order: exactly one `head`, any
 /// number of `body` chunks, optional `trailers`, then `done`. An upgrade
 /// surfaces as `upgraded` carrying the bytes that arrived after the
-/// message — the parser is finished at that point and the connection
+/// message: the parser is finished at that point and the connection
 /// belongs to the next protocol.
 pub enum RequestEvent {
     head(request: Request)
@@ -435,7 +435,7 @@ class ParserCore {
     upgrade: bool = false
     // Latches. A parse failure does not throw away the events that arrived
     // before it: the failing call still returns them, the error is stored
-    // here, and every later call replays it — so a pipelined buffer whose
+    // here, and every later call replays it, so a pipelined buffer whose
     // third message is malformed still yields the first two.
     failed: bool = false
     fail_msg: string = ""
@@ -508,7 +508,7 @@ class ParserCore {
         return self.pending_text.to_string()
     }
 
-    // The previous message's identical string instead of a fresh allocation —
+    // The previous message's identical string instead of a fresh allocation:
     // the shape of every keep-alive connection, where a peer repeats its
     // target and headers byte-for-byte. Comparisons are exact, and the spare
     // belongs to this parser alone, so nothing crosses connections.
@@ -596,7 +596,7 @@ class ParserCore {
     }
 
     // Resets per-message state after `done`, keeping the connection-level
-    // latches — this is what makes keep-alive and pipelining work.
+    // latches: this is what makes keep-alive and pipelining work.
     fn reset_message() {
         self.method_text = ""
         self.target_text = ""
@@ -681,7 +681,7 @@ class ParserCore {
                     return self.run_result(request_out.len(), response_out.len())
                 }
                 if kind == 11 {
-                    // A body chunk streams straight out, as its own Bytes —
+                    // A body chunk streams straight out, as its own Bytes:
                     // the caller keeps it after this buffer is reused.
                     self.seal_pending()
                     let text: Bytes = data.slice(span_from, span_from + span_len)
@@ -712,8 +712,8 @@ class ParserCore {
                             return self.run_result(request_out.len(), response_out.len())
                         }
                     }
-                    // Every other head span — the status reason phrase and
-                    // the chunk-extension name and value — accumulates here
+                    // Every other head span: the status reason phrase and
+                    // the chunk-extension name and value: accumulates here
                     // too, and llhttp bounds none of them. Without this, a
                     // peer sending `1;` and then token bytes forever, or a
                     // reason phrase with no CRLF, grows this buffer until the
@@ -876,7 +876,7 @@ pub class RequestParser {
         return parser
     }
 
-    /// Feeds bytes. Events come back in message order; an error is final —
+    /// Feeds bytes. Events come back in message order; an error is final:
     /// kind `protocol` for a malformed message, `too_large` for a crossed
     /// bound, `closed` once the parser is done (failed or upgraded).
     pub fn feed(data: Bytes) -> Result<List<RequestEvent>> {
@@ -893,7 +893,7 @@ pub class RequestParser {
         return ok(move events)
     }
 
-    /// Feeds one checked range, appending events into a caller-owned list —
+    /// Feeds one checked range, appending events into a caller-owned list:
     /// the allocation-free form for a server's read loop. The caller clears
     /// the list between feeds; events are valid until then.
     pub fn feed_range_into(data: Bytes, from: int, to: int,
@@ -911,7 +911,7 @@ pub class RequestParser {
 
     /// Hands a delivered request head back for reuse. The next message fills
     /// this shell instead of allocating one, and reuses its target and header
-    /// strings when the peer repeats them byte-for-byte — the shape of every
+    /// strings when the peer repeats them byte-for-byte: the shape of every
     /// keep-alive connection. Only recycle a request nothing will read again:
     /// the parser rewrites every field in place.
     pub fn recycle(done: Request) {

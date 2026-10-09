@@ -3,7 +3,7 @@ set -euo pipefail
 
 # A freed large allocation must leave the resident set. The runtime maps a
 # Bytes or List backing past its threshold instead of malloc'ing it, so freeing
-# one unmaps its pages and `ps` stops counting them — where a plain free on
+# one unmaps its pages and `ps` stops counting them, where a plain free on
 # macOS only marks the pages reclaimable and leaves them resident until the
 # machine is under pressure.
 #
@@ -15,13 +15,13 @@ set -euo pipefail
 # 32 MiB; without it, near zero on macOS.
 #
 # Three shapes: a Bytes backing and a List<int> backing (the rt_big path) and
-# a large string (a non-pooled beans_alloc object — the rt_obj path). The
+# a large string (a non-pooled beans_alloc object, the rt_obj path). The
 # native backend is the definitive test: a program's Bytes, its List<int> and
 # its string are each one real runtime allocation there. In the tree
 # interpreter a program's Bytes is still a real runtime Bytes (so its drop is
 # asserted too), but a program's List<int> is 131072 boxed interpreter values
-# and its string is the interpreter's own churned storage — not one runtime
-# allocation — so those two are only run, not asserted.
+# and its string is the interpreter's own churned storage, not one runtime
+# allocation, so those two are only run, not asserted.
 
 cd "$(dirname "$0")/.."
 BEANSC=${BEANSC:-./build/beansc}
@@ -122,8 +122,8 @@ echo "  interp records ran (base=${i_base}K allocated=${i_ar}K freed=${i_fr}K); 
 # that crosses the threshold is not a realloc: it is a fresh block, a memcpy of
 # the overlap and a release of the old one, and so is a grow of a block that is
 # already mapped. test/cases/big_realloc.b drives every call site that can do
-# that — push, reserve and resize on a Bytes, push, reserve and insert on a
-# List — starting once below the threshold so the grow crosses it and once
+# that, push, reserve and resize on a Bytes, push, reserve and insert on a
+# List, starting once below the threshold so the grow crosses it and once
 # above so it is map-to-map, and prints a crc32 or a positional digest of the
 # result. Both backends must print the same lines and both must match the
 # golden, so a copy that started at the wrong offset, stopped short, or landed
@@ -134,7 +134,7 @@ echo "checking a grown backing keeps its bytes across the map threshold"
 # threshold silently moves the cases to the wrong side: they stop crossing it
 # and go on passing, having tested nothing. The same is true of the records
 # phase above, whose 262144-byte blocks are the first doubling step at or over
-# the threshold. So the number itself is pinned here — not as a test of the
+# the threshold. So the number itself is pinned here, not as a test of the
 # value, but so that changing it fails loudly and sends whoever changed it back
 # to retune the sizes in both files.
 want_threshold='#define RT_BIG_MMAP_MIN (256u * 1024u)'

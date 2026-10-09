@@ -2,7 +2,7 @@
 #
 #   irm https://github.com/beans-lang/beans/releases/latest/download/beans-install.ps1 | iex
 #
-# Only built-in PowerShell is used — Invoke-WebRequest to download, and .NET
+# Use built-in PowerShell and .NET only: Invoke-WebRequest downloads the archive,
 # for the checksum and the unpacking. No jq, no Python, no Node, no Git, and no
 # administrator rights: everything lands under the user's LOCALAPPDATA by
 # default.
@@ -57,7 +57,7 @@ function Get-Sha256([string] $Path) {
     return $text.ToString()
 }
 
-# Expand-Archive is PowerShell 5, so ZipFile does the work on every engine —
+# ZipFile supports every engine with Invoke-WebRequest, including PowerShell 4;
 # one path, which is the one every run exercises. PowerShell 7 already has the
 # type; Windows PowerShell needs the assembly loaded first.
 function Expand-Zip([string] $Archive, [string] $Destination) {

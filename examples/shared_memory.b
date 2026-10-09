@@ -1,17 +1,5 @@
-// Shared memory.
-//
-// A POSIX shared-memory object is a named region that several processes map at once.
-// Writes through one mapping are visible through every other — it is the cheapest way
-// for two processes to agree on a number without a pipe or a socket.
-//
-// It comes back as an ordinary `MMap`, because shared memory is a *source* of a
-// mapping rather than a new kind of thing: the same accessors, and the same
-// deterministic unmap when the handle goes away.
-//
-// The size is stated on every open, in both modes. `fstat` on a shared-memory object
-// reports a page-rounded size — 16384 for a 64-byte object on macOS — so a reader that
-// trusted it would get a length its writer never agreed to. Stating it keeps both
-// sides on the same protocol.
+// POSIX shared-memory objects map to ordinary `MMap` handles; mappings share writes across processes.
+// Supply the agreed logical size on every open because `fstat` reports page-rounded allocation size.
 
 import std.io
 
@@ -31,8 +19,7 @@ fn main() {
         err(e) => io.println("create failed: {e.kind}")
     }
 
-    // Open it again — a second mapping of the same object, which is what another
-    // process would get. The values written through the first mapping are there.
+    // The second mapping sees values written through the first.
     match MMap.open_shared_memory(name, 128, false) {
         ok(again) => io.println("second mapping sees {again.get_u64(0)} {again.get_u32(8)}"),
         err(e) => io.println("open failed: {e.kind}"),

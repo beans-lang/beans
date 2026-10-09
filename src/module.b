@@ -16,7 +16,7 @@ import std.time
 // namespace with no "::" at all.
 //
 // A package's canonical ID is the module name its own beans.pot declares,
-// dotted with any subpackage directories under it — never the path the
+// dotted with any subpackage directories under it: never the path the
 // importer happened to write. `require path "../dep"` and
 // `require github.com/acme/dep v1` both give `dep`, so a program means the
 // same thing by `dep.Thing` however it obtained dep, and reflection reports
@@ -94,7 +94,7 @@ fn symbol_text(key: string) -> string {
 }
 
 // One name selected in `import {…} from path`: the symbol `name` of the
-// import's target, bound in its own file as `binding` — the `as` alias
+// import's target, bound in its own file as `binding`: the `as` alias
 // when one was written, the name itself otherwise.
 class NamedImport {
     name: string
@@ -190,7 +190,7 @@ struct ModuleLink {
 // `import_path` is the package's identity: the canonical ID every importer
 // resolves to, built from the module name its manifest declares. `name` is
 // the declared `package` clause, used as the default import binding. One
-// module name is one package — a name required from two different roots is
+// module name is one package: a name required from two different roots is
 // refused, so an identity is never ambiguous.
 class LoadedPackage {
     import_path: string
@@ -477,15 +477,15 @@ fn manifest_link_arguments(links: List<ModuleLink>,
 }
 
 // `cflags` manifest rows: extra Clang flags for the C sources a package
-// declares with `csrc`. They are scoped to the package that wrote them — a
-// dependency's -D must never reach another package's C — and selector-filtered
+// declares with `csrc`. They are scoped to the package that wrote them: a
+// dependency's -D must never reach another package's C, and selector-filtered
 // exactly like `link` and `csrc`.
 //
 // Flags arrive as separate words rather than one quoted string so that a path
 // with a space stays one argument: manifest_words already handles the quoting,
 // and re-splitting a joined string is how that bug gets written.
 //
-// A flag that names a **directory** — -I, -iquote, -isystem, -idirafter, -F —
+// A flag that names a **directory**: -I, -iquote, -isystem, -idirafter, -F:
 // resolves a relative value against the declaring package, exactly as a `csrc`
 // path does. An absolute value passes through untouched, and -include and
 // -imacros are left alone because they name a file the include search looks up.
@@ -793,7 +793,7 @@ class ModuleLoader {
                     })
                 }
             } else if words[0] == "csrc" {
-                // csrc <selector> "<file.c>" — a C source this package
+                // csrc <selector> "<file.c>": a C source this package
                 // owns; the toolchain compiles it, so the package ships
                 // no prebuilt binaries and pushes no build step onto
                 // consumers. Rows propagate exactly like link rows.
@@ -815,7 +815,7 @@ class ModuleLoader {
                     })
                 }
             } else if words[0] == "cflags" {
-                // cflags <selector> <flag> [<flag>...] — extra Clang flags
+                // cflags <selector> <flag> [<flag>...]: extra Clang flags
                 // for this package's own csrc rows. Every flag is part of
                 // the object's cache key, so changing one recompiles rather
                 // than reusing an object built with the old set.
@@ -1264,7 +1264,7 @@ class ModuleLoader {
     }
 
     // Import bindings are per file, so they are settled once every package's
-    // declared name is known — an import's default name is what its target
+    // declared name is known: an import's default name is what its target
     // declares, not the last segment of the path that reached it.
     fn bind_imports() {
         for package: LoadedPackage in self.packages {
@@ -1993,12 +1993,7 @@ class ModuleLoader {
         return false
     }
 
-    // Editors ask about one file, and the entry a project loads through is
-    // rarely that file. A library root that imports nothing is the common
-    // shape — a module root is often an empty `package` clause and no more —
-    // and loading through it reaches exactly one file, leaving every other
-    // file in the project with nothing to answer from. So once the entry is
-    // in, the file the editor is asking about gets its package loaded too.
+    // Load the editor-requested file even when the project entry imports no files.
     //
     // A compiler build never sets `editor_file`, so nothing here can change
     // what `beansc build` compiles.

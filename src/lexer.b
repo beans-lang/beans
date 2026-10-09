@@ -99,8 +99,8 @@ class Lexer {
         self.last_kind = "newline"
     }
 
-    // True when the next significant text begins a member access — `.name`
-    // — so the newline before it must not end the statement (a fluent chain
+    // True when the next significant text begins a member access: `.name`
+    //, so the newline before it must not end the statement (a fluent chain
     // may break before the dot). `..` stays a range operator and anything
     // else ends the statement as usual. Looks ahead without consuming;
     // comments are as transparent here as they are between tokens.
@@ -287,14 +287,14 @@ class Lexer {
             // A raw literal nested in an interpolation is bytes: its braces
             // do not open slots and its backslashes are not escapes. Consume
             // it whole, the same way the top level does, so the outer
-            // string's structure survives — `"{r"\d+"}"` must keep `\d` a
+            // string's structure survives: `"{r"\d+"}"` must keep `\d` a
             // regex, not read it as an unknown escape.
             //
             // `raw_open_at`, not `raw_hashes_at`: at the top level a name is
             // scanned whole before `r"` is ever looked for, so `str"…"` is a
             // name and a string there. Inside an interpolation this loop
             // walks byte by byte and would meet that `r` on its own, so the
-            // rule the top level keeps has to be asked for by name — and it
+            // rule the top level keeps has to be asked for by name, and it
             // is the rule every walker re-reading this token applies.
             if interpolation_depth > 0 && !inner_string &&
                raw_open_at(
@@ -353,7 +353,7 @@ class Lexer {
     // `r"…"` and `r#"…"#`: the body is bytes, not syntax. Nothing in it is
     // an escape and nothing in it opens an interpolation, so a route
     // template, a regex or a Windows path is written the way its own reader
-    // spells it. Newlines are allowed — the terminator is explicit, so there
+    // spells it. Newlines are allowed: the terminator is explicit, so there
     // is no line to guess the end of.
     fn raw_string_ahead() -> bool {
         var at: int = self.pos + 1

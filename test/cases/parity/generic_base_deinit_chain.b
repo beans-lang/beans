@@ -1,6 +1,6 @@
 // Issue #119: a generic base's deinit is filed under the wrong key when the
 // hierarchy has a *middle* class, so the native backend ran the base body
-// twice — once as the leaf's own release (a raised base wrongly filed under
+// twice, once as the leaf's own release (a raised base wrongly filed under
 // the leaf's plain name) and once as the middle class's parent.
 //
 // The existing generic_base_deinit.b has only a direct subclass, so it never
@@ -13,7 +13,7 @@ package main
 
 import std.io
 
-// ---- A: shape 1 — generic base + a middle that overrides deinit + a leaf
+// ---- A: shape 1, generic base + a middle that overrides deinit + a leaf
 // that declares none. The leaf's release row must be the middle's deinit
 // (the nearest declared one), and the middle chains into the base itself.
 class A<T> {
@@ -45,7 +45,7 @@ class R extends Q {
 }
 class S extends R { fn init() { super.init() } }
 
-// ---- C: shape 2 — deinit on the generic base only; middle and leaf declare
+// ---- C: shape 2, deinit on the generic base only; middle and leaf declare
 // none. The extra native release only appeared when a Mid was *also* built
 // elsewhere in the program, so both objects are constructed here.
 class G<T> {
@@ -57,7 +57,7 @@ class Gm extends G<int> { fn init() { super.init(3) } }
 class Gl extends Gm { fn init() { super.init() } }
 
 // ---- D: one generic base with two different instantiations whose subclasses
-// collide differently — Tw<int> under one leaf, Tw<string> under another.
+// collide differently, Tw<int> under one leaf, Tw<string> under another.
 // Each leaf's base row must be its own instantiation's deinit, not the other.
 class Tw<T> {
     priv held: T

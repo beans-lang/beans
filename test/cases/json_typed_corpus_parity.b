@@ -3,7 +3,7 @@ package main
 // The same JSONTestSuite corpus json_typed_corpus_runner.b drives, asked the
 // one question that runner cannot ask: do the two backends answer alike?
 //
-// Typed decoding used to be native only — under `beansc run` the stdlib body
+// Typed decoding used to be native only, under `beansc run` the stdlib body
 // nobody had replaced answered a plain `err(...)`, so every line here would
 // have read ERR while a built binary accepted half the corpus, and a program
 // branching on the result took a different branch on each backend with no
@@ -27,7 +27,7 @@ import std.path
 @json.allow_unknown
 struct AnyObject {
     // A key no corpus document uses, so every key a document does carry is an
-    // unknown the decoder has to skip-validate — which walks its value,
+    // unknown the decoder has to skip-validate, which walks its value,
     // whatever JSON that is.
     pub jsontestsuite_marker_field: Option<int>
 }

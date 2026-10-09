@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Package clauses, canonical package identity, file-scoped import bindings and
-# import cycles — checked against both compilers, so the two can never drift.
+# import cycles, checked against both compilers, so the two can never drift.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -10,7 +10,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 compilers=("$root/build/beansc")
 
-# Both compilers accept it, interpret it, and build it — and every one of those
+# Both compilers accept it, interpret it, and build it, and every one of those
 # four outputs is the same text.
 accept() {
     local entry=$1 expected=$2 label=$3
@@ -515,7 +515,7 @@ accept "$shadow/main.b" "$tmp/shadow.expected" std-shadow
 # A dependency that imports its own subpackage: the app's
 # `example.test/acme/dep/sub` and the dependency's own `dep.sub` must land on
 # one canonical identity, so the package loads once and the types match.
-# Everything here is local git — no network.
+# Everything here is local git, no network.
 echo "checking remote package identity"
 remote="$tmp/remote"
 mkdir -p "$remote/source/sub" "$remote/source/kit/inner" \
@@ -666,8 +666,8 @@ printf '42\n42\n7\n84\n3\n3\ndep.Thing\ndep.sub.Badge\ndepkit.Tool\ndep.mark\n' 
     fi
 )
 
-# One module name is one package. Now that the name a package declares — and
-# not the path that reached it — is its identity, the same name arriving from
+# One module name is one package. Now that the name a package declares, and
+# not the path that reached it, is its identity, the same name arriving from
 # two different roots would give two packages one identity. Refuse it where it
 # is written, rather than letting whichever import ran first decide.
 clash="$tmp/name-clash"

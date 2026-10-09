@@ -1,7 +1,7 @@
 // What a catch frame does NOT catch (issue #145, spec/CONCURRENCY.md).
 //
 // The frame is the call, so a panic outside the call is outside the frame:
-// this program contains one call, catches it, and then fails on its own — and
+// this program contains one call, catches it, and then fails on its own, and
 // that second failure ends the process with the ordinary report and exit 3,
 // with its frames abandoned, exactly as a program that never contained
 // anything. Argument evaluation is outside too, and the last case proves it:

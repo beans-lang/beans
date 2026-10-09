@@ -1,5 +1,5 @@
 // Every wall `contained` refuses, in one program (issue #145). Each is a
-// refusal about the program, at check time — none of them may reach a backend.
+// refusal about the program, at check time, none of them may reach a backend.
 import std.io
 
 struct Point {

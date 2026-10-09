@@ -5,7 +5,7 @@ import app.limits
 import {MAX_FRAME, FLAGS, SLOTS} from app.limits
 
 // A cross-package const sizes a fixed array (#59), reached both ways a
-// consumer can spell it, in a signature and in a field — the positions whose
+// consumer can spell it, in a signature and in a field, the positions whose
 // types are laid out before this package's own bodies are checked.
 struct Row { cells: [int; limits.SLOTS] }
 

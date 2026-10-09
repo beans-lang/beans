@@ -10,12 +10,12 @@ trap 'rm -rf "$tmp"' EXIT
 #   thumbv7em-none-eabi        a Cortex-M4, run on QEMU's MPS2-AN386
 #   riscv32-unknown-none-elf   RV32IMAC, run on QEMU's `virt` with no bootloader
 #
-# The image is built inside the Linux container — Apple clang has no RISC-V backend and
-# no lld — and executed there under qemu-system. Compile-only would not be a claim that
-# these targets work: the two bugs this file exists to catch (a class descriptor indexed
-# in pointers instead of bytes, and a 64-bit flag truncated through __builtin_expect's
-# `long`) both compiled perfectly and produced a program that silently skipped every
-# `deinit`.
+# Run both targets under qemu-system; compile-only checks miss runtime ABI bugs.
+
+
+
+
+
 
 echo "checking the layout engine reports 32-bit facts for both boards"
 # Host-only, and the reason these targets were blocked until the layout work landed.
@@ -136,7 +136,7 @@ grep -qF "known features are m, a, c, f, d" "$tmp/feat"
 echo "checking closure capture masks count four-byte slots"
 # The box is {fnptr, capture cells...} at fixed 8-byte offsets, but the
 # walker strides by pointer size: on these boards the cell at byte 8 is
-# mask slot 2, meta 33 — slot 1 would name the fnptr's high half and the
+# mask slot 2, meta 33; slot 1 would name the fnptr's high half and the
 # cell would never be released.
 cat >"$tmp/capture.b" <<'CAPTURE'
 import std.io
@@ -232,7 +232,7 @@ FREE="-O2 -ffreestanding -fno-stack-protector -D_FORTIFY_SOURCE=0"
 RTFLAGS="-DBEANS_RT_PROFILE=1 -DBEANS_RT_INT128=0"
 
 # libgcc, and only libgcc: the soft-float and 64-bit-integer helpers. Clang is still the
-# compiler and ld.lld still the linker — the bare-metal GCCs are here for one archive
+# compiler and ld.lld still the linker; the bare-metal GCCs provide one archive
 # each, because Ubuntu ships compiler-rt for the host architecture only.
 ARM_LIBGCC=$(arm-none-eabi-gcc -mcpu=cortex-m4 -mfloat-abi=soft -print-libgcc-file-name)
 RV_LIBGCC=$(riscv64-unknown-elf-gcc -march=rv32imac -mabi=ilp32 -print-libgcc-file-name)
@@ -292,9 +292,9 @@ stat -c "%n %s" beans_arm.elf beans_rv.elf >sizes.txt
 echo "  ($(tr '\n' ' ' <"$tmp/sizes.txt"))"
 
 echo "checking the freestanding runtime still asks the world for nothing hosted"
-# The list is short on purpose. Anything outside it means a libc or pthread call came
-# back into a profile that has neither — which on these boards is not a warning, it is a
-# symbol no linker on earth can resolve.
+# The allowed symbols keep libc and pthread dependencies out of freestanding profiles.
+
+
 for arch in arm rv; do
     while read -r symbol; do
         case "$symbol" in
@@ -323,10 +323,10 @@ for arch in arm rv; do
 done
 
 echo "checking both boards agree with the interpreter, byte for byte"
-# The whole claim. Three machines — the interpreter, a Cortex-M4 and an RV32 — running one
-# source and printing the same bytes. A 32-bit mistake anywhere in the object ABI shows up
-# here as a wrong number, a missing line or a hang, which is exactly how the descriptor
-# and __builtin_expect bugs were found.
+# Compare interpreter, Cortex-M4, and RV32 output byte for byte to catch 32-bit ABI bugs.
+
+
+
 ./build/beansc run examples/embedded.b >"$tmp/interp.out"
 diff -u "$tmp/interp.out" "$tmp/arm.out"
 diff -u "$tmp/interp.out" "$tmp/rv.out"
@@ -349,7 +349,7 @@ grep -q '^cleared, now 0$' "$tmp/rv.out"
 grep -q '^closing left after 3 samples$' "$tmp/arm.out"
 grep -q '^closing left after 3 samples$' "$tmp/rv.out"
 # Virtual dispatch. The descriptor's method table starts one i64 in, but codegen used
-# to index it in pointer slots — right at 8 bytes, and on these boards a jump through
+# to index it in pointer slots. At byte 8, a jump through
 # the high half of the class id. Six implementations forces the fully indirect path.
 grep -q '^six pins drive a total strength of 15$' "$tmp/arm.out"
 grep -q '^six pins drive a total strength of 15$' "$tmp/rv.out"
@@ -357,7 +357,7 @@ grep -q '^six pins drive a total strength of 15$' "$tmp/rv.out"
 echo "checking inline assembly masks interrupts on both boards"
 # std.asm's `machine` rows exist because a microcontroller has to be able to turn
 # interrupts off and there is no intrinsic for it. The interpreter cannot model those, so
-# this is the only place they are executed rather than only emitted — and the program
+# this is the only place they are executed rather than only emitted. The program
 # carrying on afterwards is the evidence the instruction assembled to what it says.
 for board in arm rv; do
     diff -u - "$tmp/crit_$board.out" <<'EXPECTED'

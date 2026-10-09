@@ -194,8 +194,8 @@ partial class LlvmTextEmitter {
         if instruction.resolved == "f32.round" {
             // The convert saturates like every other float-to-int step: a bare
             // fptosi is poison once the rounded value leaves int's range, and
-            // beans_f64_round — the f64 twin, and the interpreter's answer for
-            // both widths — clamps.
+            // beans_f64_round: the f64 twin, and the interpreter's answer for
+            // both widths: clamps.
             self.require_declare(
                 "llvm.round.f32",
                 "float @llvm.round.f32(float)")
@@ -352,7 +352,7 @@ partial class LlvmTextEmitter {
         // signed predicate answered `false < true` with false. `Order` on a
         // bool is false before true (the interpreter's tree_value_less says
         // so, and List<bool>.sort and max/min have always agreed), and only
-        // a generic body can spell the comparison — a bare `false < true` is
+        // a generic body can spell the comparison: a bare `false < true` is
         // refused as an unordered operand.
         let prefix: string =
             if llvm_type_is_unsigned(type) ||
@@ -642,7 +642,7 @@ partial class LlvmTextEmitter {
                 self.type_text(element)
             var compare: string = ""
             // An element compares the way `Eq` compares it, so a float
-            // element goes through its bits — the same rule emit_inline_equal
+            // element goes through its bits: the same rule emit_inline_equal
             // states, reached here because a bare array `==` never builds one.
             var compared_llvm: string = element_llvm
             if llvm_type_is_integer(element) ||
@@ -770,8 +770,8 @@ partial class LlvmTextEmitter {
                     instruction.text == ">=") {
                     if declaration.repr != "" {
                         // enum(u8): the value is the bare tag. `Order`
-                        // compares it unsigned — the same u8 the marker
-                        // promises — and == / != are eq / ne of that tag.
+                        // compares it unsigned: the same u8 the marker
+                        // promises, and == / != are eq / ne of that tag.
                         let predicate: string =
                             self.integer_compare_predicate(
                                 instruction.text,
@@ -785,7 +785,7 @@ partial class LlvmTextEmitter {
                            declaration) {
                         // payload-free enum: the value points at the
                         // declaration-order tag word (emit_variant). Load
-                        // it and compare — `Order` reads the same tag
+                        // it and compare: `Order` reads the same tag
                         // equality does, no call. Signed like the
                         // interpreter's int_data tag, which agrees with
                         // unsigned across the non-negative tag range.
@@ -948,7 +948,7 @@ partial class LlvmTextEmitter {
     // by exactly this, and under a partial order its descent reads "neither
     // less nor greater" as "found it" and overwrites an unrelated key.
     // Flipping the magnitude bits of a negative lays the float line out as
-    // signed integers in totalOrder — the same key rt_f64_total_key builds in
+    // signed integers in totalOrder: the same key rt_f64_total_key builds in
     // runtime/beans_rt.c and tree_float_total_key builds for the interpreter.
     fn emit_total_float_compare(
         instruction: MirInstruction,
@@ -1002,10 +1002,10 @@ partial class LlvmTextEmitter {
     //
     // A nested List is that shape no longer. request_value_eq answers a
     // List with a structural comparator of its own, so a nested list takes
-    // the custom kind and the runtime calls it — which is what the
+    // the custom kind and the runtime calls it, which is what the
     // interpreter has always done.
     // The thunk it answers is already spelled the way LLVM wants it after
-    // `ptr ` — a global name carrying its own `@`, or the literal `null`.
+    // `ptr `: a global name carrying its own `@`, or the literal `null`.
     // It used to carry a second one, which emit_list_contains stripped back
     // off and emit_list_equal did not: `List<Bytes> ==` and
     // `List<payload enum> ==` wrote `ptr @@.next.eq0` into the module and
@@ -1075,8 +1075,8 @@ partial class LlvmTextEmitter {
 
     // Two lists are equal when they hold the same elements in the same order,
     // which is what the interpreter has always answered. Elements compare the
-    // way `contains` scans for them — by identity for a class, by content for
-    // a string — with one extra route for an element wider than a slot,
+    // way `contains` scans for them: by identity for a class, by content for
+    // a string: with one extra route for an element wider than a slot,
     // whose structural equality is captured into a thunk the runtime calls
     // by address.
     //
@@ -1318,7 +1318,7 @@ partial class LlvmTextEmitter {
             // classes that reach the interface, and that set is closed at
             // compile time. It is a byte per class id in a table of the
             // interface's own, read at the id the descriptor already
-            // carries — the same shape the class test has, one load wider
+            // carries: the same shape the class test has, one load wider
             // (#195).
             var interface_table: string = ""
             if target_id < 0 {
@@ -1445,8 +1445,8 @@ partial class LlvmTextEmitter {
         // A float that has no value in the target integer type saturates at
         // that type's own bounds, and NaN is zero (spec/SYNTAX.md, "Number
         // rules"). A bare fptosi/fptoui is *poison* for exactly those inputs,
-        // so `1e300 as i32` answered a different number on every build — an
-        // address, once the optimizer could see the constant — while the
+        // so `1e300 as i32` answered a different number on every build: an
+        // address, once the optimizer could see the constant, while the
         // interpreter answered something else again. The saturating intrinsics
         // are the rule written down, and they cost one instruction on every
         // target that has a saturating convert.

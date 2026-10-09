@@ -4,8 +4,8 @@
 # results (G3), trailing parameter defaults (G4), string literal matches,
 # and poisoned backend values after an unsupported-construct error (G9).
 #
-# It also holds the line the workspace's rule 4 draws — the checker must never
-# accept what a backend cannot emit — for the constructs that crossed it:
+# It also holds the line the workspace's rule 4 draws, the checker must never
+# accept what a backend cannot emit, for the constructs that crossed it:
 # `super` in a closure, and `+` on a string (issue #133).
 set -euo pipefail
 
@@ -78,7 +78,7 @@ if grep -q "cannot find v" "$tmp/poison.log"; then
     cat "$tmp/poison.log" >&2
     exit 1
 fi
-# the same file runs under the interpreter — that is what makes the refusal a
+# the same file runs under the interpreter, that is what makes the refusal a
 # backend gap rather than something the language does not offer
 ./build/beansc run test/cases/backend_poison_bad.b >"$tmp/poison.interp"
 test -s "$tmp/poison.interp"
@@ -93,11 +93,11 @@ check_bad panic_reach_bad.b "'after_loop' must return int — the body can finis
 
 # A closure has no receiver, so `super` has nothing to stand behind. The
 # checker used to accept this, the interpreter panicked at run time, and the
-# native backend refused to build — three answers to one program.
+# native backend refused to build, three answers to one program.
 check_bad super_closure_bad.b "super.name cannot be called from a closure — a closure has no receiver; call it outside the closure and capture the result"
 
 # There is no `+` for strings (spec/SYNTAX.md, "Strings"), and until issue
-# #133 only `beansc build` said so — `check` passed and the tree interpreter
+# #133 only `beansc build` said so, `check` passed and the tree interpreter
 # joined the two, so the rule arrived at release time as a message about the
 # LLVM emitter. All three entry points have to refuse it, in the program's own
 # terms, and every position an expression can occupy has to reach the refusal:
@@ -119,7 +119,7 @@ for command in check run build; do
         exit 1
     fi
     # `|| true`: grep -c exits 1 on no match, which under `set -e` would end
-    # this script with no output — the "0 shapes refused" case is exactly the
+    # this script with no output, the "0 shapes refused" case is exactly the
     # regression being watched for, so it has to reach the message below
     found=$(grep -c "error: '+' is not defined for string" \
         "$tmp/string_plus.$command" || true)
@@ -133,7 +133,7 @@ done
 # `unit` is what a function that returns nothing answers with, not a value.
 # Until issue #154 the checker treated it as an ordinary value type: every
 # generic instantiated at `unit` and every binding declared `unit` passed
-# `check`, ran under the tree interpreter, and failed only `beansc build` — in
+# `check`, ran under the tree interpreter, and failed only `beansc build`, in
 # the emitter's own words ("LLVM emitter does not support brewing 'unit' yet",
 # "does not support local type 'List<unit>' yet"). Same shape as string `+`
 # above, so it is held the same way: all three entry points refuse, none of
@@ -142,7 +142,7 @@ done
 #
 # The counts matter more than they look. Nine of these are `Result<unit>` and
 # only four of the nine spell the type: the rest are worked out by inference
-# — a `Brew<unit>` handle joined, a unit-returning method brewed and joined, a
+# Inferred cases include joined `Brew<unit>` handles, unit-returning methods, and
 # `TaskGroup<unit>` delivering through `next`, and a generic whose `T` binds to
 # `unit` through a function result. A refusal written on the spelling would
 # pass the written four and leave the inferred five reaching the emitter.

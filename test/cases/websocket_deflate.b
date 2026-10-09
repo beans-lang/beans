@@ -3,8 +3,8 @@
 // The suite is built around one idea: a compression bug is invisible from
 // inside the library, because a broken encoder and a matching broken decoder
 // agree with each other perfectly. So most of what follows puts a hand-built
-// peer on the other end of the socket — one that speaks RFC 6455 frames and
-// nothing else — and looks at what actually went on the wire.
+// peer on the other end of the socket, one that speaks RFC 6455 frames and
+// nothing else, and looks at what actually went on the wire.
 //
 //   **The negotiation is a pure function**, so it is tested as one: every
 //   offer the Autobahn suite sends, every shape a browser sends, and the
@@ -577,7 +577,7 @@ fn server_probe(offer: string, frames: Bytes, limit: int, finish: bool,
     // finishes the way a real peer finishes rather than by dropping the
     // socket. A stream that is meant to fail must NOT: wslay answers a
     // received close by queueing its own, and once that is queued the close
-    // this end wanted to send — the 1007 or 1009 that says what was wrong —
+    // this end wanted to send, the 1007 or 1009 that says what was wrong,
     // has nowhere to go. That is right on the wire and useless as evidence.
     var script: Bytes = frames.slice(0, frames.len())
     if finish {
@@ -717,7 +717,7 @@ fn part_server() -> Result<bool> {
     run_server_probe("one compressed text frame", browser_offer,
                      build_frame(1, true, 4, hello, true), 1048576, true)
 
-    // The same message split in two, with RSV1 only on the first frame —
+    // The same message split in two, with RSV1 only on the first frame,
     // which is where every peer that auto-fragments puts it.
     var fragmented: Bytes = new Bytes(0)
     let cut: int = hello.len() / 2
@@ -782,7 +782,7 @@ fn part_server() -> Result<bool> {
                      build_frame(1, true, 4, empty_payload, true), 1048576, true)
 
     // Text that is not valid UTF-8 once it decompresses. The framer cannot
-    // see it — the bytes are still compressed when it looks — so this is the
+    // see it, the bytes are still compressed when it looks, so this is the
     // check that only exists because the message got decompressed first.
     var mangled: Bytes = new Bytes(0)
     mangled.push(0xc3)
@@ -801,7 +801,7 @@ fn part_server() -> Result<bool> {
     // flush that would make no progress, and stripping four bytes off
     // nothing leaves nothing. The message is empty and neither DEFLATE
     // context moved, so the four bytes this end would append must not be
-    // inflated — on their own they are half a block header, and the
+    // inflated, on their own they are half a block header, and the
     // inflater would mis-read everything after. The message that follows is
     // there to prove it did not.
     var after_empty: Bytes = new Bytes(0)
@@ -855,7 +855,7 @@ fn exchange_messages() -> List<Bytes> {
 
 // One echo exchange over an already-wrapped pair, so every combination of
 // the four negotiated parameters can be driven without a handshake in the
-// way. The client sends each message twice — the second time is where a
+// way. The client sends each message twice, the second time is where a
 // carried-over context differs from a reset one, and where a bug that only
 // shows on the second message lives.
 fn pair_client(port: int, params: websocket.Deflate) -> Result<int> {
@@ -923,7 +923,7 @@ fn pair_client(port: int, params: websocket.Deflate) -> Result<int> {
 
 // One echo exchange over an already-wrapped pair, so every combination of
 // the negotiated parameters can be driven without a handshake in the way.
-// Each message goes twice — the second pass is where a carried-over context
+// Each message goes twice, the second pass is where a carried-over context
 // differs from a reset one, and where a bug that only shows on the second
 // message lives.
 fn pair_exchange(params: websocket.Deflate) -> Result<int> {
@@ -1129,7 +1129,7 @@ fn part_handshake() {
 // context per direction. `prefer` is that answer, and it can only ever narrow,
 // so every check here is one of two questions: did the preference reach the
 // header, and did the streams underneath do what the header said. The second
-// is the one that matters — a header naming a 512-byte window over an encoder
+// is the one that matters, a header naming a 512-byte window over an encoder
 // still using 32 KiB is a peer's problem, not this end's, and nothing inside
 // the library can see it.
 
@@ -1262,7 +1262,7 @@ fn narrow_wire_probe(label: string, offer: string, compress: bool,
         }
         err(problem) => {
             // A refusal is only worth anything if it happened *before* the
-            // 101 went out — a preference is this end's own configuration, so
+            // 101 went out, a preference is this end's own configuration, so
             // `accept` checks it before it looks at the peer's request and
             // long before it writes. The kind alone cannot see that: a check
             // moved below `write_all` would still answer `invalid` here while
@@ -1345,7 +1345,7 @@ fn narrow_trip_probe(label: string, offer: string,
 // just the one on `Connection`. This is the generic one underneath it, over a
 // `WebSocketTransport` rather than a `Connection`.
 //
-// `WebSocketTransport.accept` itself is not reachable from another package —
+// `WebSocketTransport.accept` itself is not reachable from another package,
 // a static call on a generic class infers no type argument from its arguments
 // and there is no spelling for an explicit one, which is true of `wrap` and
 // `upgrade` too and is why these free functions exist. Exercising

@@ -21,7 +21,7 @@ struct Later {
     }
 };
 
-// The workload is method calls only — push, pop, top, size — with no
+// The workload is method calls only: push, pop, top, and size, with no
 // user-level indexing, so there is no `[]` to turn into `.at()`: the tuned and
 // matched builds share this one path over the standard std::priority_queue.
 // (BEANS_MATCHED is defined by the runner for the matched build; it changes

@@ -166,7 +166,7 @@ BARRIER_X86
     --emit ir >/dev/null
 grep -qF 'call void asm sideeffect "mfence", "~{memory}"()' build/barrier_x86.ll
 # x86 is the one architecture with two syntaxes. Intel dialect is what lets the same
-# source spelling — destination first — mean the same thing here as on arm64.
+# source spelling, destination first, mean the same thing here as on arm64.
 grep -qF 'call i64 asm inteldialect "mov $0, $1", "=r,r"(i64 3)' build/barrier_x86.ll
 
 cat >"$tmp/embedded_asm.b" <<'EMBEDDED_ASM'
@@ -210,8 +210,8 @@ esac
 if [[ -n "$want" ]]; then
     # Between the assembler's inline-asm markers, so a compiler-generated move of the
     # same shape elsewhere in the file cannot make this pass. The two toolchains spell
-    # the markers differently — GNU as writes #APP/#NO_APP, Apple's writes
-    # "; InlineAsm Start"/"End" — so both are recognised.
+    # the markers differently, GNU as writes #APP/#NO_APP, Apple's writes
+    # "; InlineAsm Start"/"End", so both are recognised.
     awk '/APP|InlineAsm Start/{on=1; next} /NO_APP|InlineAsm End/{on=0} on{print}' \
         "$tmp/inline_asm.s" >"$tmp/inline.s"
     [[ -s "$tmp/inline.s" ]] || {
@@ -240,7 +240,7 @@ five squares through registers total 30
 EXPECTED
 
 echo "checking assembly is available in every runtime profile"
-# It needs no operating system — it is the machine itself — so a freestanding build has
+# It needs no operating system, it is the machine itself, so a freestanding build has
 # it, unlike sockets or clocks.
 ./build/beansc check --runtime freestanding "$tmp/barrier_arm.b" >/dev/null 2>&1 ||
     ./build/beansc check --target arm64-apple-darwin --runtime freestanding \

@@ -1,4 +1,4 @@
-// bun mandel.js — mirror of mandel.b / mandel.go (float math, no allocation)
+// Bun mirror of mandel.b and mandel.go (float math, no allocation).
 const size = Number(process.argv[2] ?? 1800);
 const seed = Number(process.argv[3] ?? 1);
 const w = size;

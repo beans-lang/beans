@@ -1,4 +1,4 @@
-// same package as main.b — no import needed between files of one package
+// Files in the same package do not need imports from each other.
 package main
 
 import std.io

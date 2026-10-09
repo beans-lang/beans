@@ -32,7 +32,7 @@ pub enum Level {
     high
 }
 
-// private — visible inside util only; importing packages can't call it
+// Private to this package; importing packages cannot call it.
 fn hidden() -> int {
     return 42
 }

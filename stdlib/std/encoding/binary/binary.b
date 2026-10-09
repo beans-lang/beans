@@ -2,7 +2,7 @@
 //
 // The native Bytes word accessors stay the storage primitives: they are
 // little-endian and panic when out of range. This package adds the checked
-// layer — explicit byte order, Result errors instead of panics, bit-preserving
+// layer: explicit byte order, Result errors instead of panics, bit-preserving
 // float conversion, cursors, and Go-compatible varints.
 //
 // Byte-order model: `ByteOrder.little`, `ByteOrder.big`, or
@@ -12,7 +12,7 @@
 // "eof", never a panic.
 //
 // Varints: `append_uvarint`/`read_uvarint` are unsigned LEB128 over the
-// 64-bit pattern — the same wire format as `Bytes.append_varint` and Go's
+// 64-bit pattern: the same wire format as `Bytes.append_varint` and Go's
 // `PutUvarint`. `append_varint`/`read_varint` are the signed zigzag form
 // matching Go's `PutVarint`: -1 encodes as 1, 1 as 2, and every value takes
 // its zigzag width rather than ten bytes for all negatives. `Bytes.
@@ -139,7 +139,7 @@ fn append_pattern(data: Bytes, width: int, pattern: u64, order: ByteOrder) {
 //
 // One scoped stack slot per conversion through RawPtr.with_local: the native
 // backend reuses the real stack slot and the interpreter copies through
-// aligned C storage — no heap allocation on either path.
+// aligned C storage: no heap allocation on either path.
 
 fn f64_bits(value: float) -> u64 {
     var scratch: u64 = 0

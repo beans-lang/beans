@@ -1,4 +1,4 @@
-// `beansc doctor` — what this installation can do, and the exact command to fix
+// `beansc doctor`: what this installation can do, and the exact command to fix
 // whatever it cannot.
 //
 // The point is that a user never has to read a Clang or linker error to find out

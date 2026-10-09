@@ -1,5 +1,5 @@
 // Casting NaN to decimal panics as decimal overflow, at the cast's
-// own position, identically in every implementation — the audit
+// own position, identically in every implementation, the audit
 // found the interpreter turning "nan" into coefficient 6752 and the
 // self-host tree interpreter panicking with its own source location.
 import std.io

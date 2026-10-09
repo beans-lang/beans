@@ -1,9 +1,9 @@
-// Driven by test/term.sh: enters raw mode and then panics, on purpose. A native
-// panic exits through exit(3) without unwinding, so the guard's deinit never
-// runs — the only thing that restores the terminal is the runtime's atexit
-// handler. The harness checks the terminal is cooked again after this dies,
-// which is the regression test for that handler. `raw` is used after the panic
-// point so the guard is alive when the panic fires, never dropped before it.
+// Verify the runtime's atexit handler restores raw terminal mode after a panic.
+
+
+
+
+
 import std.term
 import std.proc
 

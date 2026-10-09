@@ -2,7 +2,7 @@
 // handshake.
 //
 // `websocket_tls.accept` forwards to `websocket.accept_websocket`, and a
-// forward that drops its last argument still compiles — the preference would
+// forward that drops its last argument still compiles, the preference would
 // simply never arrive, and every check that does not run a handshake would
 // stay green. So this runs one: a real TLS listener on an ephemeral port, the
 // library on both ends, and the parameters the server settled on printed from
@@ -76,13 +76,13 @@ fn read_upgrade(stream: tls.TlsStream) -> Result<http.Request> {
 }
 
 // One connection. The client is a thread because a TLS handshake is a
-// conversation — neither side can be written out in full first, the way the
+// conversation, neither side can be written out in full first, the way the
 // plain-TCP probes do it. It captures the port and the path to the trust
 // roots, both plain values, and opens the file itself.
 //
 // The path is captured rather than read from `os.args()` inside the thread
 // because the two backends do not agree on what `os.args()` answers off the
-// main thread — the native build sees the process arguments and the tree
+// main thread, the native build sees the process arguments and the tree
 // interpreter sees none. That is a bug in `os.args()`, not here, and it is
 // not this file's to fix; capturing keeps this test measuring WebSocket.
 fn scenario(listener: tls.TlsListener, label: string, roots_path: string,

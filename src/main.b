@@ -315,7 +315,7 @@ fn system_link_block(package: string, selector: string) -> Result<string, string
     // The headers, not only the libraries. A library like GTK4 needs twenty
     // include directories, several carrying a version number or an
     // architecture tuple, and a manifest that listed them by hand would name
-    // one computer — which is the whole reason this command exists. Writing
+    // one computer, which is the whole reason this command exists. Writing
     // link rows and leaving the caller to find the headers left the harder
     // half undone.
     let compile_flags: List<string> =
@@ -805,7 +805,7 @@ fn main() {
             }
         } else if (args.len() == 4 || args.len() == 5) && args[1] == "add" &&
            args[2] == "--system" {
-            // The optional fifth word is the selector the rows carry — an OS
+            // The optional fifth word is the selector the rows carry: an OS
             // name or a triple, the same vocabulary every other manifest row
             // uses. Without it the rows say `all`, which is right for a
             // library a program needs everywhere and wrong for one that backs

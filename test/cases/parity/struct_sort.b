@@ -1,6 +1,6 @@
 // Sorting a list whose element is an inline record. The native backend
-// refused it — `sort_by` and `sort_by_key` only ever handled elements that
-// fit one eight-byte slot, plus a hand-written decimal path — while the
+// refused it, `sort_by` and `sort_by_key` only ever handled elements that
+// fit one eight-byte slot, plus a hand-written decimal path, while the
 // interpreter sorted them fine. crema could not build for this reason.
 //
 // A sort is a permutation, so the markers here are the real assertion: every
@@ -48,7 +48,7 @@ fn main() {
     for p: Pair in flat { order.push(p.index) }
     io.println("stable {order[0]} {order[1]} {order[2]} {order[3]} {order[4]}")
 
-    // a comparator reading two fields, descending — the shape crema uses
+    // a comparator reading two fields, descending, the shape crema uses
     flat.sort_by(fn(a: Pair, b: Pair) -> bool {
         if a.depth != b.depth { return a.depth > b.depth }
         return a.index > b.index

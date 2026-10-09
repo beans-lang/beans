@@ -4,7 +4,7 @@
 // native backend refused, so any package that parses input into a list and
 // compares it could run but not build.
 //
-// Elements compare the way the interpreter compares them — by content for a
+// Elements compare the way the interpreter compares them, by content for a
 // string, structurally for a record, by identity for a class. That last
 // distinction is the point of the class rows below: two separately built
 // instances holding equal fields are NOT equal, and a gate that only checked
@@ -41,7 +41,7 @@ fn main() {
     var f3: List<float> = [1.5, 9.5]
     io.println("float {f1 == f2} {f1 == f3}")
 
-    // a record holding a string and an Option — the crema shape
+    // a record holding a string and an Option, the crema shape
     var e1: List<Entry> = [Entry { key: "a", value: some("1") }]
     var e2: List<Entry> = [Entry { key: "a", value: some("1") }]
     var e3: List<Entry> = [Entry { key: "a", value: none }]
@@ -64,7 +64,7 @@ fn main() {
 
     // In branch position, not just interpolated. Wiring `is_empty` through
     // the length path once caught `string.is_empty()` on the way past and
-    // handed `br` an i64 where it wanted an i1 — invisible to a test that
+    // handed `br` an i64 where it wanted an i1, invisible to a test that
     // only ever printed the value.
     let blank: string = ""
     let filled: string = "abc"

@@ -4,15 +4,11 @@
 // watched signal is *blocked* and then read from a descriptor, so handling it is
 // ordinary code running at an ordinary moment.
 //
-// That is not a convenience — it removes a whole class of bug by construction. Inside a
-// real handler almost nothing is legal: no allocation, no locks, no reentrancy, and in
-// this language no reference counting and no cycle collection either. Deferring the
-// signal to a descriptor means none of those rules apply, because none of that code is
-// running when the signal arrives.
+// Signals are read from a descriptor, so normal code handles them outside a signal handler and avoids its restrictions on allocation, locks, and reentrancy.
 //
 // The descriptor is registerable with `std.poll`, so a program waits on signals and
 // sockets in the same call. Underneath it is `signalfd` on Linux and a private `kqueue`
-// with `EVFILT_SIGNAL` on macOS — a kqueue descriptor is itself readable when it has
+// with `EVFILT_SIGNAL` on macOS: a kqueue descriptor is itself readable when it has
 // events, so it nests inside the outer poller.
 //
 // **Watch before spawning threads.** Blocking applies to the calling thread, and threads
@@ -23,22 +19,19 @@ package signal
 
 import std.sig
 
-/// The signals that can be watched, by name. Numbers differ between platforms —
-/// `user1` is 10 on Linux and 30 on macOS — so the name is the portable part and the
+/// The signals that can be watched, by name. Numbers differ between platforms:
+/// `user1` is 10 on Linux and 30 on macOS, so the name is the portable part and the
 /// number comes from the C library.
 ///
-/// Deliberately absent: `kill` and `stop`, which cannot be blocked at all, and the fault
-/// signals (`segv`, `bus`, `fpe`, `ill`). Those are *synchronous* — they name an
-/// instruction that has already failed, so deferring one and carrying on means running
-/// the same faulting instruction again forever. Offering them would be offering a hang.
+/// Excludes un-blockable `kill`/`stop` and synchronous faults; deferring a fault would rerun the failed instruction.
 pub class Signal {
     /// Ctrl-C.
     pub static fn interrupt() -> Result<int> { return sig.number("interrupt") }
-    /// A polite request to exit — what `kill` sends by default.
+    /// A polite request to exit: what `kill` sends by default.
     pub static fn terminate() -> Result<int> { return sig.number("terminate") }
     /// The controlling terminal went away. Conventionally "reload your config".
     pub static fn hangup() -> Result<int> { return sig.number("hangup") }
-    /// Ctrl-\ — quit and dump core, by default.
+    /// Ctrl-\: quit and dump core, by default.
     pub static fn quit() -> Result<int> { return sig.number("quit") }
     /// Yours to define.
     pub static fn user1() -> Result<int> { return sig.number("user1") }
@@ -111,7 +104,7 @@ pub unique class Signals {
     }
 
     /// The signals that have arrived since the last call, consuming them. **Never
-    /// blocks** — nothing having arrived gives an empty list, which is not an error.
+    /// blocks**: nothing having arrived gives an empty list, which is not an error.
     ///
     /// A signal appears **at most once per call** however many times it was delivered.
     /// That is what the kernel promises on Linux (pending signals are a bitmask, so
@@ -130,7 +123,7 @@ pub unique class Signals {
         return ok(move out)
     }
 
-    /// The descriptor, **borrowed** — register it with a `poll.Poller` as readable and a
+    /// The descriptor, **borrowed**: register it with a `poll.Poller` as readable and a
     /// signal wakes the same wait a socket does. Never ownership.
     pub fn poll_handle() -> int {
         return self.fd

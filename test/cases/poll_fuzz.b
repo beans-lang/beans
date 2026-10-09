@@ -1,4 +1,4 @@
-// The poller op-stream fuzzer — random add/modify/remove/close/reopen/send/
+// The poller op-stream fuzzer, random add/modify/remove/close/reopen/send/
 // drain/wait interleavings against one poller, with wake storms arriving
 // from two other threads, all driven by a seeded PRNG so a failure replays
 // from its seed. What turns the noise into a fuzzer is the pair of oracles:
@@ -191,7 +191,7 @@ fn main() {
                             }
                         } else if action < 50 {
                             // Close and immediately reopen: the discipline is
-                            // remove-before-close, and the fuzzer follows it —
+                            // remove-before-close, and the fuzzer follows it,
                             // the ABA suite covers the violation. The reopened
                             // socket usually takes the same number.
                             if model.registered {
@@ -220,7 +220,7 @@ fn main() {
                             }
                         } else if action < 78 {
                             // Drain one, only when the model knows one is
-                            // there — a read on an empty socket would burn
+                            // there, a read on an empty socket would burn
                             // its timeout for nothing.
                             if model.queued > 0 {
                                 match keep[index].recv_from(8) {

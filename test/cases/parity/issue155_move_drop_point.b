@@ -1,5 +1,5 @@
 // #155: a `move` hands the value over where it is written, so the value dies
-// with whatever took it — and for a `move` parameter that is the callee's own
+// with whatever took it, and for a `move` parameter that is the callee's own
 // frame exit, not the caller's.
 //
 // The tree interpreter used to leave the spent binding pointing at the value.
@@ -9,13 +9,13 @@
 // checked program, two orders.
 //
 // The markers balanced on both sides, so the construct/release count this
-// gate pins saw nothing at all — only the ordered diff does. That is why
+// gate pins saw nothing at all, only the ordered diff does. That is why
 // every section below prints a line between the call and what follows it:
 // without that line the two orders are the same bytes.
 //
 // The rule is not about `unique` and not only about parameters, so this case
-// is neither. `unique` was incidental to how the issue was found — a plain
-// class diverged identically — and so did `let taken = move held` in a nested
+// is neither. `unique` was incidental to how the issue was found, a plain
+// class diverged identically, and so did `let taken = move held` in a nested
 // block with no call in sight. Every `move` in the language is one HIR node,
 // so a struct literal, a list literal, `some(...)`, a map store, a method, a
 // static, an interface implementation and a discard parameter all reached it.
@@ -25,12 +25,12 @@
 //   * a temporary passed straight into the same `move` parameter always
 //     agreed, because the caller had no slot to leave behind. Same parameter,
 //     same signature, two lifetimes decided by how the caller happened to
-//     produce the argument — which is what proved the interpreter was
+//     produce the argument, which is what proved the interpreter was
 //     contradicting itself rather than following its own rule;
 //   * a borrowed parameter owns nothing, and its argument must go on dying at
 //     the caller's scope exit;
-//   * a value the callee moves onward — into a field, into a further call,
-//     out through `return` — must NOT die at that callee's exit.
+//   * a value the callee moves onward, into a field, into a further call,
+//     out through `return`, must NOT die at that callee's exit.
 //
 // Order is the whole point, so the sections that carry several owned values
 // are wide on purpose: three moved-in parameters, not one, because reverse

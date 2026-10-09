@@ -1,9 +1,9 @@
 // The chunking-invariance fuzzer for std.http's public parser.
 //
 // The property: any byte-split of the same input produces the same parse.
-// A seeded generator builds random exchanges — methods, targets, header
+// A seeded generator builds random exchanges, methods, targets, header
 // sets, Content-Length and chunked bodies, extensions, trailers, pipelined
-// messages — and every exchange is parsed whole, then parsed again through
+// messages, and every exchange is parsed whole, then parsed again through
 // 1..8 random split points. Both parses reduce to a canonical summary
 // (body chunk boundaries are transport artifacts and fold away; everything
 // else must be identical, including the error and where it latched). Then
@@ -170,7 +170,7 @@ fn summarize(wire: Bytes, cuts: List<int>, out: List<string>) -> string {
         }
     }
     // EOF: completes an until-close body, surfaces a latched or truncation
-    // error — always part of honest parser usage.
+    // error, always part of honest parser usage.
     if failure == "" {
         match parser.finish() {
             ok(events) => {

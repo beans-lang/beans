@@ -4,7 +4,7 @@
 // wslay's, vendored under runtime/net; what lives here is the shape that
 // joins them and the rules RFC 6455 is strict about. Four decisions:
 //
-//   **A message, not a frame.** `receive` yields whole messages —
+//   **A message, not a frame.** `receive` yields whole messages:
 //   fragmentation, continuation frames and interleaved control frames are
 //   handled underneath, because every protocol built on WebSocket cares
 //   about messages and none of them care about frames.
@@ -18,14 +18,14 @@
 //   connections. Received pings are still reported, for callers who count.
 //
 //   **Close is a handshake, not a hangup.** `close` sends the close frame
-//   and waits, bounded, for the peer's — then closes the socket. A peer
+//   and waits, bounded, for the peer's: then closes the socket. A peer
 //   that never answers costs a timeout, never a hang.
 //
 //   **Compression is asked for, never assumed.** permessage-deflate
 //   (RFC 7692) is off unless a caller turns it on, because a DEFLATE
 //   context is a third of a megabyte per direction and a server holding a
 //   hundred thousand connections should not pay that by accident. When it
-//   is on, `max_message` bounds the message *after* it decompresses — the
+//   is on, `max_message` bounds the message *after* it decompresses: the
 //   only bound that means anything once a small frame can claim a large
 //   one.
 package websocket
@@ -133,8 +133,8 @@ fn headers_have_token(headers: http.Headers, name: string,
 // what a peer means when it names no window at all.
 //
 // 9 is the floor, not RFC 7692's 8. zlib's deflateInit2 documents that it
-// silently promotes a request for 8 to 9 — its encoder cannot emit a
-// 256-byte window — while inflateInit2 honours 8 exactly. Agreeing to 8
+// silently promotes a request for 8 to 9: its encoder cannot emit a
+// 256-byte window, while inflateInit2 honours 8 exactly. Agreeing to 8
 // would therefore put a stream on the wire that a peer reading it at 8
 // rejects, so an offer or a response naming 8 is refused. RFC 7692 makes
 // declining an offer the correct answer for a parameter an endpoint cannot
@@ -150,7 +150,7 @@ fn min_window_bits() -> int { return 9 }
 /// direction starts a fresh DEFLATE context for every message; a
 /// `max_window_bits` is that direction's LZ77 window, always 9..15 here.
 ///
-/// The same struct also spells a server's *preference* — what `accept` and
+/// The same struct also spells a server's *preference*: what `accept` and
 /// `negotiate_deflate` take as `prefer`. Read that way a `true` flag asks
 /// for a parameter and a `false` one has no opinion, while a
 /// `max_window_bits` is a ceiling and 15 is no opinion, because a
@@ -188,7 +188,7 @@ fn deflate_preference_ok(prefer: Option<Deflate>) -> bool {
 // Splits a header field value on one delimiter byte, ignoring delimiters
 // inside a quoted-string. RFC 6455 spells an extension parameter value as a
 // token *or* a quoted-string, and a quoted-string may hold a comma or a
-// semicolon — splitting on the raw byte would tear such a value in half and
+// semicolon: splitting on the raw byte would tear such a value in half and
 // then reject the halves.
 fn split_field(value: string, delimiter: int) -> List<string> {
     var parts: List<string> = []
@@ -286,67 +286,11 @@ fn read_extension_param(piece: string) -> ExtensionParam {
     }
 }
 
-/// Narrows an offer this end has read by what this end is willing to answer
-/// with. RFC 7692 §7.1 lets a server respond with *fewer* parameters than
-/// the offer asked for; this is that rule, one knob at a time, and it can
-/// only ever narrow. Each knob:
-///
-///   `server_no_context_takeover` — §7.1.1.1: "A server MAY include the
-///   "server_no_context_takeover" extension parameter in an extension
-///   negotiation response even if the extension negotiation offer being
-///   accepted by the extension negotiation response didn't include the
-///   "server_no_context_takeover" extension parameter." So a preference may
-///   turn it on. It may never turn it off, and here that is the RFC's rule
-///   rather than a choice: the same section defines acceptance itself as
-///   including the parameter — "A server accepts an extension negotiation
-///   offer that includes the "server_no_context_takeover" extension
-///   parameter by including the "server_no_context_takeover" extension
-///   parameter in the corresponding extension negotiation response" — so an
-///   accepted offer answered without it is not an acceptance.
-///
-///   `client_no_context_takeover` — §7.1.1.2: "A server MAY include the
-///   "client_no_context_takeover" extension parameter in an extension
-///   negotiation response", unconditionally, and "By including [it] in an
-///   extension negotiation response, a server prevents the peer client from
-///   using context takeover." So this is the one knob a server can spend
-///   the peer's memory budget with rather than its own, and a preference
-///   may turn it on. This section also permits the reverse — "the server
-///   may either ignore the parameter or use the parameter" — so clearing an
-///   offered `client_no_context_takeover` would be legal here where it is
-///   not in §7.1.1.1. It is still not done, for a reason that is this
-///   library's and not the RFC's: a preference is defined as narrowing
-///   only, so that adding one can never take away a parameter an existing
-///   caller already gets from the offer alone.
-///
-///   `server_max_window_bits` — §7.1.2.1: a server "accepts an extension
-///   negotiation offer with this parameter by including the
-///   "server_max_window_bits" extension parameter in the extension
-///   negotiation response to send back to the client with the same or
-///   smaller value as the offer", and it "MAY include [it] in an extension
-///   negotiation response even if the extension negotiation offer being
-///   accepted by the response didn't include" it. Those two together are
-///   the smaller of the preference and the offer, always — and reachable
-///   even against an offer that named no window at all.
-///
-///   `client_max_window_bits` — §7.1.2.2: "If a received extension
-///   negotiation offer doesn't have the "client_max_window_bits" extension
-///   parameter, the corresponding extension negotiation response to the
-///   offer MUST NOT include the "client_max_window_bits" extension
-///   parameter." When the offer does name it the server "may either ignore
-///   this value or use this value to avoid allocating an unnecessarily big
-///   LZ77 sliding window by including [it] ... with a value equal to or
-///   smaller than the received value" — the smaller of the two again. So a
-///   preference for the client's window is only reachable when the client
-///   named the parameter — bare, which is a browser saying "narrow me if
-///   you like", or with a value, which also caps how far it may be
-///   narrowed. When the offer named it not at all the preference is ignored
-///   and the client keeps its 32 KiB window; that is not a decline, because
-///   the offer is still one this end can honour.
-///
-/// `client_named_window` carries the one fact the parsed `Deflate` cannot:
-/// whether the offer's text mentioned `client_max_window_bits`. A bare
-/// mention and no mention at all both leave the window at 15, and §7.1.2.2
-/// turns entirely on telling them apart.
+/// Applies RFC 7692 §7.1 preference rules; preferences only narrow the response.
+/// `server_no_context_takeover` may be enabled but cannot be cleared if offered.
+/// `client_no_context_takeover` may be enabled; this API also never clears offered flags.
+/// Window sizes use the smaller bound. `client_max_window_bits` applies only when offered.
+/// `client_named_window` distinguishes a bare client window parameter from no parameter.
 fn deflate_narrow(agreed: Deflate, prefer: Option<Deflate>,
                   client_named_window: bool) -> Deflate {
     var server_reset: bool = agreed.server_no_context_takeover
@@ -379,13 +323,13 @@ fn deflate_narrow(agreed: Deflate, prefer: Option<Deflate>,
 // permessage-deflate offer, narrowed by `prefer`. `none` means this end
 // declines it: the extension is a different one, a parameter is unknown, a
 // parameter repeats, or a value names a window this end cannot compress to.
-// RFC 7692 makes all of those a decline — the next offer in the list gets
+// RFC 7692 makes all of those a decline: the next offer in the list gets
 // its turn, and a client whose offers are all declined simply gets no
 // compression.
 //
 // The narrowing happens here rather than to the returned struct, because
-// `seen_client_bits` — whether the offer's text named
-// `client_max_window_bits` — is the condition RFC 7692 §7.1.2.2 puts on
+// `seen_client_bits`: whether the offer's text named
+// `client_max_window_bits`: is the condition RFC 7692 §7.1.2.2 puts on
 // answering with a client window, and it does not survive the return.
 fn read_deflate_offer(offer: string, prefer: Option<Deflate>) -> Option<Deflate> {
     let parts: List<string> = split_field(offer, 59)
@@ -442,25 +386,8 @@ fn read_deflate_offer(offer: string, prefer: Option<Deflate>) -> Option<Deflate>
 /// `Sec-WebSocket-Extensions` a client offered, or `none` when there is
 /// nothing this end can agree to.
 ///
-/// A client may stack several offers, most-wanted first, across one header
-/// or several; a server takes the first it can honour and declines the rest,
-/// which is what RFC 7692 asks for and why an offer it cannot read is never
-/// a handshake failure.
-///
-/// `prefer` narrows what this end will agree to, and can only narrow:
-/// `deflate_narrow` states the RFC 7692 rule for each of the four
-/// parameters. `none` — the default — agrees to whatever the first readable
-/// offer asked for, which is what a server did before there was anything
-/// else to ask for.
-///
-/// A preference this end cannot itself honour — a window outside 9..15 —
-/// declines every offer and answers `none`. It is a mistake in the program,
-/// and agreeing to nothing is the only answer that cannot become a wrong
-/// line on the wire: `accept` refuses such a preference outright, because it
-/// has a `Result` to say so in and a socket it has not written to yet, so
-/// this path is only reached by a caller running its own handshake, who gets
-/// a connection with no compression rather than one whose header promises a
-/// window zlib will not produce.
+/// Chooses the first readable offer the server can accept; later offers are declined.
+/// Preferences only narrow the response. An invalid local window preference returns `none`; `accept` reports it before writing the handshake.
 pub fn negotiate_deflate(headers: http.Headers,
                          prefer: Option<Deflate> = none) -> Option<Deflate> {
     if !deflate_preference_ok(prefer) { return none }
@@ -484,7 +411,7 @@ pub fn negotiate_deflate(headers: http.Headers,
 /// Only what this end committed to appears. A window parameter is named
 /// only when it is smaller than the 32 KiB default, because saying nothing
 /// already means 15 and RFC 7692 forbids answering with a window larger
-/// than the offer asked for — so the shorter answer is the safe one as well
+/// than the offer asked for, so the shorter answer is the safe one as well
 /// as the smaller.
 pub fn deflate_agreement(agreed: Deflate) -> string {
     var out: string = "permessage-deflate"
@@ -506,7 +433,7 @@ pub fn deflate_agreement(agreed: Deflate) -> string {
 /// The `Sec-WebSocket-Extensions` value a client offers.
 ///
 /// It names `client_max_window_bits` with no value, which is RFC 7692's way
-/// of saying "I understand this parameter — narrow my window if you want
+/// of saying "I understand this parameter: narrow my window if you want
 /// to". Without it a server may not answer with a client window at all.
 pub fn deflate_offer() -> string {
     return "permessage-deflate; client_max_window_bits"
@@ -711,7 +638,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
         if !target_is_safe(host) {
             return err("the WebSocket host is empty or carries whitespace or a control byte", "invalid")
         }
-        // A fresh 16-byte nonce per connection, base64'd — the value the
+        // A fresh 16-byte nonce per connection, base64'd: the value the
         // server must transform to prove it read this request.
         let nonce: Bytes = random.bytes(16)?
         let key: string = base64.encode(nonce)
@@ -829,7 +756,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
         }
         // A caller can build a `Deflate` by hand, and a window this end
         // cannot compress to has to be refused where the program can still
-        // be told what it asked for — not two messages later inside zlib.
+        // be told what it asked for: not two messages later inside zlib.
         var compressing: bool = false
         match agreed {
             some(params) => {
@@ -880,9 +807,9 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
     ///
     /// A preference is this end's own configuration, so it is checked before
     /// the peer's request is looked at and long before the 101 goes out. A
-    /// window outside 9..15 — zlib's `deflateInit2` silently promotes a
+    /// window outside 9..15: zlib's `deflateInit2` silently promotes a
     /// request for 8 to 9, so agreeing to 8 would put a stream on the wire
-    /// no peer reading at 8 can decode — and a preference passed with
+    /// no peer reading at 8 can decode, and a preference passed with
     /// `compress` off are both refused as `invalid`, where the caller is
     /// told what it asked for and no response has been written yet.
     pub static fn accept(move stream: T,
@@ -971,8 +898,8 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
 
     // One message through the DEFLATE stream, RFC 7692 §7.2.1: compress it,
     // sync-flush, then drop the four bytes 00 00 FF FF the flush ends with.
-    // Those four bytes ARE the message boundary — the receiver puts them
-    // back — which is why the payload of a compressed message is never a
+    // Those four bytes ARE the message boundary: the receiver puts them
+    // back, which is why the payload of a compressed message is never a
     // complete DEFLATE stream on its own.
     fn compress_message(body: Bytes) -> Result<Bytes> {
         if self.deflater == 0 {
@@ -1030,7 +957,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
             // zlib's rule for a flush: it is complete once a call comes back
             // with output room to spare. The input check rides with it
             // because "room left over" is only the end of the flush when
-            // there was nothing more to feed — anything else means going
+            // there was nothing more to feed: anything else means going
             // round again rather than shipping a truncated message.
             if produced < chunk && consumed_total >= body.len() {
                 flushed = true
@@ -1041,7 +968,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
             return err("the message compressor made no progress", "protocol")
         }
         // RFC 7692 §7.2.3.6: a message whose compressed form comes out
-        // empty goes on the wire as the single byte 0x00 — an empty
+        // empty goes on the wire as the single byte 0x00: an empty
         // uncompressed block whose length fields are the four bytes the
         // receiver appends. A zero-length payload is not a shorter way of
         // saying the same thing: four bytes on their own are half a block
@@ -1070,7 +997,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
     }
 
     // The other half, RFC 7692 §7.2.2: put the four bytes back, then
-    // inflate — bounded, because a compressed frame is exactly the shape
+    // inflate: bounded, because a compressed frame is exactly the shape
     // where a small thing on the wire names a large one in memory. The
     // output buffer never grows past `limit + 1`, and reaching that extra
     // byte is how crossing the limit is detected without ever allocating
@@ -1080,7 +1007,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
         // flush produced nothing but the four-byte marker it then removed,
         // which means it emitted no block and its context did not move.
         // Appending those four bytes back and inflating them is NOT the same
-        // thing — on their own they are half of an uncompressed block
+        // thing: on their own they are half of an uncompressed block
         // header, so the inflater would stop mid-block and mis-read every
         // message after this one. The message is empty and the context is
         // left exactly where the sender left its own.
@@ -1205,7 +1132,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
     }
 
     // A violation this end found after the framer had already accepted the
-    // frame — a payload that will not inflate, one that inflates past the
+    // frame: a payload that will not inflate, one that inflates past the
     // limit, text that is not UTF-8 once decompressed. wslay queues the
     // close frame itself for the violations it can see; for these it cannot,
     // so this queues it, flushes it, and closes behind it, which is the same
@@ -1225,8 +1152,8 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
         return err(message, kind)
     }
 
-    // Closing the socket happens on several paths — a protocol error, the
-    // peer's close, the caller's close — and exactly one of them should do
+    // Closing the socket happens on several paths: a protocol error, the
+    // peer's close, the caller's close, and exactly one of them should do
     // it. This is that one.
     fn shut() -> Result<bool> {
         if self.socket_closed { return ok(true) }
@@ -1282,7 +1209,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
             // RFC 6455 answers a protocol violation with a close frame, and
             // wslay has already queued the right one. Flushing it before
             // reporting the error is what turns "we hung up" into "we told
-            // the peer why" — the difference a conformance suite measures.
+            // the peer why": the difference a conformance suite measures.
             let told: Result<bool> = self.flush()
             self.live = false
             // Then the TCP connection closes immediately, as RFC 6455 7.1.1
@@ -1300,7 +1227,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
         self.drain_events()?
         self.flush()?
         // wslay answers a protocol violation by queueing the close frame
-        // itself and shutting its own side, rather than failing the feed —
+        // itself and shutting its own side, rather than failing the feed:
         // so "both directions are done" is the signal, not a status code.
         // When it fires, the frame is already on the wire and RFC 6455
         // 7.1.1 wants the TCP connection closed immediately behind it.
@@ -1395,7 +1322,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
                 if compressed {
                     text_body = self.decompressed(text_body)?
                     // The framer could not run its UTF-8 check on a payload
-                    // that was still compressed, so it runs here instead —
+                    // that was still compressed, so it runs here instead:
                     // on the assembled, decompressed message, which is what
                     // RFC 6455 says the rule is about.
                     if !self.text_is_well_formed(text_body) {
@@ -1438,7 +1365,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
     }
 
     /// Waits for the next message. `ok(none)` means the connection ended
-    /// after its close handshake — the clean finish.
+    /// after its close handshake: the clean finish.
     pub fn receive() -> Result<Option<Message>> {
         var rounds: int = 0
         for rounds < 100000 {
@@ -1484,7 +1411,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
         return self.send_frame(opcode_ping(), body)
     }
 
-    /// Sends an unsolicited pong — a permitted one-way heartbeat.
+    /// Sends an unsolicited pong: a permitted one-way heartbeat.
     pub fn pong(body: Bytes) -> Result<bool> {
         return self.send_frame(opcode_pong(), body)
     }
@@ -1525,8 +1452,8 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
         return self.flush()
     }
 
-    /// Starts the close handshake with a code and reason, then waits —
-    /// bounded — for the peer's close frame before closing the socket.
+    /// Starts the close handshake with a code and reason, then waits:
+    /// bounded: for the peer's close frame before closing the socket.
     /// 1000 is the normal-closure code.
     pub fn close(code: int, reason: string) -> Result<bool> {
         if self.closing {
@@ -1534,8 +1461,8 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
         }
         self.closing = true
         if !self.live {
-            // The framer already completed the handshake — it answers a
-            // peer's close by itself — and the socket is down. The
+            // The framer already completed the handshake: it answers a
+            // peer's close by itself, and the socket is down. The
             // connection is closed, which is what the caller asked for.
             return self.shut()
         }

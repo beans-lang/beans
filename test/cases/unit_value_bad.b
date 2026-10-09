@@ -1,7 +1,7 @@
 // `unit` is what a function that returns nothing answers with, not a value.
 // Every shape here asked for a value of it, and every one of them used to pass
 // `check`, run under the tree interpreter, and fail only `beansc build`, in the
-// emitter's own words — "LLVM emitter does not support brewing 'unit' yet",
+// emitter's own words, "LLVM emitter does not support brewing 'unit' yet",
 // "does not support local type 'List<unit>' yet" (issue #154).
 //
 // One shape proves nothing here: the type is written in some of these and
@@ -23,7 +23,7 @@ fn hold<T>(value: T) -> List<T> {
 
 // T is bound through a function RESULT, which is the one slot `unit` belongs
 // in, so nothing about this call is written and nothing about the argument is
-// wrong — only the `Result<unit>` inference works out for the answer.
+// wrong, only the `Result<unit>` inference works out for the answer.
 fn produced<T>(make: fn() -> T) -> Result<T> {
     return ok(make())
 }

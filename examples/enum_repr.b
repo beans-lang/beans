@@ -1,5 +1,5 @@
 // enum(u8): a payload-free enum can opt into a fixed one-byte layout.
-// The value is the bare tag — no pointer, no ARC — so structs holding one
+// The value is a bare tag with no pointer or ARC header, so structs holding one
 // keep a fixed inline layout and size_of answers.
 import std.io
 

@@ -433,8 +433,8 @@ def map_case(rng, index):
 
 # ---- family three: moving a value into a map by bracket ---------------------
 #
-# `m[k] = v` on a map of move-only values is a move-in — the same transfer
-# m.set(k, v) does — and the rule is asymmetric on purpose. Reading one out by
+# `m[k] = v` on a map of move-only values is a move-in, the same transfer
+# m.set(k, v) performs. The rule is asymmetric. Reading one out by
 # index (family two) would copy the map's own value and stays refused; writing
 # one in is accepted, because a store is not a copy. Both bracket forms once
 # quoted the read's refusal, so the write was refused for a reason that
@@ -502,7 +502,7 @@ def map_write_case(rng, index):
     render, decls, vals, measure = write_value(kind, index)
 
     # Each key is read alone in its own arm, so no two reads of a move-only
-    # value are ever live at once — that is family two's rule, and this family
+    # value are ever live at once; that is family two's rule, and this family
     # composes with it rather than leaning on it.
     def read_block(key, binding, tag):
         hit = '            io.println("' + tag + " " + measure(binding) + '")'
@@ -557,7 +557,7 @@ def map_write_case(rng, index):
         )
 
     if pattern == "read_index":
-        # A write, accepted, then a read of the same value by index — refused.
+        # A write is accepted, then a read of the same value by index is refused.
         # The file has exactly the one error, and it names the way out.
         body = (
             f"{head}\n"

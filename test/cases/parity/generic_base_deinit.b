@@ -3,7 +3,7 @@
 // A descriptor names one release symbol per class, found by walking the
 // chain for `{owner}.deinit`. A generic base is a template with nothing at
 // that name, so the row emitted null and dropping the subclass jumped to
-// address zero — a segfault, from a program the interpreter ran correctly.
+// address zero, a segfault, from a program the interpreter ran correctly.
 //
 // Raising the base body fixed that, and uncovered the second half: when the
 // deriving class writes its own deinit, its body is emitted before any `new`

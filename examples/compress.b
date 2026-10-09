@@ -1,10 +1,4 @@
-// DEFLATE in three formats, and why the inflate limit is not optional.
-//
-// The shape to notice: every decompression call names the most bytes it
-// will produce. That number is the whole defense against a bomb — a tiny
-// input that claims gigabytes — and because the API demands it, the
-// defense cannot be forgotten. Crossing the bound is kind `limit`, an
-// error, never an allocation.
+// Decompression requires a maximum output size; exceeding it returns `limit`.
 package main
 
 import std.compress

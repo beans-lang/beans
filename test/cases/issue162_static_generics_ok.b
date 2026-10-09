@@ -83,7 +83,7 @@ pub class Holder<T> {
     // T named only inside a function type. This is the one place the walk
     // that decides what to promote has to differ from
     // ExpressionChecker.type_mentions_generic, which answers false for `fn`
-    // on purpose — a function value that returns T owns the recipe and not a
+    // on purpose, a function value that returns T owns the recipe and not a
     // T, which is a move rule and not a "can a call bind this" rule. A call
     // binds T here by unifying the argument's own function type.
     pub static fn produced(make: fn() -> T) -> T { return make() }
@@ -103,7 +103,7 @@ pub class Holder<T> {
     pub static fn tag() -> string { return "holder" }
 
     // the method's own <T> shadows the class's, so the class's is NOT
-    // promoted and this still takes exactly one type argument — two would be
+    // promoted and this still takes exactly one type argument, two would be
     // the failure if the shadow check went away
     pub static fn echo<T>(value: T) -> T { return value }
 
@@ -140,7 +140,7 @@ pub class Cell<K, V> {
     }
 
     // the method shadows the owner's first parameter and names its second, so
-    // only V is promoted and the written order is <V, K> — the promoted ones
+    // only V is promoted and the written order is <V, K>, the promoted ones
     // in the owner's order, then the method's own. Promoting a shadowed name
     // as well would make this `<K, V, K>`, a list with one name twice, and
     // `Cell.odd<int, string>` would then answer "generic V was string, then
@@ -176,7 +176,7 @@ pub enum Maybe<T> {
     pub static fn full_of() -> Maybe<T> { return Maybe.something }
 }
 
-// a `partial class` — the declaration form the compiler's own sources are
+// a `partial class`, the declaration form the compiler's own sources are
 // written in, and the only one whose members are lowered from more than one
 // AST node
 pub partial class Boxed<T> {
@@ -271,7 +271,7 @@ fn main() {
     io.println("{iv}")
 
     // explicit type arguments on a static whose only parameter is the
-    // class's — the spelling that used to answer "does not take explicit
+    // class's, the spelling that used to answer "does not take explicit
     // type arguments"
     let j: Holder<int> = Holder.wrap<int>(15)
     let k: Holder<string> = Holder.empty<string>()

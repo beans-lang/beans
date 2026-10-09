@@ -2,7 +2,7 @@
 // once. Both are ordinary uses that the small-body roundtrip never reaches.
 //
 // The first case matters because nghttp2 hands a whole frame to the bridge
-// and advances past it in the same call — a frame that straddles the end of
+// and advances past it in the same call, a frame that straddles the end of
 // the caller's buffer cannot be re-fetched, so the bridge has to keep the
 // tail rather than refuse. A body over roughly 64 KB is enough to land one
 // there.
@@ -10,7 +10,7 @@
 // The second case matters because HTTP/2 is multiplexed: a body deferred by
 // flow control is still pending while the caller opens another stream, so a
 // single shared body slot would let the later submit end the earlier stream
-// at whatever had been serialized — with END_STREAM set and no error
+// at whatever had been serialized, with END_STREAM set and no error
 // anywhere. Here stream 3 is answered with an empty 204 while stream 1's
 // large body is still draining, which is the cheapest way to trigger it.
 //

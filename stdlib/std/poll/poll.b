@@ -3,8 +3,8 @@
 // One poller over `epoll` on Linux and `kqueue` on macOS, and it is **level-triggered**:
 // while a socket has data, every `wait` reports it. That is the default on both
 // backends, and it is the mode you can use imprecisely and still be correct.
-// Edge-triggered demands reading until `EAGAIN` on every single event or the connection
-// silently stalls — a bug that only shows up under load, which is the worst kind.
+// Edge-triggered mode requires reading until `EAGAIN` on every event or the connection
+// can stall.
 //
 // **Events carry your token, never a descriptor.** A descriptor number is reused the
 // moment it is closed, so an event keyed on one can name a completely different thing by
@@ -52,7 +52,7 @@ pub class Event {
     pub readable: bool = false
     /// There is room to write.
     pub writable: bool = false
-    /// The peer is gone. A socket can be readable *and* hung up — the buffered data is
+    /// The peer is gone. A socket can be readable *and* hung up: the buffered data is
     /// still worth reading.
     pub hangup: bool = false
     /// The descriptor itself failed. Read or write to find out how.
@@ -92,7 +92,7 @@ pub unique class Poller implements Send {
     /// Starts watching `fd`, reporting `token` when it is ready.
     ///
     /// Registering the same descriptor twice replaces the earlier registration rather
-    /// than failing — "make it exactly this" is what a caller means either way.
+    /// than failing: "make it exactly this" is what a caller means either way.
     pub fn add(fd: int, token: int, want: Interest) -> Result<bool> {
         if !self.live { return err("poller: closed", "closed") }
         return ready.add(self.fd, fd, token, want.read, want.write, true)
@@ -115,7 +115,7 @@ pub unique class Poller implements Send {
     /// Waits for something to be ready, at most `max_events` of them.
     ///
     /// A negative `timeout_ms` waits indefinitely; 0 is a non-blocking check. Running
-    /// out of time gives an **empty list, not an error** — nothing being ready is a
+    /// out of time gives an **empty list, not an error**: nothing being ready is a
     /// normal answer. `max_events` bounds the allocation, so one call cannot grow
     /// without limit no matter how many descriptors are registered.
     pub fn wait(max_events: int, timeout_ms: int) -> Result<List<Event>> {
@@ -196,9 +196,7 @@ pub unique class Poller implements Send {
 
 /// Wakes a poller from anywhere, given the `int` from its `wake_handle()`.
 ///
-/// A module function rather than a method because the whole point is that the caller
-/// does *not* hold the `Poller` — it is on another thread. A stale handle, from a poller
-/// that has since closed, is an `err` with kind `closed`.
+/// Lets another thread wake a poller without holding it; stale handles return an error with kind `closed`.
 pub fn wake(signal: int) -> Result<bool> {
     return ready.wake(signal)
 }

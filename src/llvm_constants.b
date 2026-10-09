@@ -115,7 +115,7 @@ fn llvm_float_constant(text: string) -> string {
 
 // Mirrors the interpreter's decimal parse: one digit string, a scale from the
 // dot and exponent, leading zeros stripped, 38 digits and scale 65535 the
-// caps. The i128 coefficient is emitted as its digit text — LLVM parses wide
+// caps. The i128 coefficient is emitted as its digit text: LLVM parses wide
 // decimal constants, so no 128-bit arithmetic happens here. "" means the
 // literal is out of range and the caller reports it.
 fn llvm_decimal_constant(source: string) -> string {

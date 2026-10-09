@@ -13,12 +13,12 @@
 #
 # So this gate holds three claims:
 #
-#   1. the rule is applied to the whole set — every beans_map_* symbol the
+#   1. the rule is applied to the whole set, every beans_map_* symbol the
 #      emitter names is either always_inline or on the list below of entry
 #      points whose own work is unbounded, with the reason written down;
-#   2. it fires — test/cases/map_inline.b reaches all of them (the emitted IR
+#   2. it fires, test/cases/map_inline.b reaches all of them (the emitted IR
 #      names each one), and after an --lto link not one survives in the binary;
-#   3. it changes nothing — the interpreter, a plain native build and an --lto
+#   3. it changes nothing, the interpreter, a plain native build and an --lto
 #      build print the same golden, a contained panic inside remove() leaves
 #      the same map on all three (issue #79, test/cases/map_inline_remove.b),
 #      and the

@@ -1,7 +1,7 @@
-// returns.b — every shape the "missing return" check must keep accepting.
+// Return-flow cases that the checker must continue to accept.
 // beans has no implicit tail return, so a `-> T` body has to return on every
 // path; the checker proves it before either backend runs. This file is the
-// guard against that proof getting too strict — if a function here starts
+// guard against an overly strict proof: if a function here starts
 // failing to check, the analysis grew a false positive.
 import std.io
 
@@ -42,7 +42,7 @@ fn spins() -> int {
     }
 }
 
-// the inner break belongs to the inner loop — the outer one still never exits
+// the inner break belongs to the inner loop; the outer one still never exits
 fn inner_break() -> int {
     var i: int = 0
     for {

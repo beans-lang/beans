@@ -36,7 +36,7 @@ class Store {
 // The boundary the fix has to keep: a value a static still roots at exit is
 // left standing, but interpreted garbage is not. A reference cycle never
 // reaches zero on its own, so the collector is what ends it, and it runs each
-// member's deinit on the way — at exit for a cycle nobody rooted, never for
+// member's deinit on the way, at exit for a cycle nobody rooted, never for
 // one a static holds. Which member the collector reaches first is its own
 // discovery order and differs between the backends, so these lines carry no
 // name (the same reason examples/ctors.b leaves its ring anonymous).

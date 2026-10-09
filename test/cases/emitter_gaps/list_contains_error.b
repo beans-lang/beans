@@ -7,12 +7,12 @@
 // Recorded here because the probe would otherwise look like it proves more
 // than it does: the answer the interpreter prints is WRONG. It compares two
 // Error values with tree_value_total_equal, which has no arm for an error, so
-// every pair is unequal — including a value against itself, which is why
+// every pair is unequal, including a value against itself, which is why
 // `contains` answers false for an element that is literally in the list. A
 // bare `e == e` answers false for the same reason and the native build refuses
 // that too, so `Error ==` is its own backend split and not this gap. Fixing it
-// means deciding what equality on an Error is — identity, like every other
-// class, or its fields — and giving BOTH backends that answer; neither has it
+// means deciding what equality on an Error is, identity, like every other
+// class, or its fields, and giving BOTH backends that answer; neither has it
 // today. The claim this probe makes, and the only one, is that the program
 // runs under the interpreter and will not build.
 package main

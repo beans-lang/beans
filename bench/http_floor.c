@@ -1,4 +1,4 @@
-// http_floor.c — the smallest correct HTTP/1.1 keep-alive server this kernel
+// http_floor.c: the smallest correct HTTP/1.1 keep-alive server this kernel
 // allows: one thread, one kqueue, one read per readiness event, one writev
 // per response, no parsing beyond the end-of-head scan.
 //
@@ -22,20 +22,20 @@
 //
 // `echo` reads the request body the client sends (Content-Length only, which
 // is what the benchmark sends) and throws it away before replying. It does not
-// parse it. That makes it the I/O floor for a POST route — the kernel cost of
-// getting 101 KB in and a small answer out — and nothing more: a real server
+// parse it. This measures the I/O floor for a POST route: the kernel cost of
+// getting 101 KB in and a small answer out. A real server
 // still has to decode what it read, and this one never does.
 //
 // Headers match the benchmark's three exactly (Content-Type, Content-Length,
 // Date) so the wire bytes are comparable; the Date is frozen because this
 // server does not keep time.
 //
-// kqueue on macOS and the BSDs, epoll on Linux — the same one-thread,
+// kqueue on macOS and the BSDs, epoll on Linux, with the same one-thread,
 // one-readiness-event, one-writev-per-response loop behind a thin #if. The
 // benchmark this rules is a macOS one, but the ruler now exists on Linux too
 // (bench/espresso_ledger.sh grew a Linux arm), so the floor exists wherever the
 // servers under test do. The two backends differ only in the readiness
-// syscalls — poll_add_read / arm_write, the EAGAIN and drained branches of
+// syscalls: poll_add_read / arm_write, the EAGAIN and drained branches of
 // flush_conn, and the event loop. Level-triggered on both (no EV_CLEAR, no
 // EPOLLET), so a leftover read re-fires.
 #define _GNU_SOURCE   // memmem is a GNU extension on glibc
@@ -162,7 +162,7 @@ static int flush_conn(int fd, Conn* c) {
         if (c->outoff >= HEADLEN + BODYLEN) { c->outoff = 0; c->pending--; }
     }
     // Fully drained, nothing owed. On epoll the write interest is persistent
-    // and level-triggered, so a still-writable socket would spin the loop —
+    // and level-triggered, so a still-writable socket would spin the loop.
     // drop EPOLLOUT now. (kqueue's one-shot filter removed itself when it
     // fired, and the event loop clears wwatch there, so nothing to undo.)
 #if defined(__linux__)
@@ -270,7 +270,7 @@ int main(int argc, char** argv) {
         // The seed is copied 64 bytes at a time, so the buffer is rounded up
         // to a whole seed and only body_bytes of it are ever sent. Writing the
         // tail with a full memcpy into an exact-size malloc overruns the heap
-        // for any size that is not a multiple of 64 — 247 KB is not.
+        // for any size that is not a multiple of 64; 247 KB is not.
         size_t n = body_bytes;
         size_t cap = (n + 63) & ~(size_t)63;
         char* b = malloc(cap);
@@ -311,7 +311,7 @@ int main(int argc, char** argv) {
             if (!c) continue;
             // A single event can carry both readiness and a hangup. Flush what
             // is owed first, then read; a hung-up or errored socket falls into
-            // on_read, whose read() returns 0 or -1 and closes it — so EPOLLHUP
+            // on_read, whose read() returns 0 or -1 and closes it, so EPOLLHUP
             // (which cannot be masked and would otherwise re-fire forever)
             // always makes progress toward close.
             uint32_t e = evs[i].events;

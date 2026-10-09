@@ -1,4 +1,4 @@
-// #158 — a reflective call, read and write on members a generic class
+// #158, a reflective call, read and write on members a generic class
 // declares. The registry files one row per OPEN declaration, so the tree
 // interpreter served these off the live object while the native backend,
 // having no instantiation to name in a monomorphic function pointer, handed
@@ -8,7 +8,7 @@
 // `Cell<Wide>`, so `tag` sits at a different offset in each), plus a subclass
 // that overrides, so an answer that is right for one layout is not enough.
 // The markers are on an owned value each cell holds: eight built, eight
-// released — four cells constructed, and four `Held` values replaced by a
+// released, four cells constructed, and four `Held` values replaced by a
 // reflective write. A thunk that read or wrote the wrong slot would drop the
 // wrong reference and the tags would stop matching.
 package main

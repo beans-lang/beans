@@ -1,17 +1,17 @@
 // Terminals.
 //
-// The parts of a terminal whose shape is the platform's — `struct termios`
-// (72 bytes on macOS, 60 on Linux), `struct winsize`, the Windows console —
+// The parts of a terminal whose shape is the platform's: `struct termios`
+// (72 bytes on macOS, 60 on Linux), `struct winsize`, the Windows console:
 // live in the runtime's C, reached through four calls. Everything with a
 // portable shape is here in Beans: the ANSI writers, and the CSI key decoder in
 // `keys.b`.
 //
 // **Raw mode restores itself.** `RawMode.enter` puts the terminal into raw mode
-// and the returned guard puts it back — on `restore()`, on going out of scope,
+// and the returned guard puts it back: on `restore()`, on going out of scope,
 // and, because the runtime registers the restore with `atexit`, on a normal
 // exit and on a panic (both reach `exit()` on either backend). What that does
 // *not* cover is a crash by `SIGSEGV`/`SIGBUS`: only the runtime's fault
-// reporter runs then, and it is fenced to flushing output — installing a second
+// reporter runs then, and it is fenced to flushing output: installing a second
 // disposition is what `test/signals.sh` forbids. A full-screen program should
 // watch `terminate` and `hangup` through `std.signal` and restore from its own
 // loop, which needs no handler; in raw mode `Ctrl-C` is delivered as the byte
@@ -75,7 +75,7 @@ pub class Size {
 
 /// The terminal's current size, from `ioctl(TIOCGWINSZ)` on POSIX and the
 /// console on Windows. `err` when `fd` is not a terminal, or when the terminal
-/// cannot report a size yet (a fresh pane can answer 0×0) — a real screen never
+/// cannot report a size yet (a fresh pane can answer 0×0): a real screen never
 /// has zero rows, so that is reported rather than handed back.
 pub fn size(fd: int) -> Result<Size> {
     unsafe {
@@ -97,8 +97,8 @@ pub fn size(fd: int) -> Result<Size> {
 ///
 /// Move-only, like every resource: exactly one value owns the mode, so it cannot
 /// be restored twice, and a guard that goes out of scope restores whether you
-/// remembered to or not. Raw mode here means the full make-up — no echo, no line
-/// buffering, no signal generation, no input or output translation — so keys
+/// remembered to or not. Raw mode here means the full make-up: no echo, no line
+/// buffering, no signal generation, no input or output translation, so keys
 /// arrive as bytes the moment they are pressed and `Ctrl-C` is the byte `0x03`
 /// for the program to interpret.
 pub unique class RawMode {
@@ -161,7 +161,7 @@ pub unique class RawMode {
 /// whole.
 ///
 /// Beans string literals carry no `\x1b`, so every sequence here is the escape
-/// byte pushed on its own followed by ASCII — which is also why this is a
+/// byte pushed on its own followed by ASCII, which is also why this is a
 /// builder rather than a pile of string constants. Build a frame, draw into it,
 /// `flush` it to a descriptor in one unbuffered write, then `reset` and reuse.
 pub class Frame {
@@ -207,7 +207,7 @@ pub class Frame {
         self.esc("[?25h")
     }
 
-    /// Switches to the alternate screen — a full-screen program draws here and
+    /// Switches to the alternate screen: a full-screen program draws here and
     /// leaves the user's scrollback untouched.
     pub fn enter_alt_screen() {
         self.esc("[?1049h")

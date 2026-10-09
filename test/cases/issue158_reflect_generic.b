@@ -1,10 +1,10 @@
-// #158 — reflection over members a generic class declares.
+// #158, reflection over members a generic class declares.
 //
 // The registry is erased over type arguments on both backends: one row per
 // open declaration, so `type_of(Grid<int>)` and `type_of(Grid<string>)` reach
 // the same row. The tree interpreter served a call off the live object; the
 // native backend had to hand the runtime a monomorphic function pointer, had
-// no instantiation to name, and passed null — so the same checked program
+// no instantiation to name, and passed null, so the same checked program
 // answered on one backend and said `unsupported` on the other.
 //
 // This is the golden half: it pins WHAT is answered and WHAT is refused,
@@ -52,7 +52,7 @@ pub class Doubling<T> extends Cell<T> {
 
 // A generic base with a describable initializer, and a plain subclass that
 // writes none of its own. `type_of(Plain)` names exactly one class and one
-// body, so this one IS constructible reflectively — and `new Plain()` in
+// body, so this one IS constructible reflectively, and `new Plain()` in
 // ordinary code used to fail the BUILD asking for `main::Base.init`.
 pub class Base<T> { pub mark: int = 5; pub fn init() {} }
 pub class Plain extends Base<int> { pub start: int = 41 }

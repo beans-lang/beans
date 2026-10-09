@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# brew — child fibers (spec/CONCURRENCY.md). The differential case pins the
+# brew, child fibers (spec/CONCURRENCY.md). The differential case pins the
 # whole surface: join outcomes (ok, panic with position, closed on a second
 # join), containment, string and sixteen-byte results, a move-only argument
 # moving through the fiber closure, a class-receiver method, nested brews,
 # cancel of a never-parking child, and the statement form running at the
-# synthesized scope join — byte-identical between the interpreter and a
+# synthesized scope join, byte-identical between the interpreter and a
 # built binary, scheduling order included, because both host fibers on the
 # same scheduler. Escalation and every handle wall are probed separately.
 set -euo pipefail
@@ -24,7 +24,7 @@ diff -u test/cases/brew.out "$tmp/native.out"
 # entry, joins park through beans_brew_join, and every brew arms the
 # synthesized scope join. A program that brews can contain a panic, so its
 # calls are emitted as `invoke` with a cleanup edge (issue #44) rather than a
-# plain `call` — either spelling of the runtime call satisfies the assertion.
+# plain `call`, either spelling of the runtime call satisfies the assertion.
 grep -Eq '(call|invoke) ptr @beans_brew\(' build/brew.ll
 grep -Eq '(call|invoke) ptr @beans_brew_typed\(' build/brew.ll
 grep -Eq '(call|invoke) i64 @beans_brew_join\(' build/brew.ll
@@ -50,7 +50,7 @@ diff -u test/cases/brew_claim.out "$tmp/claim.native.out"
 
 echo "checking a contained panic unwinds its frames on both backends"
 # issue #44: a panic caught by join runs every frame's defers newest-first and
-# drops what it owns on the way to the fiber entry — not abandoned. The golden
+# drops what it owns on the way to the fiber entry, not abandoned. The golden
 # pins the order and pins both backends: revert either half (the native
 # cleanup pads or the interpreter's tree-level unwind) and cleanup stops
 # running, so the golden no longer matches.
@@ -98,7 +98,7 @@ echo "checking a failed construction returns every byte it took"
 # The golden above says no deinit ran; this says the object still came back.
 # Skipping a deinit body is exactly how a release gets dropped instead, and a
 # panic in a FIELD default used to unwind past an object nothing had recorded
-# — the native emitter armed the pad only just before the initializer call —
+# The native emitter armed the pad only just before the initializer call,
 # which leaked the object and everything its earlier defaults had built. Two
 # round counts an order of magnitude apart in their own -DBEANS_ARC_STATS
 # builds: a per-failure leak shows as a gap that grows with the rounds.
@@ -183,7 +183,7 @@ init_arc_rounds 50
 
 echo "checking an unwind parked in its cleanup survives other fibers finishing"
 # issue #44 (B3): the unwind is per fiber on both backends. A child that
-# started before the parent's panic finishes — or panics — while the parent is
+# started before the parent's panic finishes, or panics, while the parent is
 # parked inside a cleanup defer; the parent's remaining cleanup still runs and
 # its join reports the parent's own failure.
 ./build/beansc run test/cases/brew_unwind_park.b >"$tmp/park.interp"
@@ -335,13 +335,13 @@ done
 
 echo "checking a panicking deinit does not stop the destruction it was running"
 # issue #81: contained by brew/join, a deinit panic unwinds out of whatever
-# runtime frame was tearing something down. Native stopped there — the
+# runtime frame was tearing something down. Native stopped there, the
 # elements a `clear` had not reached were never destroyed and never freed,
 # while the container already reported itself empty, so nothing in the
 # program could reach them either. The interpreter, whose panic is a poison
 # flag rather than a stack unwind, destroyed all of them: one checked
 # program, two answers, and O(n) leaked per caught panic on the native side.
-# The golden is the interpreter's answer — counts and death order — across
+# The golden is the interpreter's answer, counts and death order, across
 # every container, a scope death, a plain object graph, nested containers, a
 # wide record, the panicking object's own fields, both Box.set shapes and a
 # wide remove. Revert any half of the runtime guard and the counts drop.
@@ -371,7 +371,7 @@ echo "checking the finished cascade returns every byte it took"
 # Two round counts an order of magnitude apart, each in its own
 # -DBEANS_ARC_STATS build: allocations must equal frees in both, so a
 # per-panic leak would show as a gap that grows with the rounds. A round
-# does both shapes that lose memory this way — a container clear whose
+# does both shapes that lose memory this way, a container clear whose
 # element deinit panics, and a declined map insert whose refused value's
 # deinit panics while the duplicate key is still owed a release. Before the
 # guards the fifty-round build ended 1000 and 50 allocations short.
@@ -458,7 +458,7 @@ echo "checking a second panicking deinit in one cascade is the double panic"
 # The destruction that finishes runs while the fiber is already unwinding,
 # which is exactly the condition both backends call unrecoverable. So the
 # element the finishing walk reaches next, panicking in its own deinit,
-# aborts with both reports — and the elements between the two panics have
+# aborts with both reports, and the elements between the two panics have
 # already printed, which is what says the walk really did continue.
 cat >"$tmp/double_deinit.b" <<'BEANS'
 import std.io
@@ -525,7 +525,7 @@ expect_double_deinit "$tmp/double_deinit"
 echo "checking a map replace under a panicking deinit corrupts nothing"
 # issue #44: the old order released the caller's duplicate key before the
 # old value's panicking release, and the pad then released that key a
-# second time — allocator corruption the pool hides. BEANS_NO_POOL=1 made
+# second time, allocator corruption the pool hides. BEANS_NO_POOL=1 made
 # it crash most runs, so six clean, byte-stable runs bind the fix; the
 # parity golden binds the store-stands semantics.
 ./build/beansc build test/cases/parity/map_replace_panic.b \
@@ -553,7 +553,7 @@ echo "checking the cycle collector still runs after a contained deinit panic"
 # strand, cc_collect refuses to run for the rest of the process and every
 # later cycle leaks with its deinit silently skipped. The guard restores
 # the counters on the unwind, so the cycle built after the caught panic
-# must still print both node deinits at exit — on both engines. Reverting
+# must still print both node deinits at exit, on both engines. Reverting
 # the runtime guard removes both lines from the native run.
 cat >"$tmp/cc_after_deinit_panic.b" <<'BEANS'
 import std.io
@@ -777,13 +777,13 @@ BEANS
 echo "checking a collector pass finishes the white set a panic interrupted"
 # issue #81 in the collector: cc_run_cycle_deinits retains the whole white
 # set across the deinit bodies, so a panic anywhere in the pass used to
-# strand every object in it — holds up, shells never freed, deinits never
-# run — for the life of the process. Two places in one pass can reach user
+# strand every object in it, holds up, shells never freed, deinits never
+# run, for the life of the process. Two places in one pass can reach user
 # code, and both are covered here: a member's own deinit body, and the
 # release that drops the holds afterwards (a member whose body dropped its
 # internal edge dies right there, and a child it built during the body goes
-# with it). When a collection runs is each backend's own business — the two
-# trigger on their own budgets — so this leg is native only and asserts the
+# with it). When a collection runs is each backend's own business, the two
+# trigger on their own budgets, so this leg is native only and asserts the
 # pass rather than a golden. The same program is built three times, once
 # clean and once with each bomb, so the comparison calibrates itself:
 # whatever a clean run still holds at exit, a caught panic may hold at most
@@ -892,7 +892,7 @@ cycle_bombed child "false" "self.id == 41"
 
 echo "checking a child's panic escalating into its parent's unwind is a double panic"
 # issue #44 (B4): the unwind joins an unjoined child through the synthesized
-# scope join, and a child whose panic nobody caught escalates there — inside
+# scope join, and a child whose panic nobody caught escalates there, inside
 # a cleanup the unwind is running. That is the one unrecoverable case on
 # both backends: both reports go out and the process stops with the abort
 # status, byte-identical stderr on the two engines.
@@ -954,7 +954,7 @@ echo "checking a brewing program large enough for the parallel backend builds"
 # A module of four megabytes or more of IR is split into chunks that clang
 # compiles concurrently, and every chunk declares the functions the others
 # define. A function that can unwind names its personality routine on its
-# definition, and a declaration must not carry one — every brewing program
+# definition, and a declaration must not carry one, every brewing program
 # of that size failed to link with "Function declaration shouldn't have a
 # personality routine" until the declarations were cut before it. No small
 # golden reaches the chunk path, so this one is generated large enough to,
@@ -1125,7 +1125,7 @@ grep -q "brew needs fibers, which the freestanding runtime does not have" \
     exit 1
 }
 
-# ---- contained — a catch frame at a call (issue #145) ----------------------
+# ---- contained, a catch frame at a call (issue #145) ----------------------
 #
 # The same unwind, stopped one frame earlier. `contained f(args)` runs the call
 # on the CURRENT fiber under a landing pad that does not resume, so a panic
@@ -1143,8 +1143,8 @@ diff -u test/cases/contained.out "$tmp/contained.native.out"
 
 echo "checking a program that can unwind builds with debug information"
 # A landing pad written across two lines took the debug pass's `, !dbg !N` in
-# the middle of itself — the pass appends one to every line it does not
-# recognise as a label — so `beansc build --debug` died in the LLVM parser at
+# the middle of itself, the pass appends one to every line it does not
+# recognise as a label, so `beansc build --debug` died in the LLVM parser at
 # "cleanup, !dbg" for EVERY program that could unwind. That is every brewing
 # program since the pads landed, and every containing one since. Both goldens
 # have to come back from a --debug build too.
@@ -1171,7 +1171,7 @@ diff -u test/cases/contained_park.out "$tmp/ccpark.interp"
 diff -u test/cases/contained_park.out "$tmp/ccpark.native.out"
 
 echo "checking a catch frame works off the main worker"
-# A spawned thread is not a fiber and containment has never reached one — a
+# A spawned thread is not a fiber and containment has never reached one, a
 # panic at a thread's entry ends the process, because Thread<T>.join() answers
 # T and has nowhere to put a failure. A `contained` call needs no join to
 # deliver to, so it works where it stands; the first enter on a thread promotes
@@ -1187,7 +1187,7 @@ diff -u test/cases/contained_threads.out "$tmp/ccthreads.native.out"
 echo "checking a contained call costs no fiber"
 # The whole point of the issue: containment used to need a spawn, two context
 # switches and a join. A program that only contains must name none of the brew
-# or fiber entries, and must carry the catch pad instead — a landing pad with
+# or fiber entries, and must carry the catch pad instead, a landing pad with
 # no `resume` after it, which is what makes the unwind stop here.
 cat >"$tmp/nofiber.b" <<'BEANS'
 import std.io
@@ -1238,7 +1238,7 @@ fi
 echo "checking a panic outside the frame still ends the process"
 # The catch frame is the call. A panic before it, in an argument, or after it
 # has answered is not its failure: the process ends with the ordinary report
-# and exit 3, its frames abandoned — no defer, no deinit — exactly as a
+# and exit 3, its frames abandoned, no defer, no deinit, exactly as a
 # program that never contained anything.
 run_ends() { # <case> <golden> <expected status> [env...]
     local case_path=$1 golden=$2 want=$3
@@ -1276,7 +1276,7 @@ run_ends test/cases/contained_escapes.b \
 
 echo "checking the root fiber does not read a child's catch frame"
 # The count of standing frames decides whether a panic unwinds at all, and a
-# brewed fiber always unwinds anyway — so per-fiber and per-thread only differ
+# brewed fiber always unwinds anyway, so per-fiber and per-thread only differ
 # on the ROOT fiber. A child parks inside its frame and the root then fails
 # with none of its own: uncontained, frames abandoned, exit 3. Make the count
 # thread-wide and the tree runs the root's defers while the native build walks
@@ -1314,7 +1314,7 @@ expect_contained_wall "this call cannot be contained"
 
 echo "checking a target without the unwind refuses contained, not the emitter"
 # A backend with no landing pad could not catch at all, so the refusal is about
-# the program at check time — never a build-time message about the emitter.
+# the program at check time, never a build-time message about the emitter.
 if ./build/beansc check test/cases/contained.b \
        --target x86_64-pc-windows-gnu >"$tmp/ccwin.log" 2>&1; then
     echo "a target without the unwind accepted contained" >&2
@@ -1346,7 +1346,7 @@ echo "checking a unit child is refused where it must answer a Result, not elsewh
 # representation is the `Result<unit>` that join, next, try_next and wait_all
 # would have to answer with, because `ok` takes a value. Until this refusal
 # the checker accepted all of it, the tree interpreter ran it, and only
-# `beansc build` said no — about the emitter rather than about the program.
+# `beansc build` said no, about the emitter rather than about the program.
 #
 # The types in these four are all worked out by inference: nothing here writes
 # `Result<unit>`, so a refusal written on the spelling would miss every one.

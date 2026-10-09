@@ -1,18 +1,18 @@
-// Chunked framing on the *write* side of std.http.
-//
-// The package has always parsed chunked bodies in both directions. This is
-// the encode half held to the same standard as the rest of the write side:
-// the bytes are pinned exactly, the hex size line is checked at the widths
-// where a formatter goes wrong (15/16, 255/256, 4095/4096, 65535/65536), the
-// sequencing mistakes that corrupt a streamed response are refused by name,
-// and every framed message is handed back to this package's own
-// `ResponseParser` — at three feed granularities — to prove the writer and
-// the reader agree about where the body starts and stops.
-//
-// The refusals matter more than the happy path. A zero-length chunk is the
-// terminator, so writing one mid-body ends the response there and everything
-// after it is read as a trailer section, silently, with a 200 already on the
-// wire. Every printed line is a derived fact.
+// Verify chunked response bytes, size boundaries, invalid write sequences, and
+// writer/parser agreement at several feed sizes.
+
+
+
+
+
+
+
+
+
+
+
+
+
 package main
 
 import std.http
@@ -122,7 +122,7 @@ fn hex_sizes() {
     io.println("chunk prefixes: {prefix_line}")
 
     // The copying form is the vectored form followed by the payload, and
-    // nothing else — one implementation, so the two cannot drift. Compared at
+    // nothing else, one implementation, so the two cannot drift. Compared at
     // the smaller widths; the size line itself is already pinned above at
     // every width where a hex formatter goes wrong.
     let compared: List<int> = [1, 9, 10, 15, 16, 17, 255, 256, 4095, 4096]

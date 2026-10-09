@@ -5,7 +5,7 @@
 //
 //   **Sockets are made the way every other resource is made**: a named static on the
 //   class it produces, because construction that can fail cannot be a constructor.
-//   `TcpListener.bind`, `TcpStream.connect`, `UdpSocket.bind`, `Address.resolve` —
+//   `TcpListener.bind`, `TcpStream.connect`, `UdpSocket.bind`, `Address.resolve`:
 //   the same shape as `File.open` and `MMap.open`, so there is nothing new to learn.
 //
 //   **A socket is a `unique class`.** Move-only, closed by `deinit`. Exactly one place
@@ -99,7 +99,7 @@ fn multicast_change(fd: int, group: string, join: bool) -> Result<bool> {
 
 // ---- addresses --------------------------------------------------------------
 
-/// Where a socket is: a numeric host and a port. An ordinary value — copy it freely.
+/// A numeric socket host and port, represented as a copyable value.
 pub class Address {
     pub host: string = ""
     pub port: int = 0
@@ -120,8 +120,7 @@ pub class Address {
         return ok(move out)
     }
 
-    /// `127.0.0.1:8080`, or `[::1]:8080` for IPv6 — brackets because an IPv6 host is
-    /// full of colons, and that is the form that reads back correctly.
+    /// Formats IPv6 hosts in brackets so the host and port remain distinct.
     pub fn to_string() -> string {
         if self.is_ipv6() {
             return "[{self.host}]:{self.port}"
@@ -149,7 +148,7 @@ pub class Datagram {
     pub data: Bytes = new Bytes(0)
 }
 
-// [i64 port][i64 host_len][host][payload] — one layout for every runtime call that
+// [i64 port][i64 host_len][host][payload]: one layout for every runtime call that
 // has to return an address, because the fallible-builtin ABI carries a single value.
 fn unpack_address(parts: List<Bytes>) -> Address {
     let metadata: Bytes = parts.remove(0)
@@ -220,7 +219,7 @@ pub unique class TcpStream implements ByteStream, Send {
     }
 
     fn deinit() {
-        // Closes if the caller did not. A failure here cannot be reported — that is
+        // Closes if the caller did not. A failure here cannot be reported: that is
         // exactly why `close()` exists.
         if self.live {
             let ignored: Result<bool> = sock.close(self.fd)
@@ -323,7 +322,7 @@ pub unique class TcpStream implements ByteStream, Send {
     /// short write is normal and resumes correctly whether it stopped inside
     /// the head or inside the body, `offset` at the end of the pair is `ok(0)`,
     /// and a send on a fiber parks on backpressure. It exists so a server that
-    /// holds its body as a `string` — the shape a handler hands back — sends it
+    /// holds its body as a `string` (the shape a handler hands back) sends it
     /// where it already lives, instead of copying it into a `Bytes` only to
     /// frame the response. Returns the bytes written by this call, which may be
     /// fewer than the pair holds.
@@ -332,8 +331,8 @@ pub unique class TcpStream implements ByteStream, Send {
     /// every condition a stream send reports: `timeout` when backpressure ran
     /// out the write deadline, `reset` for a peer that has gone, `closed` for a
     /// stream that is no longer open, and `invalid` for an offset outside the
-    /// pair. The two part only on the rare network-layer errno — an unreachable
-    /// route, a connection refused late on a stream — which this form names
+    /// pair. The two part only on the rare network-layer errno: an unreachable
+    /// route, a connection refused late on a stream, which this form names
     /// (`unreachable`, `refused`) where the `Bytes` form reports `io`. That is
     /// the socket API's own split and not this pair's: it is the same one
     /// between `write` and `write_from`, and between `read` and `read_into`.
@@ -476,7 +475,7 @@ pub unique class TcpStream implements ByteStream, Send {
     /// Tries one read into caller-owned storage on a nonblocking stream.
     /// `ok(none)` means the socket would block. `ok(some(0))` is EOF, so a
     /// quiet socket and a closed peer remain different facts. This form
-    /// never parks — would-block is its immediate answer even on a fiber.
+    /// never parks: would-block is its immediate answer even on a fiber.
     pub fn try_read_into(buffer: Bytes) -> Result<Option<int>> {
         if !self.live { return err("recv: socket is closed", "closed") }
         if !self.nonblocking {
@@ -502,7 +501,7 @@ pub unique class TcpStream implements ByteStream, Send {
     }
 
     /// Reads exactly `count` bytes, looping. Fails with kind `eof` if the peer closes
-    /// first — a caller asking for a fixed-size header wants that as an error.
+    /// first: a caller asking for a fixed-size header wants that as an error.
     pub fn read_exact(count: int) -> Result<Bytes> {
         if !self.live { return err("recv: socket is closed", "closed") }
         if count <= 0 { return err("recv: the byte count must be positive", "invalid") }
@@ -573,7 +572,7 @@ pub unique class TcpStream implements ByteStream, Send {
         return ok(self.fd)
     }
 
-    /// Stops writing. The peer's next read sees EOF — this is how you say "I am done
+    /// Stops writing. The peer's next read sees EOF: this is how you say "I am done
     /// sending" without closing the socket you still want to read from.
     pub override fn shutdown_write() -> Result<bool> {
         if !self.live { return err("shutdown: socket is closed", "closed") }
@@ -594,7 +593,7 @@ pub unique class TcpStream implements ByteStream, Send {
         return sock.close(self.fd)
     }
 
-    /// The raw descriptor, **borrowed** — for registering with a poller. Never
+    /// The raw descriptor, **borrowed**: for registering with a poller. Never
     /// ownership: closing this number behind the handle's back is exactly the bug
     /// `unique` exists to prevent.
     pub override fn poll_handle() -> int {
@@ -621,9 +620,7 @@ pub unique class TcpListener implements Send {
         }
     }
 
-    /// Listens on `host:port`. **Port 0 asks the system for a free port** — read it
-    /// back with `port()`, which is how a test binds without picking a number and
-    /// hoping nothing else has it.
+    /// Binds to `host:port`; port 0 requests an available port, returned by `port()`.
     pub static fn bind(host: string, port: int) -> Result<TcpListener> {
         return TcpListener.bind_with_backlog(host, port, 128)
     }
@@ -640,7 +637,7 @@ pub unique class TcpListener implements Send {
     /// call. Linux hashes each connection's four-tuple across the listening
     /// sockets, so N listeners really do serve N shares of the traffic. macOS
     /// does not balance at all: the last socket to bind receives every
-    /// connection and the others sit idle, which is BSD behaviour — FreeBSD
+    /// connection and the others sit idle, which is BSD behaviour: FreeBSD
     /// spells the balancing variant `SO_REUSEPORT_LB` and Darwin has no
     /// equivalent. So this is a way to use more cores on Linux and a way to
     /// hand a port over without dropping connections everywhere else; on
@@ -751,7 +748,7 @@ pub unique class TcpListener implements Send {
         return sock.close(self.fd)
     }
 
-    /// The raw descriptor, borrowed — for a poller.
+    /// The raw descriptor, borrowed: for a poller.
     pub fn poll_handle() -> int {
         return self.fd
     }
@@ -781,7 +778,7 @@ pub unique class UdpSocket implements Send {
         return ok(new UdpSocket(sock.udp_bind(host, port)?))
     }
 
-    /// Sends one datagram. Reports how many bytes went — a datagram is sent whole or
+    /// Sends one datagram. Reports how many bytes went: a datagram is sent whole or
     /// not at all, so a short count here means the message was too large.
     pub fn send_to(data: Bytes, to: Address) -> Result<int> {
         if !self.live { return err("send_to: socket is closed", "closed") }
@@ -816,17 +813,14 @@ pub unique class UdpSocket implements Send {
         return sock.set_nonblocking(self.fd, on)
     }
 
-    /// Joins a multicast group, so datagrams sent to the group arrive here.
-    /// The group is a **numeric** address — `"239.1.2.3"` or `"ff02::1"` —
-    /// because a name can resolve to anything, and membership of the wrong
-    /// group is silent. The socket must be bound to the same family.
+    /// Joins a numeric multicast address; the socket must be bound to the same family.
     pub fn join_multicast(group: string) -> Result<bool> {
         if !self.live { return err("join_multicast: socket is closed", "closed") }
         return multicast_change(self.fd, group, true)
     }
 
     /// Leaves a multicast group joined earlier. Leaving a group this socket
-    /// never joined is an `err` from the OS, not a silent no-op — it is
+    /// never joined is an `err` from the OS, not a silent no-op: it is
     /// always a bookkeeping bug in the caller.
     pub fn leave_multicast(group: string) -> Result<bool> {
         if !self.live { return err("leave_multicast: socket is closed", "closed") }
@@ -839,7 +833,7 @@ pub unique class UdpSocket implements Send {
         return sock.close(self.fd)
     }
 
-    /// The raw descriptor, borrowed — for a poller.
+    /// The raw descriptor, borrowed: for a poller.
     pub fn poll_handle() -> int {
         return self.fd
     }
@@ -847,6 +841,5 @@ pub unique class UdpSocket implements Send {
 
 // There are deliberately **no module-level functions here** for creating things.
 // Creating a socket is fallible construction of an object, and the rule for that
-// is a named static on the class it produces — the same shape as `File.open` and
+// is a named static on the class it produces: the same shape as `File.open` and
 // `MMap.open`. So it is `TcpListener.bind(...)`, not `net.listen(...)`.
-

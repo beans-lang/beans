@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Navigation, refactoring and hierarchy over the real LSP wire.
-#
-# Everything here goes through `beansc lsp` exactly as an editor would, with
-# LSP's own coordinates: 0-based lines and UTF-16 columns.
+# Check navigation, rename, and hierarchy behavior over the LSP wire.
+
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -294,7 +292,7 @@ cases = {
          True),
     # --- and the same has to hold looking *down* the hierarchy -------------
     # base -> child, method: Framed extends Circle and declares `corners`, so
-    # Circle.draw cannot become `corners` — Framed would start hiding it.
+    # Circle.draw cannot become `corners`; Framed would start hiding it.
     "a method name a subtype already declares":
         (s.ask("textDocument/rename", FIXTURE, 24, 17, newName="corners"),
          True),
@@ -373,9 +371,9 @@ rc, expected, err = run_project(FIXTURE)
 if rc != 0:
     fail(f"the fixture should run before anything is renamed: {err}")
 
-# `draw` is declared on the interface and overridden by Circle, Square and
-# Rounded. Renaming it anywhere in that family must rename all of it —
-# from the interface, and from a leaf.
+# Renaming `draw` from the interface or a leaf must update every override.
+
+
 for label, (line, col) in {
     "from the interface declaration": (10, 8),
     "from a leaf override": (42, 17),
@@ -396,9 +394,9 @@ for label, (line, col) in {
                  f"{override_line}: {edited}")
     if 10 not in edited:
         fail(f"renaming {label} skipped the interface declaration: {edited}")
-    # Gathering references from several symbols must not hand the editor two
-    # edits for one place — a workspace edit with overlapping ranges is
-    # rejected outright.
+    # Gathering references must not produce overlapping workspace edits.
+
+
     for uri, v in changes.items():
         starts = [(e["range"]["start"]["line"], e["range"]["start"]["character"])
                   for e in v]
@@ -532,8 +530,8 @@ with tempfile.TemporaryDirectory() as tmp:
         "fn main() {\n    let noodles: int = 1\n"
         "    io.println(\"🍜 {noodles}\")\n}\n")
     s = Session(wide)
-    # `🍜` is two UTF-16 units, so `noodles` starts at character 20 of
-    # line 7 — a server counting bytes would land two columns short.
+    # `🍜` is two UTF-16 units; a byte-counting server would miss `noodles` by two columns.
+
     kind = s.ask("textDocument/hover", wide, 7, 22)
     s.finish()
     got = s.result(kind)
@@ -729,9 +727,9 @@ if at(s.result(across)) != ("deep.b", 25, 7):
     fail(f"a tests/ entry should reach the library: {s.result(across)}")
 print("ok a library's tests/ program is its own entry and still navigates")
 
-# The other half of a partial class. It is lowered into the part that carries
-# the header, so nothing is registered at this file's own positions — and an
-# editor asking about this file used to get nothing at all for it.
+# Partial-class members resolve through the header file, and navigation must work from either part.
+
+
 MORE = LIB / "deep/more.b"
 
 s = Session(MORE)

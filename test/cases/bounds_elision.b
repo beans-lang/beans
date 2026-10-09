@@ -46,8 +46,8 @@ fn increment_first(storage: RawPtr<i32>) -> int {
 }
 
 // An `inout` argument lowers to a borrow of the counter. The callee may
-// store anything behind it — including a negative index that still passes
-// `index < view.len()` — so the counted-loop proof must not fire here.
+// store anything behind it, including a negative index that still passes
+// `index < view.len()`, so the counted-loop proof must not fire here.
 fn reset_counter(inout value: int) { value = -8 }
 
 fn borrowed_start(storage: RawPtr<i32>) -> int {

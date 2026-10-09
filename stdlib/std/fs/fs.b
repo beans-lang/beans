@@ -8,7 +8,7 @@
 // file it cannot release is worse than one that cannot create it at all, so the
 // end of a file's life belongs here beside the start of it.
 //
-// Directories keep their own surface on the `Dir` builtin — `create`,
+// Directories keep their own surface on the `Dir` builtin: `create`,
 // `create_all`, `list`, `walk`, `remove`, `remove_all`, `exists`, `sync`.
 
 package fs
@@ -60,7 +60,7 @@ pub fn copy(from: string, to: string) -> Result<int> {
 /// True when a file exists at `path`.
 ///
 /// Symlinks are followed, so a link to a file answers true and a dangling one
-/// answers false. A **directory answers false** — this asks about a file, and
+/// answers false. A **directory answers false**: this asks about a file, and
 /// `Dir.exists(path)` is the question about a directory.
 ///
 /// Answering false is not a promise the next call will succeed: another process
@@ -94,8 +94,8 @@ pub fn rename(from: string, to: string) -> Result<bool> {
 /// A missing path is not a failure, because for the callers that need this most
 /// it is the ordinary case: a `deinit` releasing a spooled temp file cannot
 /// propagate a result, and "already gone" is exactly the state it wanted. Every
-/// other failure — no permission, a non-empty directory, a path through a
-/// non-directory — is still `err`, carrying the `Error.kind` slug.
+/// other failure: no permission, a non-empty directory, a path through a
+/// non-directory: is still `err`, carrying the `Error.kind` slug.
 ///
 /// The answer comes from the removal itself, never from asking `exists` first:
 /// a check-then-act pair would call a file that vanished in between a failure,

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# std.term: the CSI key decoder and the ANSI frame on both backends, and — under
-# a real pseudo-terminal — is_tty, the window size, raw mode, and the promise
+# std.term: the CSI key decoder and the ANSI frame on both backends, and, under
+# a real pseudo-terminal, is_tty, the window size, raw mode, and the promise
 # that matters most: the terminal is put back the way it was found, on a normal
 # exit and on a panic.
 #
@@ -109,7 +109,7 @@ done
 
 echo "checking the terminal is restored after a panic in raw mode"
 # A native panic exits through exit(3) without unwinding, so the guard's deinit
-# never runs — only the runtime's atexit restore does. The assertion is that the
+# never runs, only the runtime's atexit restore does. The assertion is that the
 # terminal is cooked again after the program dies raw. Removing that atexit
 # registration leaves TERM_RESTORE=raw here, which is the regression this pins.
 "$beansc" build test/fixtures/term_pty_panic.b -o "$tmp/panic" >/dev/null 2>&1

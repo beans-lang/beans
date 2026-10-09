@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The Windows half of the native differential gate: execute a bundle produced
 # by test/windows_native_stage.sh and hold every binary to the interpreter's
-# answer — byte-identical output, exit codes included. Needs nothing but bash,
+# answer, byte-identical output, exit codes included. Needs nothing but bash,
 # cmp and grep (Git Bash on a GitHub windows runner has all three); the point
 # is that it runs on genuine Windows, where Wine's sins cannot cover for us.
 set -uo pipefail
@@ -61,7 +61,7 @@ while IFS=$'\t' read -r stem expected_code; do
     code=$?
     # 0xc000007b / 3221225595 is STATUS_INVALID_IMAGE_FORMAT: the binary is for
     # another architecture and this machine cannot run it. That is a failure of
-    # the gate, never a skip — the whole point is that these execute here.
+    # the gate, never a skip, the whole point is that these execute here.
     if [[ $code -eq 3221225595 || $code -eq 3221225781 ]]; then
         echo "FAIL: $stem.exe did not load (status $code) — wrong architecture for this machine" >&2
         fails=$((fails + 1))
@@ -308,7 +308,7 @@ fi
 # The exact machine, OS, and staged toolchain this run proved, for the
 # record: the oracle-checked differential corpus rows (dfuzz_case_*) executed
 # on this architecture, not merely compiled for it. A bundle with no corpus
-# rows fails here — a compile-only pass is not this gate's claim.
+# rows fails here, a compile-only pass is not this gate's claim.
 staged_triple=""
 [[ -f "$BUNDLE/triple" ]] && staged_triple=$(tr -d ' \r\n' < "$BUNDLE/triple")
 staged_toolchain=""
