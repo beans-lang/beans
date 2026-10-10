@@ -33,9 +33,25 @@ static void nested(void* context) {
     assert((*(int*)context)++ == 2);
 }
 
+#if defined(_WIN32)
+static DWORD WINAPI wake_root(void* context) {
+    assert(beans_worker_current() == NULL);
+    assert(beans_fiber_current() == NULL);
+    Sleep(10);
+    beans_fiber_resume((BeansFiber*)context);
+    return 0;
+}
+#endif
+
 static void root(void* context) {
     assert(beans_fiber_is_root(beans_fiber_current()));
-#if !defined(_WIN32)
+#if defined(_WIN32)
+    HANDLE thread = CreateThread(NULL, 0, wake_root, beans_fiber_current(), 0, NULL);
+    assert(thread);
+    assert(beans_fiber_park() == BEANS_FIBER_WOKEN);
+    assert(WaitForSingleObject(thread, 5000) == WAIT_OBJECT_0);
+    assert(CloseHandle(thread));
+#else
     int baseline = fd_count();
     if (beans_fiber_netpoll()) {
         int descriptors[2];

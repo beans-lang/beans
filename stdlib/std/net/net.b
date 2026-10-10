@@ -27,6 +27,9 @@
 package net
 
 import std.sock
+import std.target
+
+extern "C" fn beans_fiber_current() -> RawPtr<u8>
 
 // Socket extras live in the sockx bridge (runtime/net), not the core syscall
 // layer. Statuses follow beans_net_common.h; operation-specific statuses start
@@ -63,6 +66,10 @@ fn sockx_error(operation: string, status: int, os_error: int) -> Result<int> {
             "permission"
         } else if status == 115 {
             "not_found"
+        } else if status == 117 {
+            "refused"
+        } else if status == 118 {
+            "unreachable"
         } else {
             "io"
         }
@@ -188,9 +195,7 @@ pub unique class TcpStream implements ByteStream, Send {
     fd: int
     live: bool = true
     nonblocking: bool = false
-    // Cached facts for the waiting recv bridge: whether the descriptor is
-    // already fiber-prepared (O_NONBLOCK is per-fd, so once is forever),
-    // and the configured read deadline, so the hot path re-reads neither.
+    // Preparation remains cached until explicit mode changes or blocking-thread normalization.
     fiber_prepared: bool = false
     read_timeout_ms: int = 0
     write_timeout_ms: int = 0
@@ -231,10 +236,24 @@ pub unique class TcpStream implements ByteStream, Send {
         }
     }
 
+    // Fiber-only descriptor mode must not escape into blocking raw operations on an OS thread.
+    fn prepare_blocking_thread() -> Result<bool> {
+        if !self.nonblocking && target.os() != "windows" {
+            unsafe {
+                if beans_fiber_current().is_null() {
+                    sock.set_nonblocking(self.fd, false)?
+                    self.fiber_prepared = false
+                }
+            }
+        }
+        return ok(true)
+    }
+
     /// Writes some of `data` and reports how much went out. A short write is normal,
     /// not an error.
     pub fn write(data: Bytes) -> Result<int> {
         if !self.live { return err("send: socket is closed", "closed") }
+        self.prepare_blocking_thread()?
         return sock.send(self.fd, data, 0)
     }
 
@@ -253,7 +272,8 @@ pub unique class TcpStream implements ByteStream, Send {
             self.scratch.write(offset as u64)
             self.scratch.offset(1).write(0)
             self.scratch.offset(2).write(
-                (if self.fiber_prepared { 1 } else { 0 }) as u64)
+                ((if self.fiber_prepared { 1 } else { 0 }) |
+                 (if self.nonblocking { 2 } else { 0 })) as u64)
             self.scratch.offset(3).write(
                 (if self.write_timeout_ms > 0 {
                     self.write_timeout_ms
@@ -296,7 +316,8 @@ pub unique class TcpStream implements ByteStream, Send {
             self.scratch.write(offset as u64)
             self.scratch.offset(1).write(0)
             self.scratch.offset(2).write(
-                (if self.fiber_prepared { 1 } else { 0 }) as u64)
+                ((if self.fiber_prepared { 1 } else { 0 }) |
+                 (if self.nonblocking { 2 } else { 0 })) as u64)
             self.scratch.offset(3).write(
                 (if self.write_timeout_ms > 0 {
                     self.write_timeout_ms
@@ -341,6 +362,7 @@ pub unique class TcpStream implements ByteStream, Send {
     /// those errnos into `io`.
     pub fn write_vectored_text(head: Bytes, body: string, offset: int) -> Result<int> {
         if !self.live { return err("send: socket is closed", "closed") }
+        self.prepare_blocking_thread()?
         let total: int = head.len() + body.len()
         if offset < 0 || offset > total {
             return err("send: offset is outside the data", "invalid")
@@ -356,20 +378,36 @@ pub unique class TcpStream implements ByteStream, Send {
         if !self.nonblocking {
             return err("try_write_from: the socket is blocking", "invalid")
         }
-        match sock.send(self.fd, data, offset) {
-            ok(count) => { return ok(some(count)) }
-            err(e) => {
-                // A nonblocking descriptor has no socket deadline in force:
-                // the runtime's timeout kind here is EAGAIN/EWOULDBLOCK.
-                if e.kind == "timeout" { return ok(none) }
-                return err(e.msg, e.kind)
-            }
+        if offset < 0 || offset > data.len() {
+            return err("send: offset is outside the data", "invalid")
+        }
+        if offset == data.len() { return ok(some(0)) }
+        var status: int = 0
+        var count: int = 0
+        var os_error: int = 0
+        unsafe {
+            self.scratch.write(offset as u64)
+            self.scratch.offset(1).write(0)
+            // Explicit nonblocking and immediate policy bypass every readiness wait.
+            self.scratch.offset(2).write(6)
+            self.scratch.offset(3).write(0)
+            status = beans_net_send_from_wait(
+                self.fd, data.as_ptr(), data.len(), self.scratch)
+            count = self.scratch.read() as int
+            os_error = self.scratch.offset(1).read() as int
+        }
+        if status == 0 { return ok(some(count)) }
+        if status == 110 { return ok(none) }
+        match sockx_error("send", status, os_error) {
+            ok(_) => { return ok(none) }
+            err(e) => { return err(e.msg, e.kind) }
         }
     }
 
     /// Writes all of `data`, looping over short writes. Reports the total.
     pub override fn write_all(data: Bytes) -> Result<int> {
         if !self.live { return err("send: socket is closed", "closed") }
+        self.prepare_blocking_thread()?
         var done: int = 0
         for done < data.len() {
             let wrote: int = sock.send(self.fd, data, done)?
@@ -384,6 +422,7 @@ pub unique class TcpStream implements ByteStream, Send {
     /// Writes text. The bytes are the string's bytes, with no terminator added.
     pub fn write_text(text: string) -> Result<int> {
         if !self.live { return err("send: socket is closed", "closed") }
+        self.prepare_blocking_thread()?
         var done: int = 0
         for done < text.len() {
             let wrote: int = sock.send_text(self.fd, text, done)?
@@ -399,6 +438,7 @@ pub unique class TcpStream implements ByteStream, Send {
     /// the one fact a byte count cannot carry.
     pub override fn read(max: int) -> Result<Bytes> {
         if !self.live { return err("recv: socket is closed", "closed") }
+        self.prepare_blocking_thread()?
         return sock.recv(self.fd, max)
     }
 
@@ -417,7 +457,8 @@ pub unique class TcpStream implements ByteStream, Send {
             self.scratch.write(buffer.len() as u64)
             self.scratch.offset(1).write(0)
             self.scratch.offset(2).write(
-                (if self.fiber_prepared { 1 } else { 0 }) as u64)
+                ((if self.fiber_prepared { 1 } else { 0 }) |
+                 (if self.nonblocking { 2 } else { 0 })) as u64)
             self.scratch.offset(3).write(
                 (if self.read_timeout_ms > 0 {
                     self.read_timeout_ms
@@ -454,7 +495,8 @@ pub unique class TcpStream implements ByteStream, Send {
             self.scratch.write(buffer.len() as u64)
             self.scratch.offset(1).write(0)
             self.scratch.offset(2).write(
-                (if self.fiber_prepared { 1 } else { 0 }) as u64)
+                ((if self.fiber_prepared { 1 } else { 0 }) |
+                 (if self.nonblocking { 2 } else { 0 })) as u64)
             self.scratch.offset(3).write(
                 (if self.read_timeout_ms > 0 {
                     self.read_timeout_ms
@@ -504,6 +546,7 @@ pub unique class TcpStream implements ByteStream, Send {
     /// first: a caller asking for a fixed-size header wants that as an error.
     pub fn read_exact(count: int) -> Result<Bytes> {
         if !self.live { return err("recv: socket is closed", "closed") }
+        self.prepare_blocking_thread()?
         if count <= 0 { return err("recv: the byte count must be positive", "invalid") }
         return sock.recv_exact(self.fd, count)
     }
@@ -512,6 +555,7 @@ pub unique class TcpStream implements ByteStream, Send {
     /// than growing without bound.
     pub fn read_to_end(limit: int) -> Result<Bytes> {
         if !self.live { return err("recv: socket is closed", "closed") }
+        self.prepare_blocking_thread()?
         return sock.recv_to_end(self.fd, limit)
     }
 
@@ -541,6 +585,7 @@ pub unique class TcpStream implements ByteStream, Send {
         if !self.live { return err("set_nonblocking: socket is closed", "closed") }
         sock.set_nonblocking(self.fd, on)?
         self.nonblocking = on
+        self.fiber_prepared = false
         return ok(true)
     }
 

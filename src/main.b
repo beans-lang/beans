@@ -703,6 +703,18 @@ extern "C" fn beans_compiler_stack_run(
     entry: CFunctionPtr<fn(RawPtr<u8>)>, context: RawPtr<u8>) -> i32
 
 fn main() {
+    var on_root: bool = false
+    unsafe {
+        let current: RawPtr<u8> = beans_fiber_current()
+        if !current.is_null() {
+            on_root = beans_fiber_is_root(current) != 0
+        }
+    }
+    // Reuse the host root before materializing an interpreted C callback.
+    if on_root {
+        compiler_main()
+        return
+    }
     // All commands share the same stack, including editor servers and self-hosting.
     let entry: LocalStoredCallback<fn(RawPtr<u8>)> =
         LocalStoredCallback.create(0, fn() { compiler_main() })

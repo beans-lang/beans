@@ -111,6 +111,29 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
         echo "fault report skipped: no POSIX signal handler on this host"
         ;;
     *)
+        echo "checking mapped-root and unrelated fatal faults"
+        clang -O1 -pthread test/fault_context.c -lm -o "$tmp/fault_context"
+        for fault_case in mapped null protected foreign; do
+            set +e
+            ( ulimit -c 0; "$tmp/fault_context" "$fault_case" ) >"$tmp/context.$fault_case.out" 2>"$tmp/context.$fault_case.err"
+            fault_status=$?
+            set -e
+            if test "$fault_status" -ne 139 && test "$fault_status" -ne 138; then
+                echo "$fault_case: expected a fatal signal, got $fault_status" >&2
+                cat "$tmp/context.$fault_case.err" >&2
+                exit 1
+            fi
+            if test "$fault_case" = mapped; then
+                grep -q 'runtime fault: stack overflow' "$tmp/context.$fault_case.err"
+            else
+                grep -Eq 'runtime fault: (segmentation fault|bus error)' "$tmp/context.$fault_case.err"
+                if grep -q 'stack overflow' "$tmp/context.$fault_case.err"; then
+                    echo "$fault_case: unrelated fault misclassified as overflow" >&2
+                    exit 1
+                fi
+            fi
+        done
+
         cat >"$tmp/overflow.b" <<'BEANS'
 import std.io
 

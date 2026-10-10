@@ -2,7 +2,7 @@
 
 This file records user-facing changes in each Beans release.
 
-## [0.1.53] - 2026-10-09
+## [0.1.53] - 2026-10-10
 
 Release contract: language=1.0, runtime_abi=23.
 
@@ -26,7 +26,16 @@ Release contract: language=1.0, runtime_abi=23.
   caller sequencing (#174).
 - Generated Unicode width headers match their generator after comment cleanup.
 - Windows compiler fibers retain the scheduler return context and preserve a
-  caller that was already an OS fiber.
+  caller that was already an OS fiber. MinGW compiler workers use thread-local
+  scheduler state so interpreted thread joins can wake their root.
+- Compiler-root overflow diagnostics read the saved fault context without a
+  new thread-local lookup in the fatal signal reporter.
+- Accepted and fiber-prepared TCP streams retain blocking operations and
+  deadlines after transfer to an OS thread, including on macOS. Explicit
+  nonblocking mode remains immediate off-thread, and `try_write_from` remains
+  immediate on compiler roots as well as OS threads.
+- Interpreting the compiler reuses its host root before creating a C callback,
+  preserving nested hosted calls when no C compiler is available.
 
 This release uses the owner's requested `fast=true` workflow: Unix packages run
 `make test-quick`; the discovery soak, full release gate and hosted fixed-point

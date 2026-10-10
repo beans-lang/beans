@@ -6,6 +6,7 @@ compiler=0.1.53
 language=1.0
 
 # 23: Adds the same-thread compiler stack runner and bounded process execution used by dependency fetches.
+# ABI 23: TCP waiting bridges carry preparation, explicit nonblocking and immediate-operation policy bits in req[2].
 # 22: Native parked cancellation uses cleanup on ELF/Mach-O x86_64/arm64; interpreted host calls return cancellation to the tree walker through shared per-fiber handler, cancellation-state and cleanup-mask entries.
 # 21: beans_with_collection_deferred scopes collector/deinit exclusion counters across nesting and contained unwind without changing immediate ARC destruction.
 # 20: beans_json_decode_probe_publish and beans_json_decode_probe replace the encoding bridge's shared probe with per-thread status, error code, offset/record count and field index storage.

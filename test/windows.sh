@@ -102,6 +102,23 @@ refuses() { # <source file> <expected refusal text>
 
 mkdir -p build/windows_gate
 
+# Check cross-thread root wakes before the hosted interpreter's longer corpus.
+if clang --target=$TRIPLE -std=c11 -O2 -static -fuse-ld=lld \
+    runtime/beans_fiber.c test/issue212_root.c \
+    -o build/windows_gate/root.exe >build/windows_gate/root.buildlog 2>&1; then
+    run "$WINE" build/windows_gate/root.exe >build/windows_gate/root.out 2>&1
+    root_code=$?
+    if [[ $root_code -ne 0 ]]; then
+        cat build/windows_gate/root.out >&2
+        fail "compiler root thread wake probe exited $root_code"
+        exit 1
+    fi
+else
+    cat build/windows_gate/root.buildlog >&2
+    fail "compiler root thread wake probe did not build"
+    exit 1
+fi
+
 # Two build shapes the rest of this gate never exercises, both of which were
 # broken while every example passed.
 #
@@ -454,6 +471,26 @@ if "$BEANSC" build --target $TRIPLE --linker lld src/main.b \
     hung $? "beansc.exe reporting its target under wine"
     grep -q "^os windows$" build/windows_gate/beansc.target.out ||
         fail "beansc.exe under wine does not report its own target"
+
+    # Socket transfer and immediate writes must agree across both Windows backends.
+    socket_case=test/cases/accepted_thread.b
+    if "$BEANSC" build --target $TRIPLE --linker lld "$socket_case" \
+            -o build/windows_gate/accepted_thread.exe > build/windows_gate/accepted_thread.buildlog 2>&1; then
+        timeout -k 10 30 "$BEANSC" run "$socket_case" > build/windows_gate/accepted_thread.host 2>&1
+        [[ $? -eq 0 ]] || fail "socket transfer host regression failed"
+        timeout -k 10 30 "$WINE" build/windows_gate/accepted_thread.exe > build/windows_gate/accepted_thread.native 2>&1
+        [[ $? -eq 0 ]] || fail "socket transfer Windows native regression failed"
+        timeout -k 10 30 "$WINE" build/windows_gate/beansc.exe run "$socket_case" > build/windows_gate/accepted_thread.interpreted 2>&1
+        [[ $? -eq 0 ]] || fail "socket transfer Windows interpreter regression failed"
+        for backend in native interpreted; do
+            tr -d '\r' < "build/windows_gate/accepted_thread.$backend" > "build/windows_gate/accepted_thread.$backend.normalized"
+            cmp -s build/windows_gate/accepted_thread.host "build/windows_gate/accepted_thread.$backend.normalized" ||
+                fail "socket transfer Windows $backend differs from host"
+        done
+        grep -q ' false$' build/windows_gate/accepted_thread.host && fail "socket transfer control returned false"
+    else
+        fail "socket transfer regression does not build for $TRIPLE"
+    fi
 
     # The interpreter half of the hosted loop, run here rather than only on the
     # real-Windows runner. Two interpreters, one contract: what beansc.exe

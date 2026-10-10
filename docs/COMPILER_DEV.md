@@ -153,8 +153,11 @@ through `beans_compiler_stack_run`, which uses the runtime fiber owner's
 thread rather than creating another signal receiver or changing runtime
 worker-thread accounting. POSIX uses the existing guarded mappings and
 context switches; Windows uses the existing `CreateFiberEx` reservation.
-Root-stack faults chain to the runtime reporter, using bounds supplied by the
-fiber owner. Interpreting the compiler's source reuses that same root stack.
+Root-stack faults chain to the runtime reporter. On supported macOS and Linux
+hosts it reads the faulting stack pointer from the signal context, with the
+existing OS-stack bounds fallback. Overflow classification uses address
+proximity rather than a registry of stack mappings. Interpreting the compiler's
+source reuses that same root stack.
 The runner is also registered with the existing hosted-runtime symbol table,
 so self-interpretation works when PE or ELF executable symbols are hidden.
 Existing fiber-aware sleeps, thread joins, and network waits consequently use

@@ -44,7 +44,7 @@ extern "C" fn beans_fiber_wait_io(fd: int, write: int, timeout_ms: int) -> int
 extern "C" fn beans_fiber_netpoll() -> int
 fn main() {
     unsafe {
-        // Outside a worker the wait is unavailable, without touching fd -1.
+        // An immediate wait tests hosted dispatch without waiting on a real descriptor.
         io.println("wait {beans_fiber_wait_io(-1, 0, 0)}")
         // Poller availability is target-specific; it is still callable.
         io.println("poller {beans_fiber_netpoll() >= 0}")
@@ -52,7 +52,26 @@ fn main() {
 }
 BEANS
 BEANS_CC="$nocc" "$beansc" run "$tmp/fiber_readiness.b" >"$tmp/fiber_readiness.out"
-printf 'wait -2\npoller true\n' | diff -u - "$tmp/fiber_readiness.out"
+# The compiler root reaches kqueue; epoll and unsupported pollers refuse fd -1.
+readiness_wait=-2
+if [[ "$(uname -s)" == Darwin ]]; then readiness_wait=1; fi
+printf 'wait %s\npoller true\n' "$readiness_wait" | diff -u - "$tmp/fiber_readiness.out"
+"$beansc" build "$tmp/fiber_readiness.b" -o "$tmp/fiber_readiness" >"$tmp/readiness.build" 2>&1
+"$tmp/fiber_readiness" >"$tmp/readiness.native"
+printf 'wait -2\npoller true\n' | diff -u - "$tmp/readiness.native"
+
+echo "checking fiber accepts transfer blocking streams to OS threads"
+"$beansc" build test/cases/accepted_thread.b -o "$tmp/accepted_thread" >"$tmp/accepted.build" 2>&1
+"$python3" - "$beansc" "$tmp/accepted_thread" "$nocc" <<'PY'
+import os, subprocess, sys
+compiler, native, nocc = sys.argv[1:]
+expected = "accepted timed false: transferred true\naccepted timed true: transferred true\ntransferred read raw false deadline true\ntransferred read raw true deadline true\nexplicit nonblocking immediate true\nroot try write immediate true\n"
+for command in ([compiler, "run", "test/cases/accepted_thread.b"], [native]):
+    result = subprocess.run(command, capture_output=True, timeout=30,
+                            env={**os.environ, "BEANS_CC": nocc})
+    assert result.returncode == 0, (command, result.returncode, result.stderr.decode())
+    assert result.stdout.decode().replace("\r\n", "\n") == expected, result.stdout
+PY
 
 echo "checking BEANS_CC still reaches the run-time C shim"
 # pow(double, double) is not a runtime entry and is not a shape the word ABI

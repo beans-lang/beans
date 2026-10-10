@@ -220,7 +220,8 @@ struct BeansWorker {
 #endif
 };
 
-#if defined(_WIN32)
+// MinGW's GNU __declspec expansion ignores thread; use C11 TLS there.
+#if defined(_MSC_VER)
 static __declspec(thread) BeansWorker* tls_worker = NULL;
 #else
 static _Thread_local BeansWorker* tls_worker = NULL;
@@ -1832,12 +1833,4 @@ int beans_fiber_run_root(void (*entry)(void*), void* context, size_t stack_reser
     if (!was_fiber) ConvertFiberToThread();
 #endif
     return status;
-}
-
-int beans_fiber_stack_bounds(void** low, void** high) {
-    BeansFiber* fiber = beans_fiber_current();
-    if (!fiber || !fiber->stack_base) return 0;
-    *low = (unsigned char*)fiber->stack_base + fiber->worker->page;
-    *high = (unsigned char*)fiber->stack_base + fiber->stack_reserve;
-    return 1;
 }

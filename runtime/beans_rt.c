@@ -3952,6 +3952,9 @@ void beans_panic(const char* msg, long long line, long long col) {
 #if BEANS_RT_PROFILE >= BEANS_RT_FULL && !defined(_WIN32) && \
     !defined(__wasi__) && !defined(__wasm__) && !defined(BEANS_RT_SANITIZED)
 #define BEANS_RT_FAULT_REPORT 1
+#if defined(__APPLE__) || defined(__linux__)
+#include <sys/ucontext.h>
+#endif
 // MINSIGSTKSZ is a runtime call on recent glibc, so the size is fixed here.
 // The handler itself needs a page; the rest is headroom for the libc calls
 // that read this thread's stack bounds.
@@ -3961,15 +3964,6 @@ static _Thread_local char rt_fault_stack[RT_FAULT_STACK_BYTES];
 static void rt_fault_stack_bounds(char** low, char** high) {
     *low = NULL;
     *high = NULL;
-#if BEANS_RT_FIBERS
-    void* fiber_low = NULL;
-    void* fiber_high = NULL;
-    if (beans_fiber_stack_bounds(&fiber_low, &fiber_high)) {
-        *low = fiber_low;
-        *high = fiber_high;
-        return;
-    }
-#endif
 #if defined(__APPLE__)
     char* top = (char*)pthread_get_stackaddr_np(pthread_self());
     size_t size = pthread_get_stacksize_np(pthread_self());
@@ -3995,17 +3989,60 @@ static void rt_fault_stack_bounds(char** low, char** high) {
 #endif
 }
 
+// Read the interrupted stack, never the alternate handler stack or lazy TLS.
+static uintptr_t rt_fault_stack_pointer(void* context) {
+    if (!context) return 0;
+#if defined(__APPLE__) || defined(__linux__)
+    ucontext_t* uc = (ucontext_t*)context;
+#endif
+#if defined(__APPLE__) && defined(__aarch64__)
+    return uc->uc_mcontext ? (uintptr_t)uc->uc_mcontext->__ss.__sp : 0;
+#elif defined(__APPLE__) && defined(__x86_64__)
+    return uc->uc_mcontext ? (uintptr_t)uc->uc_mcontext->__ss.__rsp : 0;
+#elif defined(__linux__) && defined(__x86_64__)
+    return (uintptr_t)uc->uc_mcontext.gregs[15]; // Linux x86-64 RSP slot.
+#elif defined(__linux__) && defined(__i386__)
+    return (uintptr_t)uc->uc_mcontext.gregs[7]; // Linux i386 ESP slot.
+#elif defined(__linux__) && defined(__aarch64__)
+    return (uintptr_t)uc->uc_mcontext.sp;
+#elif defined(__linux__) && defined(__arm__)
+    return (uintptr_t)uc->uc_mcontext.arm_sp;
+#elif defined(__linux__) && defined(__riscv)
+    return (uintptr_t)uc->uc_mcontext.__gregs[2]; // RISC-V SP is x2.
+#elif defined(__linux__) && defined(__powerpc64__)
+    return (uintptr_t)uc->uc_mcontext.gp_regs[1]; // PowerPC SP is r1.
+#elif defined(__linux__) && defined(__GLIBC__) && defined(__powerpc__)
+    return uc->uc_mcontext.uc_regs ? (uintptr_t)uc->uc_mcontext.uc_regs->gregs[1] : 0;
+#elif defined(__linux__) && defined(__powerpc__)
+    return uc->uc_regs ? (uintptr_t)uc->uc_regs->gregs[1] : 0;
+#elif defined(__linux__) && defined(__s390x__)
+    return (uintptr_t)uc->uc_mcontext.gregs[15]; // s390x SP is r15.
+#elif defined(__linux__) && defined(__loongarch__)
+    return (uintptr_t)uc->uc_mcontext.__gregs[3]; // LoongArch SP is r3.
+#else
+    return 0;
+#endif
+}
+
 static void rt_fault_handler(int number, siginfo_t* info, void* context) {
-    (void)context;
     beans_out_flush(); // the program's own output, ahead of this line
-    char* low = NULL;
-    char* high = NULL;
-    rt_fault_stack_bounds(&low, &high);
-    char* addr = info ? (char*)info->si_addr : NULL;
-    // The guard page sits just under the low end; a frame big enough to step
-    // over it lands a little further down, so allow a megabyte of slack.
-    int overflow = low && addr && addr < low + 4096 &&
-                   addr + (1LL << 20) >= low;
+    uintptr_t addr = info ? (uintptr_t)info->si_addr : 0;
+    uintptr_t sp = rt_fault_stack_pointer(context);
+    // A stack access faults beside the saved SP on mapped roots as on OS stacks.
+    int overflow = addr && sp &&
+        (addr >= sp ? addr - sp < 4096 : sp - addr < 4096);
+    if (!overflow) {
+        char* low = NULL;
+        char* high = NULL;
+        rt_fault_stack_bounds(&low, &high);
+        uintptr_t bottom = (uintptr_t)low;
+        // A nearby mapping is not overflow unless the interrupted stack is low too.
+        int stack_is_low = !sp || (sp >= bottom
+            ? sp - bottom <= (1U << 20) : bottom - sp <= (1U << 20));
+        // Retain the OS-stack fallback for large frames and unknown contexts.
+        overflow = bottom && addr && stack_is_low &&
+            (addr >= bottom ? addr - bottom < 4096 : bottom - addr <= (1U << 20));
+    }
     const char* text =
         overflow ? "runtime fault: stack overflow — recursion ran the stack out\n"
                  : (number == SIGBUS ? "runtime fault: bus error\n"
@@ -13469,11 +13506,7 @@ static long long net_op_timeout_ms(long long fd, int write) {
 #endif
 }
 
-// A fiber about to wait on a socket makes it nonblocking first: for good:
-// the fd never leaves fiber-land (sockets are not Send), every op here
-// carries the EAGAIN retry loop, and a blocking syscall from a fiber would
-// stall its whole worker. Thread-only programs never reach this, so their
-// sockets stay blocking exactly as before fibers.
+// Fiber waits require nonblocking descriptors; waiting bridges retain blocking intent after thread transfer.
 static void net_fiber_prepare(long long fd) {
 #if BEANS_RT_FIBERS && !defined(_WIN32)
     if (!beans_fiber_current() || !beans_fiber_netpoll()) return;
@@ -13483,6 +13516,22 @@ static void net_fiber_prepare(long long fd) {
 #else
     (void)fd;
 #endif
+}
+
+// Transferred sockets may retain fiber-only nonblocking mode; kernel timeout expiry on blocking sockets must remain final.
+static int net_wait_after_block(long long fd, int policy) {
+    if (policy & 4) return 0;
+    if (net_on_fiber()) return 1;
+#if !defined(_WIN32)
+    if (!(policy & 2)) {
+        int flags = fcntl(net_fd_of(fd), F_GETFL, 0);
+        return flags >= 0 && (flags & O_NONBLOCK);
+    }
+#else
+    (void)fd;
+    (void)policy;
+#endif
+    return 0;
 }
 
 // Waits for one readiness event with a deadline that survives EINTR: the budget is
@@ -13725,6 +13774,16 @@ BRes beans_net_accept(long long fd, long long timeout_ms) {
             got = accept(net_fd_of(fd), NULL, NULL);
         } while (!net_fd_ok(got) && net_errno() == EINTR);
         if (net_fd_ok(got)) {
+#if !defined(_WIN32)
+            // BSD accept inherits the listener's fiber-only nonblocking mode.
+            int flags = fcntl(got, F_GETFL, 0);
+            if (flags < 0 || ((flags & O_NONBLOCK) &&
+                             fcntl(got, F_SETFL, flags & ~O_NONBLOCK) < 0)) {
+                int failure = errno;
+                net_close(got);
+                return (BRes){0, net_err_op("accept", failure)};
+            }
+#endif
             net_set_cloexec(got);
 #ifdef SO_NOSIGPIPE
             int one = 1;
@@ -13783,7 +13842,7 @@ long long beans_net_send_out(long long fd, BList* data, long long from, void** e
 // deadline: exactly like beans_net_recv_into_wait on the read side.
 //   req[0] in: offset; out: bytes written by this call
 //   req[1] out: OS error code when the returned status is not 0
-//   req[2] in: 1 skips the nonblocking flip; out: 1 when fiber-prepared
+//   req[2] in: bit 0 skips preparation, bit 1 explicit nonblocking, bit 2 immediate; out: preparation bit
 //   req[3] in: wait budget in milliseconds, -1 to wait forever
 // Status: 0 ok; sockx codes otherwise.
 long long beans_net_send_from_wait(long long fd, const void* bytes,
@@ -13799,7 +13858,8 @@ long long beans_net_send_from_wait(long long fd, const void* bytes,
 #if defined(_WIN32)
     if (want > 0x7fffffff) want = 0x7fffffff;
 #endif
-    if (req[2]) {
+    int wait_policy = (int)req[2] & 6;
+    if (req[2] & 1) {
         req[2] = 1;
     } else {
         net_fiber_prepare(fd);
@@ -13820,7 +13880,7 @@ long long beans_net_send_from_wait(long long fd, const void* bytes,
         }
         int blocked = net_errno();
         if ((blocked == EAGAIN || blocked == EWOULDBLOCK) &&
-            net_on_fiber()) {
+            net_wait_after_block(fd, wait_policy)) {
             int ready = net_wait(net_fd_of(fd), POLLOUT, budget);
             if (ready > 0) continue;
             if (ready == 0) { // the socket deadline expired
@@ -13830,6 +13890,13 @@ long long beans_net_send_from_wait(long long fd, const void* bytes,
             blocked = net_errno();
         }
         req[1] = (unsigned long long)blocked;
+        if (wait_policy & 4) {
+            const char* kind = net_kind_of(blocked);
+            if (strcmp(kind, "refused") == 0) return 117;
+            if (strcmp(kind, "unreachable") == 0) return 118;
+            if (strcmp(kind, "in_use") == 0) return 113;
+            if (strcmp(kind, "unsupported") == 0) return 4;
+        }
         if (blocked == EAGAIN || blocked == EWOULDBLOCK ||
             blocked == ETIMEDOUT)
             return 110; // timeout
@@ -13869,7 +13936,7 @@ long long beans_net_send_from_wait(long long fd, const void* bytes,
 // per-call flag, and sendmsg is the vectored call that takes one.
 //   req[0] in: offset into head+body; out: bytes written by this call
 //   req[1] out: OS error code when the returned status is not 0
-//   req[2] in: 1 skips the nonblocking flip; out: 1 when fiber-prepared
+//   req[2] in: bit 0 skips preparation, bit 1 explicit nonblocking, bit 2 immediate; out: preparation bit
 //   req[3] in: wait budget in milliseconds, -1 to wait forever
 // Status: 0 ok; sockx codes otherwise.
 long long beans_net_send_pair_wait(long long fd,
@@ -13886,7 +13953,8 @@ long long beans_net_send_pair_wait(long long fd,
     if (from < 0 || from > total) { req[1] = 0; return 1; }
     if (from == total) { req[0] = 0; req[1] = 0; return 0; }
 
-    if (req[2]) {
+    int wait_policy = (int)req[2] & 6;
+    if (req[2] & 1) {
         req[2] = 1;
     } else {
         net_fiber_prepare(fd);
@@ -13961,7 +14029,7 @@ long long beans_net_send_pair_wait(long long fd,
         }
         int blocked = net_errno();
         if ((blocked == EAGAIN || blocked == EWOULDBLOCK) &&
-            net_on_fiber()) {
+            net_wait_after_block(fd, wait_policy)) {
             int ready = net_wait(net_fd_of(fd), POLLOUT, budget);
             if (ready > 0) continue;
             if (ready == 0) { // the socket deadline expired
@@ -14018,7 +14086,7 @@ BRes beans_net_send_pair_text(long long fd, BList* head, char* body,
     unsigned long long req[4];
     req[0] = (unsigned long long)offset;
     req[1] = 0;
-    req[2] = 0; // let the engine prepare the fiber, like send / send_text
+    req[2] = 2; // Raw socket sends preserve immediate off-thread would-block behavior.
     req[3] = (unsigned long long)net_op_timeout_ms(fd, 1);
     long long status = beans_net_send_pair_wait(fd, head_ptr, head_len,
                                                 body, body_len, req);
@@ -14116,7 +14184,7 @@ long long beans_net_recv_out(long long fd, long long max, void** e_out) { BRes r
 // bridge so its would-block answer stays immediate.
 //   req[0] in: destination capacity; out: bytes read (0 is EOF)
 //   req[1] out: OS error code when the returned status is not 0
-//   req[2] in: 1 skips the nonblocking flip; out: 1 when fiber-prepared (O_NONBLOCK persists for the descriptor lifetime)
+//   req[2] in: bit 0 skips preparation, bit 1 explicit nonblocking, bit 2 immediate; out: preparation bit, invalidated by blocking-mode normalization
 //   req[3] in: wait budget in milliseconds, -1 to wait forever; the caller tracks its deadline without re-reading SO_RCVTIMEO
 //   req[4] in: 1 waits for readability before the first recv: for a
 //          caller that just drained the socket, this trades the
@@ -14127,7 +14195,8 @@ long long beans_net_recv_into_wait(long long fd, void* destination,
     if (!req || !destination || req[0] == 0) return 1; // invalid
     net_init();
     if (fd < 0) { req[1] = 0; return 112; } // closed
-    if (req[2]) {
+    int wait_policy = (int)req[2] & 6;
+    if (req[2] & 1) {
         req[2] = 1;
     } else {
         net_fiber_prepare(fd);
@@ -14171,7 +14240,7 @@ long long beans_net_recv_into_wait(long long fd, void* destination,
         }
         int blocked = net_errno();
         if ((blocked == EAGAIN || blocked == EWOULDBLOCK) &&
-            net_on_fiber()) {
+            net_wait_after_block(fd, wait_policy)) {
             int ready = net_wait(net_fd_of(fd), POLLIN, budget);
             if (ready > 0) continue;
             if (ready == 0) { // the socket deadline expired
@@ -14230,6 +14299,15 @@ int32_t beans_compiler_stack_run(void (*entry)(void*), void* context);
 static long long host_call_compiler_stack_run(const unsigned long long* w) {
     return beans_compiler_stack_run((void (*)(void*))(uintptr_t)w[0],
                                     (void*)(uintptr_t)w[1]);
+}
+
+static long long host_call_fiber_current(const unsigned long long* w) {
+    (void)w;
+    return (long long)(intptr_t)beans_fiber_current();
+}
+
+static long long host_call_fiber_is_root(const unsigned long long* w) {
+    return beans_fiber_is_root((BeansFiber*)(uintptr_t)w[0]);
 }
 
 // Database packages use the same readiness owner as std.net. These entries
@@ -14358,6 +14436,10 @@ static const BHostEntry rt_host_table[] = {
 #if BEANS_RT_FIBERS
     {"beans_compiler_stack_run", (void*)&beans_compiler_stack_run, 2,
      host_call_compiler_stack_run},
+    {"beans_fiber_current", (void*)&beans_fiber_current, 0,
+     host_call_fiber_current},
+    {"beans_fiber_is_root", (void*)&beans_fiber_is_root, 1,
+     host_call_fiber_is_root},
     {"beans_fiber_wait_io", (void*)&beans_fiber_wait_io, 3,
      host_call_fiber_wait_io},
     {"beans_fiber_netpoll", (void*)&beans_fiber_netpoll, 0,
@@ -14642,7 +14724,7 @@ BRes beans_net_set_nonblocking(long long fd, long long on) {
     int flags = fcntl(net_fd_of(fd), F_GETFL, 0);
     if (flags < 0) return (BRes){0, net_err_op("set_nonblocking", net_errno())};
     int want = on ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK);
-    if (fcntl(net_fd_of(fd), F_SETFL, want) != 0)
+    if (want != flags && fcntl(net_fd_of(fd), F_SETFL, want) != 0)
         return (BRes){0, net_err_op("set_nonblocking", net_errno())};
 #endif
     return (BRes){1, NULL};
