@@ -14,9 +14,33 @@ trap 'failure=$?; case $- in *e*) echo "self_host.sh:$LINENO: command failed ($f
 # line, the exit status and the command. There is deliberately no per-run grep:
 # a sanitizer report already reaches the log, and a report that does not change
 # the exit status cannot occur here (ASan aborts, UBSan is built with
-# -fno-sanitize-recover, LeakSanitizer exits 23). The two places that do
-# capture the run's stderr -- the examples loop and the threads TSan lane --
+# -fno-sanitize-recover, LeakSanitizer exits 23). The places that do
+# capture the run's stderr -- the examples loop and the TSan lanes --
 # compare the status themselves and print what was captured on a mismatch.
+
+# Keep every self-hosted TSan lane on the same output and failure contract.
+run_tsan() {
+    local program=$1 expected=$2 actual=$3 status=0
+    BEANS_NO_POOL=1 "$program" >"$actual" 2>"$tmp/self-host-tsan.err" || status=$?
+    if grep -q 'WARNING: ThreadSanitizer' "$tmp/self-host-tsan.err"; then
+        cat "$actual" >&2
+        cat "$tmp/self-host-tsan.err" >&2
+        return 1
+    elif [[ "$status" -ne 0 && "${CI:-false}" != true ]] &&
+            grep -q '^ThreadSanitizer: CHECK failed:.*personality.*ADDR_NO_RANDOMIZE' "$tmp/self-host-tsan.err"; then
+        # Match atomics/poll: an emulated host can reject TSan before main runs.
+        # Keep CI strict, and never turn another crash or a race into a skip.
+        echo "note: ThreadSanitizer cannot start here (emulated syscall); ${program##*/} was skipped" >&2
+        return 0
+    fi
+    if [[ "$status" -ne 0 ]]; then
+        echo "self-host TSan ${program##*/} failed with status $status" >&2
+        cat "$actual" >&2
+        cat "$tmp/self-host-tsan.err" >&2
+        return "$status"
+    fi
+    diff -u "$expected" "$actual"
+}
 
 "$reference_compiler" check src/main.b >/dev/null
 make build/beansc-next >/dev/null
@@ -1220,26 +1244,7 @@ clang -O1 -g -fsanitize=thread -pthread \
     -Wno-override-module \
     "$tmp/threads.first.sanitize-thread.ll" build/beans_rt.c -lm \
     -o "$tmp/threads-tsan"
-tsan_status=0
-BEANS_NO_POOL=1 "$tmp/threads-tsan" \
-    >"$tmp/threads.tsan.actual" 2>"$tmp/threads.tsan.err" || tsan_status=$?
-if grep -q 'WARNING: ThreadSanitizer' "$tmp/threads.tsan.err"; then
-    cat "$tmp/threads.tsan.err" >&2
-    exit 1
-elif [[ "$tsan_status" -ne 0 && "${CI:-false}" != true ]] &&
-        grep -q '^ThreadSanitizer: CHECK failed:.*personality.*ADDR_NO_RANDOMIZE' \
-            "$tmp/threads.tsan.err"; then
-    # Match atomics/poll: an emulated host can reject TSan before main runs.
-    # Keep CI strict, and never turn another crash or a race into a skip.
-    echo "note: ThreadSanitizer cannot start here (emulated syscall); the self-host threads TSan run was skipped" >&2
-else
-    if [[ "$tsan_status" -ne 0 ]]; then
-        echo "self-host threads failed under TSan with status $tsan_status" >&2
-        cat "$tmp/threads.tsan.err" >&2
-        exit "$tsan_status"
-    fi
-    diff -u "$tmp/threads.expected" "$tmp/threads.tsan.actual"
-fi
+run_tsan "$tmp/threads-tsan" "$tmp/threads.expected" "$tmp/threads.tsan.actual"
 ./build/beansc-next llvm \
     test/cases/self_host_llvm_scalars.b \
     >"$tmp/scalars.first.ll"
@@ -1612,10 +1617,7 @@ clang -O1 -g -fsanitize=thread -pthread \
     -Wno-override-module \
     "$tmp/wide-handles.first.sanitize-thread.ll" build/beans_rt.c -lm \
     -o "$tmp/wide-handles-tsan"
-BEANS_NO_POOL=1 "$tmp/wide-handles-tsan" \
-    >"$tmp/wide-handles.tsan.actual"
-diff -u "$tmp/wide-handles.expected" \
-    "$tmp/wide-handles.tsan.actual"
+run_tsan "$tmp/wide-handles-tsan" "$tmp/wide-handles.expected" "$tmp/wide-handles.tsan.actual"
 ./build/beansc-next llvm \
     test/cases/self_host_llvm_wide_collections.b \
     >"$tmp/wide-collections.first.ll"
@@ -1759,10 +1761,7 @@ clang -O1 -g -fsanitize=thread -pthread \
     -Wno-override-module \
     "$tmp/thread-float.first.sanitize-thread.ll" build/beans_rt.c -lm \
     -o "$tmp/thread-float-tsan"
-BEANS_NO_POOL=1 "$tmp/thread-float-tsan" \
-    >"$tmp/thread-float.tsan.actual"
-diff -u "$tmp/thread-float.expected" \
-    "$tmp/thread-float.tsan.actual"
+run_tsan "$tmp/thread-float-tsan" "$tmp/thread-float.expected" "$tmp/thread-float.tsan.actual"
 # range patterns compare with the subject's signedness: 150u8 is
 # inside 100..=200 only under uge/ule, and signed subjects keep
 # the s-forms
@@ -2059,10 +2058,7 @@ clang -O1 -g -fsanitize=thread -pthread \
     -Wno-override-module \
     "$tmp/atomics-case.first.sanitize-thread.ll" build/beans_rt.c -lm \
     -o "$tmp/atomics-case-tsan"
-BEANS_NO_POOL=1 "$tmp/atomics-case-tsan" \
-    >"$tmp/atomics-case.tsan.actual"
-diff -u "$tmp/atomics-case.expected" \
-    "$tmp/atomics-case.tsan.actual"
+run_tsan "$tmp/atomics-case-tsan" "$tmp/atomics-case.expected" "$tmp/atomics-case.tsan.actual"
 # fixed arrays: inline [N x T] values, literal insertvalues,
 # alloca-backed element writes, spilled-copy iteration, unrolled
 # ==, constant len, arrays inside records, and an out-of-range
@@ -2288,20 +2284,7 @@ clang -O1 -g -fsanitize=thread -pthread \
     -Wno-override-module \
     "$tmp/threads.next.sanitize-thread.ll" build/beans_rt.c -lm \
     -o "$tmp/threads-next-tsan"
-set +e
-BEANS_NO_POOL=1 "$tmp/threads-next-tsan" \
-    >"$tmp/threads.next.tsan.actual" \
-    2>"$tmp/threads.next.tsan.err"
-threads_tsan_status=$?
-set -e
-if [[ "$threads_tsan_status" -ne 0 ]]; then
-    echo "self-host threads TSan exited $threads_tsan_status" >&2
-    cat "$tmp/threads.next.tsan.actual" >&2
-    cat "$tmp/threads.next.tsan.err" >&2
-    exit 1
-fi
-diff -u "$tmp/threads.next.expected" \
-    "$tmp/threads.next.tsan.actual"
+run_tsan "$tmp/threads-next-tsan" "$tmp/threads.next.expected" "$tmp/threads.next.tsan.actual"
 ./build/beansc-next build examples/shop/main.b \
     -o "$tmp/shop-next-native" >"$tmp/shop.build.out"
 grep -q "^built " "$tmp/shop.build.out"

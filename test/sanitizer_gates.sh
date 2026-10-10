@@ -174,6 +174,52 @@ if fail:
     sys.exit(1)
 PY
 
+# Exercise the actual self-host TSan runner: an unavailable local runtime is
+# distinct from a race, a program fault, wrong output, or missing CI coverage.
+python3 - <<'PY'
+import os, pathlib, re, subprocess, tempfile
+
+source = pathlib.Path("test/self_host.sh").read_text()
+helper = re.search(r"^run_tsan\(\) \{\n.*?^\}\n", source, re.M | re.S)
+assert helper, "self-host TSan runner is missing"
+calls = len(re.findall(r'^run_tsan "', source, re.M))
+assert calls >= 5 and calls == source.count("-fsanitize=thread"), "every self-host TSan lane must use the runner"
+startup = ("ThreadSanitizer: CHECK failed: tsan_platform_linux.cpp:282 "
+           "personality(old_personality | ADDR_NO_RANDOMIZE)")
+cases = [
+    ("clean", 0, "expected\n", "", False, 0),
+    ("clean CI", 0, "expected\n", "", True, 0),
+    ("local startup unavailable", 139, "", startup, False, 0),
+    ("CI startup unavailable", 139, "", startup, True, 139),
+    ("race", 66, "", "WARNING: ThreadSanitizer: data race", False, 1),
+    ("race with zero status", 0, "expected\n", "WARNING: ThreadSanitizer: data race", False, 1),
+    ("race and startup error", 139, "", startup + "\nWARNING: ThreadSanitizer: data race", False, 1),
+    ("other crash", 139, "before crash\n", "ThreadSanitizer: CHECK failed: another invariant", False, 139),
+    ("wrong output", 0, "wrong\n", "", False, 1),
+]
+for name, status, output, error, ci, expected in cases:
+    with tempfile.TemporaryDirectory(prefix="beans-tsan-gate-") as folder:
+        root = pathlib.Path(folder)
+        (root / "expected").write_text("expected\n")
+        (root / "stdout").write_text(output)
+        (root / "stderr").write_text(error)
+        program = root / "program"
+        program.write_text('#!/usr/bin/env bash\ncat "$tmp/stdout"\n'
+                           'cat "$tmp/stderr" >&2\nexit ' + str(status) + '\n')
+        program.chmod(0o755)
+        result = subprocess.run(
+            ["bash", "-c", "set -euo pipefail\n" + helper.group() +
+             '\nrun_tsan "$tmp/program" "$tmp/expected" "$tmp/test.actual"'],
+            env={**os.environ, "tmp": str(root), "CI": "true" if ci else "false"},
+            capture_output=True, text=True, timeout=10)
+        assert result.returncode == expected, (name, result)
+        if name == "local startup unavailable":
+            assert "was skipped" in result.stderr, result
+        if name == "other crash":
+            assert output in result.stderr and error in result.stderr, result
+        print("ok self-host TSan gate:", name)
+PY
+
 # ---- 3. the attribute that lets a sanitizer see generated code --------------
 #
 # `BEANS_SANITIZE` used to reach the clang command line and nothing else

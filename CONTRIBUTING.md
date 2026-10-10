@@ -65,7 +65,7 @@ it is never an expected program result. Failed CI jobs upload the command log
 at `build/windows-processes.jsonl` and captured test output. Reproduce the
 scheduler probe with `bash test/issue212.sh --root-only` before the full suite.
 
-The self-host thread test reports the known TSan `personality` startup failure
+The self-host TSan lanes report the known `personality` startup failure
 as unavailable on local emulated hosts. With `CI=true`, that startup failure
 remains fatal. Races, other crashes, and output mismatches always fail the gate.
 
