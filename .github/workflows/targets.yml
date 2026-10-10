@@ -24,6 +24,7 @@ on:
       - "runtime/**"
       - "stdlib/std/**"
       - "test/windows*.sh"
+      - "test/windows*.py"
       - "test/linux*.sh"
       - "test/musl*.sh"
       - "test/wasm.sh"
@@ -340,6 +341,14 @@ jobs:
             exit 1
           fi
 
+      - name: Preserve Windows failure commands and output
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-failure-wine
+          path: /tmp/windows.log
+          if-no-files-found: ignore
+
   # The native pair: an ubuntu job cross-compiles every eligible example and
   # records the interpreter's verdicts; a real Windows runner then executes
   # the binaries and diffs. Until beansc itself runs on Windows this split is
@@ -435,6 +444,20 @@ jobs:
           name: windows-native-bundle-${{ matrix.id }}
           path: build/windows_native
           if-no-files-found: error
+
+      - name: Preserve Windows failure commands and output
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-failure-stage-${{ matrix.id }}
+          path: |
+            build/windows-processes.jsonl
+            build/windows*/**/*.out
+            build/windows*/**/*.err
+            build/windows*/**/*.buildlog
+            build/windows*/**/*.expected
+            build/windows*/**/*.actual
+          if-no-files-found: ignore
 
   windows-native:
     name: run on real Windows (${{ matrix.id }})
@@ -654,6 +677,20 @@ jobs:
           name: native-${{ matrix.id }}
           search-root: build
 
+      - name: Preserve Windows failure commands and output
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-failure-native-${{ matrix.id }}
+          path: |
+            build/windows-processes.jsonl
+            build/windows*/**/*.out
+            build/windows*/**/*.err
+            build/windows*/**/*.buildlog
+            build/windows*/**/*.expected
+            build/windows*/**/*.actual
+          if-no-files-found: ignore
+
   windows-msvc:
     name: MSVC host (${{ matrix.arch }})
     needs: windows-stage
@@ -763,3 +800,17 @@ jobs:
           phase: collect
           name: msvc-${{ matrix.arch }}
           search-root: build
+
+      - name: Preserve Windows failure commands and output
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-failure-msvc-${{ matrix.arch }}
+          path: |
+            build/windows-processes.jsonl
+            build/windows*/**/*.out
+            build/windows*/**/*.err
+            build/windows*/**/*.buildlog
+            build/windows*/**/*.expected
+            build/windows*/**/*.actual
+          if-no-files-found: ignore

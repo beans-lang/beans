@@ -3,6 +3,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+case "${1:-}" in
+    "" | --source-only) ;;
+    *) echo "usage: $0 [--source-only]" >&2; exit 2 ;;
+esac
+
 version=$(sed -n 's/^compiler=//p' VERSION)
 language=$(sed -n 's/^language=//p' VERSION)
 abi=$(sed -n 's/^runtime_abi=//p' VERSION)
@@ -32,6 +37,11 @@ if grep -nE 'beansc [0-9]+[.][0-9]+' ${selfhosted+"${selfhosted[@]}"} \
     echo "the self-hosted compiler hard-codes a version outside version.b" >&2
     cat build/test-version-selfhosted.txt >&2
     exit 1
+fi
+
+if [[ "${1:-}" == --source-only ]]; then
+    echo "ok generated version source"
+    exit 0
 fi
 
 # Report both versions and the rebuild command when the binary is stale.

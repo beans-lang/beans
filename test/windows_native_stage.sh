@@ -53,6 +53,17 @@ if [[ ! -x "$BEANSC" ]]; then
     make
 fi
 
+# Keep each compiler command bounded and retain its identity even if the job dies.
+run() {
+    local status=0
+    python3 test/windows_run.py --timeout "${BEANS_WINDOWS_RUN_CAP:-600}" -- "$@" || status=$?
+    if [[ $status -eq 124 ]]; then
+        echo "Windows gate timed out; see build/windows-processes.jsonl and captured output" >&2
+        exit 124
+    fi
+    return "$status"
+}
+
 # The build machine is not the run machine here, so anything that prints facts
 # about the machine running it cannot be diffed across the pair. The wine gate
 # (test/windows.sh) still diffs cpu_dispatch and intrinsics on one machine;
@@ -95,7 +106,7 @@ rm -f "$OUT"/*.exe "$OUT"/*.expected "$OUT"/manifest.tsv
 
 stage() { # <source> <stem>
     local src=$1 stem=$2
-    "$BEANSC" build --target $TRIPLE --linker lld "$src" -o "$OUT/$stem.exe"
+    run "$BEANSC" build --target $TRIPLE --linker lld "$src" -o "$OUT/$stem.exe"
     local code=0
     local fixture=""
     if [[ "$TRIPLE" == *-windows-msvc ]]; then
@@ -144,9 +155,13 @@ stage() { # <source> <stem>
         cp "$fixture" "$OUT/$stem.expected"
     else
         set +e
-        "$BEANSC" run "$src" > "$OUT/$stem.expected" 2>&1
+        run "$BEANSC" run "$src" > "$OUT/$stem.expected" 2>&1
         code=$?
         set -e
+        if [[ $code -eq 124 ]]; then
+            cat "$OUT/$stem.expected" >&2
+            exit 1
+        fi
     fi
     printf '%s\t%s\n' "$stem" "$code" >> "$OUT/manifest.tsv"
 }
@@ -159,9 +174,13 @@ stage() { # <source> <stem>
 buildable() { # <source>
     local src=$1 out code
     set +e
-    out=$("$BEANSC" check --target $TRIPLE "$src" 2>&1)
+    out=$(run "$BEANSC" check --target $TRIPLE "$src" 2>&1)
     code=$?
     set -e
+    if [[ $code -eq 124 ]]; then
+        echo "$out" >&2
+        exit 1
+    fi
     [[ $code -eq 0 ]] && return 0
     # "allows none" is std.asm on 32-bit x86, where SYNTAX.md
     # keeps value rows off on purpose: `mov $0, $1` with a 64-bit operand on a
@@ -224,7 +243,7 @@ fi
 
 # A package-owned C source must cross the Windows native compiler and linker,
 # not only the host interpreter's temporary shared-library path.
-"$BEANSC" build --target $TRIPLE --linker lld \
+run "$BEANSC" build --target $TRIPLE --linker lld \
     test/fixtures/windows_csrc/main.b -o "$OUT/windows_csrc.exe"
 printf 'windows csrc 42\n' > "$OUT/windows_csrc.expected"
 printf 'windows_csrc\t0\n' >> "$OUT/manifest.tsv"
@@ -256,7 +275,7 @@ if command -v python3 >/dev/null 2>&1; then
             cexpect="$dfuzz_corpus/$cname/expected_stdout.txt"
             cexit=$(cat "$dfuzz_corpus/$cname/expected_exit.txt")
         fi
-        "$BEANSC" build --target $TRIPLE --linker lld "$csrc" \
+        run "$BEANSC" build --target $TRIPLE --linker lld "$csrc" \
             -o "$OUT/dfuzz_$cname.exe"
         cp "$cexpect" "$OUT/dfuzz_$cname.expected"
         printf '%s\t%s\n' "dfuzz_$cname" "$cexit" >> "$OUT/manifest.tsv"
@@ -274,13 +293,20 @@ echo "$TRIPLE" > "$OUT/triple"
 # The compiler identity behind every staged binary, for the run-side report:
 # the Beans compiler that drove the build and the C driver underneath it.
 {
-    "$BEANSC" --version 2>/dev/null | head -1 || echo "beansc (version unavailable)"
+    version_status=0
+    version_output=$(run "$BEANSC" --version) || version_status=$?
+    [[ $version_status -ne 124 ]] || exit 124
+    if [[ $version_status -eq 0 ]]; then
+        printf '%s\n' "$version_output" | head -1
+    else
+        echo "beansc (version unavailable)"
+    fi
     clang --version 2>/dev/null | head -1 || echo "clang (version unavailable)"
 } > "$OUT/toolchain"
 
 # target_info runs on the Windows side as a positive golden: the facts a
 # running PE binary reports must be the Windows target's, not the build host's.
-"$BEANSC" build --target $TRIPLE --linker lld examples/target_info.b \
+run "$BEANSC" build --target $TRIPLE --linker lld examples/target_info.b \
     -o "$OUT/target_info.exe"
 
 # Record the pointer width so the run half can hold a 32-bit binary to it. This
@@ -294,8 +320,8 @@ case "$TRIPLE" in
     *) echo 8 > "$OUT/pointer_size" ;;
 esac
 if [[ -f "$OUT/../$(basename "$OUT")/c_layout_structs.exe" ]] ||
-   "$BEANSC" check --target $TRIPLE examples/c_layout_structs.b >/dev/null 2>&1; then
-    "$BEANSC" build --target $TRIPLE --linker lld examples/c_layout_structs.b \
+   run "$BEANSC" check --target $TRIPLE examples/c_layout_structs.b >/dev/null 2>&1; then
+    run "$BEANSC" build --target $TRIPLE --linker lld examples/c_layout_structs.b \
         -o "$OUT/c_layout_structs.exe"
 fi
 
@@ -307,16 +333,16 @@ bash test/fixtures/tls_cert_corpus.sh "$OUT/tls_certs" >/dev/null
 openssl pkcs12 -export -out "$OUT/tls_server.p12" \
     -inkey "$OUT/tls_certs/valid.key" -in "$OUT/tls_certs/valid.crt" \
     -certfile "$OUT/tls_certs/ca.crt" -passout pass:beans >/dev/null 2>&1
-"$BEANSC" build --target $TRIPLE --linker lld test/cases/tls_server.b \
+run "$BEANSC" build --target $TRIPLE --linker lld test/cases/tls_server.b \
     -o "$OUT/tls_server.exe"
-"$BEANSC" build --target $TRIPLE --linker lld \
+run "$BEANSC" build --target $TRIPLE --linker lld \
     test/cases/tls_server_client.b -o "$OUT/tls_server_client.exe"
-"$BEANSC" build --target $TRIPLE --linker lld \
+run "$BEANSC" build --target $TRIPLE --linker lld \
     test/cases/tls_listener_server.b -o "$OUT/tls_listener_server.exe"
 cp test/cases/tls_listener_server.out "$OUT/tls_listener_server.expected"
-"$BEANSC" build --target $TRIPLE --linker lld test/cases/tls_fuzz.b \
+run "$BEANSC" build --target $TRIPLE --linker lld test/cases/tls_fuzz.b \
     -o "$OUT/tls_fuzz.exe"
-"$BEANSC" build --target $TRIPLE --linker lld \
+run "$BEANSC" build --target $TRIPLE --linker lld \
     test/cases/tls_fuzz_server.b -o "$OUT/tls_fuzz_server.exe"
 
 # The floor is per target and is a measured number, not a number chosen to make

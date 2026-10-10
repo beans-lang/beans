@@ -52,6 +52,23 @@ make test
 
 Use `make test-linux` for the full Linux container gate.
 
+CI checks the signal-handler contract and generated version source before
+building, through `bash test/signals.sh --source-only` and
+`bash test/version.sh --source-only`. The pinned Unicode tables are checked by
+`python3 tools/gen_width_table.py --check`. These source checks also remain in
+their full behavioral suites.
+
+Windows staging and hosted tests bound each compiler command with
+`test/windows_run.py`. `BEANS_WINDOWS_RUN_CAP` sets the per-command deadline
+(600 seconds by default). A timeout fails the gate and stops the process tree;
+it is never an expected program result. Failed CI jobs upload the command log
+at `build/windows-processes.jsonl` and captured test output. Reproduce the
+scheduler probe with `bash test/issue212.sh --root-only` before the full suite.
+
+The self-host thread test reports the known TSan `personality` startup failure
+as unavailable on local emulated hosts. With `CI=true`, that startup failure
+remains fatal. Races, other crashes, and output mismatches always fail the gate.
+
 The core correctness check compares interpreter output with native output over
 the example suite. The fixed point (`make test-fixpoint`) requires the compiler
 to build a compiler byte-identical to itself: stage 2 and stage 3 must match.

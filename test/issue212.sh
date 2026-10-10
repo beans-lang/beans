@@ -2,7 +2,11 @@
 # Issue #212: restore generated chains on a fixed compiler stack without regrouping.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-python3 - "${BEANSC:-$PWD/build/beansc}" <<'PY'
+case "${1:-}" in
+    "" | --root-only) ;;
+    *) echo "usage: $0 [--root-only]" >&2; exit 2 ;;
+esac
+python3 - "${BEANSC:-$PWD/build/beansc}" "${1:-}" <<'PY'
 import os, pathlib, subprocess, sys, tempfile
 sys.path.insert(0, "tools")
 from syntax_fuzz import CHAIN_LIMIT, CHAIN_MESSAGE, chain_depth, nested_case
@@ -29,9 +33,12 @@ with tempfile.TemporaryDirectory(prefix="beans-issue212-") as directory:
     probe = root / ("root.exe" if os.name == "nt" else "root")
     invoke([os.environ.get("BEANS_CC", "clang"), "-std=c11", "-O2",
             "runtime/beans_fiber.c", "test/issue212_root.c", "-o", str(probe)] +
-           ([] if os.name == "nt" else ["-pthread"]))
+           ([] if os.name == "nt" else ["-pthread"]) +
+           (["--target=" + os.environ["TRIPLE"]] if os.environ.get("TRIPLE") else []))
     assert "ok compiler root returns" in invoke([str(probe)])
     print("ok compiler root lifecycle and nested entry", flush=True)
+    if sys.argv[2] == "--root-only":
+        sys.exit(0)
     cases = {
         "sum": ("fn main() { let w: List<int> = [1,2,3]\nlet total: int = " +
                 " + ".join("w[%d] * %d" % (i % 3, i % 3 + 1) for i in range(5000)) +

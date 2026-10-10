@@ -68,6 +68,9 @@ jobs:
       - name: Coverage map and workflow sanity
         run: |
           bash test/ci_coverage.sh
+          bash test/signals.sh --source-only
+          bash test/version.sh --source-only
+          python3 test/windows_run.py --self-test
           python3 - <<'EOF'
           import sys, yaml
 
@@ -116,6 +119,9 @@ jobs:
                                    f"which is not a job in this workflow")
           print("workflows parse, with no duplicate keys and no dangling needs")
           EOF
+
+      - name: Generated Unicode tables match their pinned source
+        run: python3 tools/gen_width_table.py --check
 
   preflight-check:
     name: preflight 2 - whole-compiler check

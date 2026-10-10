@@ -1220,9 +1220,26 @@ clang -O1 -g -fsanitize=thread -pthread \
     -Wno-override-module \
     "$tmp/threads.first.sanitize-thread.ll" build/beans_rt.c -lm \
     -o "$tmp/threads-tsan"
+tsan_status=0
 BEANS_NO_POOL=1 "$tmp/threads-tsan" \
-    >"$tmp/threads.tsan.actual"
-diff -u "$tmp/threads.expected" "$tmp/threads.tsan.actual"
+    >"$tmp/threads.tsan.actual" 2>"$tmp/threads.tsan.err" || tsan_status=$?
+if grep -q 'WARNING: ThreadSanitizer' "$tmp/threads.tsan.err"; then
+    cat "$tmp/threads.tsan.err" >&2
+    exit 1
+elif [[ "$tsan_status" -ne 0 && "${CI:-false}" != true ]] &&
+        grep -q '^ThreadSanitizer: CHECK failed:.*personality.*ADDR_NO_RANDOMIZE' \
+            "$tmp/threads.tsan.err"; then
+    # Match atomics/poll: an emulated host can reject TSan before main runs.
+    # Keep CI strict, and never turn another crash or a race into a skip.
+    echo "note: ThreadSanitizer cannot start here (emulated syscall); the self-host threads TSan run was skipped" >&2
+else
+    if [[ "$tsan_status" -ne 0 ]]; then
+        echo "self-host threads failed under TSan with status $tsan_status" >&2
+        cat "$tmp/threads.tsan.err" >&2
+        exit "$tsan_status"
+    fi
+    diff -u "$tmp/threads.expected" "$tmp/threads.tsan.actual"
+fi
 ./build/beansc-next llvm \
     test/cases/self_host_llvm_scalars.b \
     >"$tmp/scalars.first.ll"

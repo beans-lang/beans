@@ -33,6 +33,20 @@ if ! command -v clang >/dev/null 2>&1; then
     exit 0
 fi
 
+# Keep each compiler command bounded and retain its identity even if the job dies.
+run() {
+    python3 test/windows_run.py --timeout "${BEANS_WINDOWS_RUN_CAP:-600}" -- "$@"
+    local status=$?
+    if [[ $status -eq 124 ]]; then
+        echo "Windows gate timed out; see build/windows-processes.jsonl and captured output" >&2
+        exit 124
+    fi
+    return "$status"
+}
+
+python3 test/windows_run.py --self-test || exit 1
+TRIPLE="$CLANG_TRIPLE" bash test/issue212.sh --root-only || exit 1
+
 sysroot_args=()
 [[ -n "$SYSROOT" ]] && sysroot_args=(--sysroot "$SYSROOT")
 
@@ -66,7 +80,7 @@ class Box {
 
 fn main() {}
 EOF
-if "$BEANSC" check build/windows_hosted/reserved.b \
+if run "$BEANSC" check build/windows_hosted/reserved.b \
         > build/windows_hosted/reserved.raw 2>&1; then
     echo "FAIL: a builtin type name was accepted on this host" >&2
     exit 1
@@ -78,7 +92,7 @@ if ! grep -q "type name 'Box' already taken" build/windows_hosted/reserved.out; 
     exit 1
 fi
 
-if ! "$BEANSC" run test/cases/ffi_aggregate.b 2> build/windows_hosted/agg.err \
+if ! run "$BEANSC" run test/cases/ffi_aggregate.b 2> build/windows_hosted/agg.err \
         | tr -d '\r' > build/windows_hosted/agg.out; then
     echo "FAIL: the aggregate C ABI bridge did not run on this host:" >&2
     cat build/windows_hosted/agg.err >&2
@@ -88,7 +102,7 @@ if ! diff -u test/cases/ffi_aggregate.out build/windows_hosted/agg.out; then
     echo "FAIL: aggregate C ABI output differs on this host" >&2
     exit 1
 fi
-if BEANS_CC=./no-such-cc "$BEANSC" run test/cases/ffi_aggregate.b \
+if BEANS_CC=./no-such-cc run "$BEANSC" run test/cases/ffi_aggregate.b \
         > build/windows_hosted/agg.bad 2>&1; then
     echo "FAIL: BEANS_CC was ignored by the C ABI bridge on this host" >&2
     exit 1
@@ -107,7 +121,7 @@ echo "reserved names refused; the C ABI bridge runs and honors BEANS_CC"
 # shapes. Both cases stay on msvcrt-exported symbols because the module walk
 # cannot see static-CRT symbols.
 for words in ffi_words ffi_rotate; do
-    if ! "$BEANSC" run "test/cases/$words.b" 2> "build/windows_hosted/$words.err" \
+    if ! run "$BEANSC" run "test/cases/$words.b" 2> "build/windows_hosted/$words.err" \
             | tr -d '\r' > "build/windows_hosted/$words.interp.out"; then
         echo "FAIL: test/cases/$words.b did not run interpreted on this host:" >&2
         cat "build/windows_hosted/$words.err" >&2
@@ -117,13 +131,13 @@ for words in ffi_words ffi_rotate; do
         echo "FAIL: interpreted $words output differs on this host" >&2
         exit 1
     fi
-    if ! "$BEANSC" build --linker lld ${sysroot_args+"${sysroot_args[@]}"} "test/cases/$words.b" \
+    if ! run "$BEANSC" build --linker lld ${sysroot_args+"${sysroot_args[@]}"} "test/cases/$words.b" \
             -o "build/windows_hosted/$words.exe" > "build/windows_hosted/$words.buildlog" 2>&1; then
         echo "FAIL: test/cases/$words.b does not build natively:" >&2
         sed 's/^/  /' "build/windows_hosted/$words.buildlog" >&2
         exit 1
     fi
-    if ! "./build/windows_hosted/$words.exe" \
+    if ! run "./build/windows_hosted/$words.exe" \
             | tr -d '\r' > "build/windows_hosted/$words.native.out"; then
         echo "FAIL: the native $words binary did not run" >&2
         exit 1
@@ -170,11 +184,12 @@ windows_status() {
     local exe=$1 raw run faulted=0 statuses=""
     command -v powershell.exe >/dev/null 2>&1 || return 0
     for run in $(seq 1 "$WINDOWS_STATUS_RUNS"); do
-        raw=$(powershell.exe -NoProfile -NonInteractive -Command \
+        raw=$(run powershell.exe -NoProfile -NonInteractive -Command \
                   "\$p = Start-Process -FilePath '$exe' -PassThru -Wait \
                             -WindowStyle Hidden; \
                    if (\$p.ExitCode -ne 0) { '0x{0:X8}' -f \$p.ExitCode }" \
                   2>/dev/null | tr -d '\r' | tr -d '[:space:]')
+        [[ $? -ne 124 ]] || exit 124
         [[ -z "$raw" ]] && continue
         faulted=$((faulted + 1))
         case " $statuses " in
@@ -199,7 +214,13 @@ refused=0
 
 for src in examples/*.b; do
     name=$(basename "$src" .b)
-    if ! check_out=$("$BEANSC" check "$src" 2>&1); then
+    check_out=$(run "$BEANSC" check "$src" 2>&1)
+    check_status=$?
+    if [[ $check_status -eq 124 ]]; then
+        echo "$check_out" >&2
+        exit 1
+    fi
+    if [[ $check_status -ne 0 ]]; then
         if grep -q "does not have\|needs at least the\|not available in the runtime\|has no instruction for one\|allows none\|is not a feature .* has\|does not support" <<<"$check_out"; then
             refused=$((refused + 1))
             continue
@@ -208,16 +229,16 @@ for src in examples/*.b; do
         fails=$((fails + 1))
         continue
     fi
-    if ! "$BEANSC" build --linker lld ${sysroot_args+"${sysroot_args[@]}"} "$src" \
+    if ! run "$BEANSC" build --linker lld ${sysroot_args+"${sysroot_args[@]}"} "$src" \
             -o "build/windows_hosted/$name.exe" > "build/windows_hosted/$name.buildlog" 2>&1; then
         echo "FAIL: $src does not build natively:" >&2
         sed 's/^/  /' "build/windows_hosted/$name.buildlog" >&2
         fails=$((fails + 1))
         continue
     fi
-    "$BEANSC" run "$src" > "build/windows_hosted/$name.interp.out" 2>&1
+    run "$BEANSC" run "$src" > "build/windows_hosted/$name.interp.out" 2>&1
     interp_code=$?
-    "./build/windows_hosted/$name.exe" > "build/windows_hosted/$name.native.out" 2>&1
+    run "./build/windows_hosted/$name.exe" > "build/windows_hosted/$name.native.out" 2>&1
     native_code=$?
     ran=$((ran + 1))
     if [[ $interp_code -ne $native_code ]]; then
@@ -235,7 +256,7 @@ for src in examples/*.b; do
     # first fault, preserving its dump and output without retrying it away.
     if [[ "$name" == logging && $interp_code -eq 0 && $native_code -eq 0 ]]; then
         for attempt in $(seq 1 31); do
-            "./build/windows_hosted/$name.exe" >"build/windows_hosted/$name.native.out" 2>&1
+            run "./build/windows_hosted/$name.exe" >"build/windows_hosted/$name.native.out" 2>&1
             code=$?
             if [[ $code -ne 0 ]] || ! cmp -s "build/windows_hosted/$name.interp.out" "build/windows_hosted/$name.native.out"; then
                 echo "FAIL: logging repeat $attempt exited $code or changed output" >&2
@@ -248,11 +269,11 @@ for src in examples/*.b; do
 done
 
 # The multi-package program, same treatment.
-if "$BEANSC" build --linker lld ${sysroot_args+"${sysroot_args[@]}"} examples/shop/main.b \
+if run "$BEANSC" build --linker lld ${sysroot_args+"${sysroot_args[@]}"} examples/shop/main.b \
         -o build/windows_hosted/shop.exe > build/windows_hosted/shop.buildlog 2>&1; then
-    "$BEANSC" run examples/shop/main.b > build/windows_hosted/shop.interp.out 2>&1
+    run "$BEANSC" run examples/shop/main.b > build/windows_hosted/shop.interp.out 2>&1
     shop_i=$?
-    ./build/windows_hosted/shop.exe > build/windows_hosted/shop.native.out 2>&1
+    run ./build/windows_hosted/shop.exe > build/windows_hosted/shop.native.out 2>&1
     shop_n=$?
     ran=$((ran + 1))
     [[ $shop_i -eq $shop_n ]] || { echo "FAIL: shop exit codes differ" >&2; fails=$((fails + 1)); }
