@@ -592,6 +592,8 @@ jobs:
       - name: Generated chains on the fixed Windows compiler stack
         if: matrix.hosted
         shell: bash
+        env:
+          TRIPLE: ${{ matrix.triple }}
         run: BEANSC=build/windows_native/beansc.exe bash test/issue212.sh
 
       # std.encoding on genuine Windows. The bundle staged on Linux already
@@ -767,6 +769,8 @@ jobs:
 
       - name: Generated chains on the fixed MSVC compiler stack
         shell: bash
+        env:
+          TRIPLE: ${{ matrix.triple }}
         run: BEANSC=build/windows_msvc/beansc.exe bash test/issue212.sh
 
       - name: MSVC compiler reaches the IR fixed point

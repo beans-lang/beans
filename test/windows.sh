@@ -472,6 +472,29 @@ if "$BEANSC" build --target $TRIPLE --linker lld src/main.b \
     grep -q "^os windows$" build/windows_gate/beansc.target.out ||
         fail "beansc.exe under wine does not report its own target"
 
+    # Native argv paths use backslashes. IR emission needs no Windows Clang,
+    # so hold the scratch basename contract here as well as on real runners.
+    echo 'fn main() {}' > build/windows_gate/windows_path_probe.b
+    windows_cwd=$(run "$WINE" cmd /c cd)
+    cwd_status=$?
+    windows_cwd=${windows_cwd//$'\r'/}
+    if [[ $cwd_status -ne 0 || -z "$windows_cwd" ]]; then
+        fail "Wine did not report its Windows working directory"
+    else
+        for source_path in 'build\windows_gate\windows_path_probe.b' \
+            "$windows_cwd\\build\\windows_gate\\windows_path_probe.b" \
+            "${windows_cwd//\\//}/build/windows_gate/windows_path_probe.b"; do
+            rm -f build/windows_path_probe.ll
+            if ! run "$WINE" build/windows_gate/beansc.exe build --emit ir \
+                    "$source_path" > build/windows_gate/path.buildlog 2>&1; then
+                cat build/windows_gate/path.buildlog >&2
+                fail "Windows source path cannot emit IR: $source_path"
+            elif [[ ! -s build/windows_path_probe.ll ]]; then
+                fail "Windows source path did not use its basename for scratch IR: $source_path"
+            fi
+        done
+    fi
+
     # Socket transfer and immediate writes must agree across both Windows backends.
     socket_case=test/cases/accepted_thread.b
     if "$BEANSC" build --target $TRIPLE --linker lld "$socket_case" \

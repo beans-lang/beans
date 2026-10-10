@@ -604,7 +604,8 @@ fn edit_pot_dependency(dependency: string, requested: string,
 }
 
 fn module_artifact_name(name: string, source: string) -> string {
-    if name == "" { return path.stem(source) }
+    // Native Windows arguments can use backslashes; std.path consumes '/'.
+    if name == "" { return path.stem(normalize_local_path(source)) }
     var result: string = name
     for part: string in name.split("/") {
         if part != "" { result = part }
@@ -1374,7 +1375,7 @@ fn compiler_main() {
                             if loader.root != "" {
                                 loader.module_name
                             } else {
-                                path.stem(file_path)
+                                module_artifact_name("", file_path)
                             }) {
                             ok(header) => {
                                 match fs.write(

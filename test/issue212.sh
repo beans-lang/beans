@@ -12,6 +12,7 @@ sys.path.insert(0, "tools")
 from syntax_fuzz import CHAIN_LIMIT, CHAIN_MESSAGE, chain_depth, nested_case
 
 compiler = str(pathlib.Path(sys.argv[1]).resolve())
+clang_target = os.environ.get("TRIPLE", "").replace("-gnullvm", "-gnu")
 def small_stack():
     try:
         import resource
@@ -25,7 +26,8 @@ def small_stack():
 def invoke(args, **kwargs):
     result = subprocess.run(args, capture_output=True, timeout=180,
                             preexec_fn=small_stack(), **kwargs)
-    assert result.returncode == 0, (args, result.returncode, result.stderr.decode()[-2000:])
+    assert result.returncode == 0, (args, result.returncode,
+                                  result.stdout.decode()[-2000:], result.stderr.decode()[-2000:])
     return result.stdout.decode().replace("\r\n", "\n")
 
 with tempfile.TemporaryDirectory(prefix="beans-issue212-") as directory:
@@ -34,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix="beans-issue212-") as directory:
     invoke([os.environ.get("BEANS_CC", "clang"), "-std=c11", "-O2",
             "runtime/beans_fiber.c", "test/issue212_root.c", "-o", str(probe)] +
            ([] if os.name == "nt" else ["-pthread"]) +
-           (["--target=" + os.environ["TRIPLE"]] if os.environ.get("TRIPLE") else []))
+           (["--target=" + clang_target] if clang_target else []))
     assert "ok compiler root returns" in invoke([str(probe)])
     print("ok compiler root lifecycle and nested entry", flush=True)
     if sys.argv[2] == "--root-only":
