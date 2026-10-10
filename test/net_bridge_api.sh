@@ -25,13 +25,9 @@ perl -0777 -ne '
   test/cases/llhttp_corpus_runner.b |
     sort -u >"$tmp/all.externs"
 
-# beans_net_* externs are the fiber-parking socket calls: they live in
-# beans_rt.c beside the netpoller, not in the bridge (the bridge is a
-# standalone translation unit with no fiber scheduler). They are checked
-# against the runtime below, exactly like the intrinsic-named symbols;
-# every other extern must pair with a bridge export.
-grep -v '^beans_net_' "$tmp/all.externs" >"$tmp/beans.externs"
-grep '^beans_net_' "$tmp/all.externs" >"$tmp/runtime.externs" || true
+# Socket and fiber queries belong to the core runtime; all other declarations must pair with bridge exports.
+grep -Ev '^beans_(net|fiber)_' "$tmp/all.externs" >"$tmp/beans.externs"
+grep -E '^beans_(net|fiber)_' "$tmp/all.externs" >"$tmp/runtime.externs" || true
 
 if ! diff -u "$tmp/c.exports" "$tmp/beans.externs"; then
     echo "network bridge C exports and Beans declarations differ" >&2
@@ -40,7 +36,7 @@ fi
 
 while IFS= read -r symbol; do
     if ! grep -Eq "^[A-Za-z_][A-Za-z0-9_ *]*[ *]${symbol}\\(" \
-            runtime/beans_rt.c; then
+            runtime/beans_rt.c runtime/beans_fiber.c; then
         echo "runtime-side net extern missing its C entry point: $symbol" >&2
         exit 1
     fi
