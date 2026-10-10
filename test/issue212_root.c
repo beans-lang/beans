@@ -46,6 +46,16 @@ static DWORD WINAPI wake_root(void* context) {
 static void root(void* context) {
     assert(beans_fiber_is_root(beans_fiber_current()));
 #if defined(_WIN32)
+    LARGE_INTEGER frequency;
+    assert(QueryPerformanceFrequency(&frequency));
+    for (int sample = 0; sample < 20; sample++) {
+        LARGE_INTEGER before, after;
+        assert(QueryPerformanceCounter(&before));
+        beans_fiber_sleep(3000000LL);
+        assert(QueryPerformanceCounter(&after));
+        assert((after.QuadPart - before.QuadPart) * 1000 >=
+               frequency.QuadPart * 3);
+    }
     HANDLE thread = CreateThread(NULL, 0, wake_root, beans_fiber_current(), 0, NULL);
     assert(thread);
     assert(beans_fiber_park() == BEANS_FIBER_WOKEN);

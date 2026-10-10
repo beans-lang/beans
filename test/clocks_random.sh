@@ -5,6 +5,54 @@ cd "$(dirname "$0")/.."
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/beans-clocks.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 
+echo "checking Windows fiber deadlines use a precise monotonic clock"
+# Exercise the actual Windows clock with controlled OS readings on every host.
+# A coarse tick advances 16ms while only 2.9999ms elapsed: it must not make a
+# 3ms deadline due. This catches the Windows-only early-sleep regression even
+# under Wine, whose timer implementation often hides the coarse-clock error.
+python3 - "$tmp/windows_clock.c" <<'PY'
+from pathlib import Path
+import sys
+source = Path("runtime/beans_fiber.c").read_text()
+start = source.index("static long long fiber_now(void) {")
+end = start
+depth = 0
+for end in range(start, len(source)):
+    if source[end] == "{": depth += 1
+    if source[end] == "}":
+        depth -= 1
+        if depth == 0: break
+Path(sys.argv[1]).write_text('''
+#include <assert.h>
+#define _WIN32 1
+typedef struct { long long QuadPart; } LARGE_INTEGER;
+static long long count = 9876543211234LL, frequency = 10000000;
+static int QueryPerformanceCounter(LARGE_INTEGER* out) {
+    out->QuadPart = count; return 1;
+}
+static int QueryPerformanceFrequency(LARGE_INTEGER* out) {
+    out->QuadPart = frequency; return 1;
+}
+static unsigned long long GetTickCount64(void) {
+    static unsigned long long tick = 0;
+    tick += 16; return tick;
+}
+''' + source[start:end + 1] + '''
+int main(void) {
+    long long before = fiber_now();
+    assert(before == count * 100);
+    count += 29999;
+    assert(fiber_now() - before == 2999900);
+    count += 1;
+    assert(fiber_now() - before == 3000000);
+    frequency = 24000000; count = frequency * 1234567 + frequency / 2;
+    assert(fiber_now() == 1234567500000000LL);
+}
+''')
+PY
+clang -std=c11 "$tmp/windows_clock.c" -o "$tmp/windows_clock"
+"$tmp/windows_clock"
+
 echo "checking clocks and secure random in both backends"
 ./build/beansc run examples/clocks_random.b >"$tmp/interp"
 ./build/beansc build examples/clocks_random.b -o "$tmp/native" >"$tmp/build.log" 2>&1

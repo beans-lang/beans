@@ -66,6 +66,11 @@
 #define BEANS_RT_FIBERS (BEANS_RT_PROFILE >= BEANS_RT_MINIMAL && !BEANS_RT_WASI)
 #if BEANS_RT_FIBERS
 #include "beans_fiber.h"
+#if defined(_WIN32)
+// Defined by beans_fiber.c, included below; one clock owns Windows deadlines
+// and the public monotonic measurements that verify their elapsed duration.
+static long long fiber_now(void);
+#endif
 #endif
 
 // Windows is grouped with wasm here on purpose: preserve_most interacts with
@@ -12682,12 +12687,7 @@ void beans_c_set_errno(int32_t value) { errno = (int)value; }
 //     rather than a flag.
 long long beans_time_monotonic_nanos(void) {
 #if defined(_WIN32)
-    LARGE_INTEGER count, frequency;
-    QueryPerformanceCounter(&count);
-    QueryPerformanceFrequency(&frequency);
-    return (long long)(count.QuadPart / frequency.QuadPart) * 1000000000LL +
-           (long long)((count.QuadPart % frequency.QuadPart) * 1000000000LL /
-                       frequency.QuadPart);
+    return fiber_now();
 #else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);

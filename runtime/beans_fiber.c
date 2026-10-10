@@ -701,7 +701,14 @@ static void inbox_post(BeansWorker* worker, BeansFiber* fiber) {
 
 static long long fiber_now(void) {
 #if defined(_WIN32)
-    return (long long)GetTickCount64() * 1000000LL;
+    // Coarse timer ticks can cross a deadline before the requested duration
+    // elapsed. Use the same clock as std.time's duration measurements.
+    LARGE_INTEGER count, frequency;
+    QueryPerformanceCounter(&count);
+    QueryPerformanceFrequency(&frequency);
+    return (long long)(count.QuadPart / frequency.QuadPart) * 1000000000LL +
+           (long long)((count.QuadPart % frequency.QuadPart) * 1000000000LL /
+                       frequency.QuadPart);
 #else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
