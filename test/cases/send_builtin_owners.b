@@ -7,7 +7,7 @@ fn moved_bytes() -> bool {
     let worker: Thread<int> = thread.spawn(
         fn() move(data) -> int {
             data.set(0, 9)
-            return data.get(0) + data.len()
+            return data.get_u8(0) + data.len()
         })
     return worker.join() == 17
 }

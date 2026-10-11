@@ -26,7 +26,7 @@ fn semantic_builtin_member_names() -> List<string> {
             "floor",
             "first", "flush", "flush_range", "free", "function",
             "function_pointer",
-            "ge", "get", "get_i64", "get_u16", "get_u32", "get_u64",
+            "ge", "get", "get_byte", "get_i64", "get_u16", "get_u32", "get_u64",
             "get_u8", "get_uvarint", "gt", "index_of", "insert",
             "is_empty", "is_expired", "is_nan", "is_none", "is_null", "is_ok",
             "is_open",

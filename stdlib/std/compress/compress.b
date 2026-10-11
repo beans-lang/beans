@@ -335,8 +335,8 @@ pub unique class Inflater implements Send {
         let out: Bytes = drive_stream(
             self.handle, data, false, self.limit, self.produced, state)?
         self.produced += out.len()
-        if state.get(0) == 1 { self.ended = true }
-        if state.get(1) == 1 {
+        if state.get_u8(0) == 1 { self.ended = true }
+        if state.get_u8(1) == 1 {
             return err("push: data after the end of the stream", "invalid")
         }
         return ok(move out)
@@ -356,7 +356,7 @@ pub unique class Inflater implements Send {
         let out: Bytes = drive_stream(
             self.handle, new Bytes(0), true, self.limit, self.produced, state)?
         self.produced += out.len()
-        if state.get(0) == 1 { self.ended = true }
+        if state.get_u8(0) == 1 { self.ended = true }
         if !self.ended {
             return err("finish: the stream ends before its data does", "eof")
         }

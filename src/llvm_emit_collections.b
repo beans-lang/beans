@@ -663,6 +663,12 @@ partial class LlvmTextEmitter {
                 "LLVM emitter only supports plain index assignment yet")
             return ""
         }
+        if canonical_hir_name(map_type.name) == "Bytes" {
+            return self.emit_registry_builtin(
+                function, instruction, values,
+                new RuntimeBuiltin(["i64", "i64"],
+                    "unit", "beans_bytes_set", true), true)
+        }
         if canonical_hir_name(map_type.name) ==
                "List" &&
            map_type.args.len() == 1 {
@@ -1389,10 +1395,8 @@ partial class LlvmTextEmitter {
                 "%slice.ptr{id}"
             return output
         }
-        if (instruction.text == "get" &&
-            instruction.operands.len() == 2) ||
-           (instruction.text == "set" &&
-            instruction.operands.len() == 3) {
+        if instruction.text == "set" &&
+           instruction.operands.len() == 3 {
             let index: string =
                 self.value(
                     function, values,
@@ -1409,13 +1413,6 @@ partial class LlvmTextEmitter {
                 "{output}slice.bad{bad}:\n  call void @beans_panic_slice_index(i64 {index}, i64 %slice.len{id}, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\n"
             output =
                 "{output}slice.have{okay}:\n  %slice.item{id} = getelementptr {element_llvm}, ptr %slice.ptr{id}, i64 {index}\n"
-            if instruction.text == "get" {
-                let result: string =
-                    "%v{instruction.result}"
-                values[instruction.result] =
-                    result
-                return "{output}  {result} = load {element_llvm}, ptr %slice.item{id}, align 1\n"
-            }
             let stored: string =
                 self.value(
                     function, values,
@@ -2706,94 +2703,78 @@ partial class LlvmTextEmitter {
         return output
     }
 
-    fn emit_list_get(
+    // Optional indexed reads share one bounds branch and Option construction.
+    // Container layout only chooses the length, address and element load.
+    fn emit_sequence_get(
         function: MirFunction,
         instruction: MirInstruction,
         values: Map<int, string>) -> string {
-        if instruction.operands.len() != 2 {
-            self.fail(
-                instruction,
-                "LLVM emitter needs a list and index")
-            return ""
-        }
-        let list_id: int = instruction.operands[0]
-        let list_type: HirType =
-            self.value_type(function, list_id)
-        if canonical_hir_name(list_type.name) !=
-               "List" ||
-           list_type.args.len() != 1 ||
-           canonical_hir_name(
-               instruction.type.name) != "Option" ||
+        if instruction.operands.len() != 2 ||
+           canonical_hir_name(instruction.type.name) != "Option" ||
            instruction.type.args.len() != 1 {
-            self.fail(
-                instruction,
-                "LLVM emitter only supports List.get here")
+            self.fail(instruction,
+                "LLVM emitter needs an optional sequence read")
             return ""
         }
-        let element: HirType = list_type.args[0]
-        let list: string =
-            self.value(
-                function, values,
-                list_id, instruction)
-        let index: string =
-            self.value(
-                function, values,
-                instruction.operands[1],
-                instruction)
+        let receiver_type: HirType =
+            self.value_type(function, instruction.operands[0])
+        let name: string = canonical_hir_name(receiver_type.name)
+        let element: HirType = instruction.type.args[0]
+        let llvm: string = self.type_text(element)
+        let option: string = self.type_text(instruction.type)
+        let receiver: string = self.value(
+            function, values, instruction.operands[0], instruction)
+        let index: string = self.value(
+            function, values, instruction.operands[1], instruction)
         let id: int = self.fresh()
-        let have_block: int = self.fresh()
-        let missing_block: int = self.fresh()
-        let merge_block: int = self.fresh()
+        let have: int = self.fresh()
+        let missing: int = self.fresh()
+        let merge: int = self.fresh()
         let result: string = "%v{instruction.result}"
-        var output: string =
-            "  %list.get.len.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  %list.get.len{id} = load i64, ptr %list.get.len.ptr{id}\n  %list.get.ok{id} = icmp ult i64 {index}, %list.get.len{id}\n  br i1 %list.get.ok{id}, label %list.get.have{have_block}, label %list.get.missing{missing_block}\n"
-        output =
-            "{output}list.get.have{have_block}:\n  %list.get.data.ptr{id} = getelementptr i8, ptr {list}, i64 0\n  %list.get.data{id} = load ptr, ptr %list.get.data.ptr{id}\n  %list.get.slot{id} = getelementptr i64, ptr %list.get.data{id}, i64 {index}\n  %list.get.raw{id} = load i64, ptr %list.get.slot{id}\n"
-        if self.list_element_inline(element) {
-            let llvm: string =
-                self.type_text(element)
-            let option: string =
-                self.type_text(instruction.type)
-            output =
-                "  %list.get.len.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  %list.get.len{id} = load i64, ptr %list.get.len.ptr{id}\n  %list.get.ok{id} = icmp ult i64 {index}, %list.get.len{id}\n  br i1 %list.get.ok{id}, label %list.get.have{have_block}, label %list.get.missing{missing_block}\nlist.get.have{have_block}:\n  %list.get.data{id} = load ptr, ptr {list}\n  %list.get.slot{id} = getelementptr {llvm}, ptr %list.get.data{id}, i64 {index}\n  %list.get.value{id} = load {llvm}, ptr %list.get.slot{id}\n{self.emit_arc_value(element, "%list.get.value{id}", true)}  %list.get.payload{id} = insertvalue {option} poison, {llvm} %list.get.value{id}, 1\n  %list.get.some{id} = insertvalue {option} %list.get.payload{id}, i1 true, 0\n  br label %list.get.merge{merge_block}\nlist.get.missing{missing_block}:\n  br label %list.get.merge{merge_block}\nlist.get.merge{merge_block}:\n  {result} = phi {option} [ %list.get.some{id}, %list.get.have{have_block} ], [ zeroinitializer, %list.get.missing{missing_block} ]\n"
-            values[instruction.result] = result
-            return output
-        }
-        let converted: LlvmSlotConversion =
-            self.from_slot(
-                element, "%list.get.raw{id}",
-                "%list.get.value{id}", "get")
-        output = "{output}{converted.setup}"
-        var present_value: string =
-            converted.value
-        if self.type_is_reference(element) {
-            output =
-                "{output}  call void @beans_retain(ptr {present_value})\n"
+        var setup: string = ""
+        var length: string = "%sequence.get.len{id}"
+        var data: string = "%sequence.get.data{id}"
+        var load: string = ""
+        if name == "array" {
+            let array_llvm: string = self.type_text(receiver_type)
+            data = self.spill_slot(array_llvm, "sequence.get")
+            setup = "  store {array_llvm} {receiver}, ptr {data}\n"
+            length = "{receiver_type.array_length}"
+            load = "  %sequence.get.slot{id} = getelementptr {array_llvm}, ptr {data}, i64 0, i64 {index}\n  %sequence.get.value{id} = load {llvm}, ptr %sequence.get.slot{id}\n"
+        } else if name == "Slice" {
+            setup = "  {data} = extractvalue \{ptr, i64\} {receiver}, 0\n  {length} = extractvalue \{ptr, i64\} {receiver}, 1\n"
+            load = "  %sequence.get.slot{id} = getelementptr {llvm}, ptr {data}, i64 {index}\n  %sequence.get.value{id} = load {llvm}, ptr %sequence.get.slot{id}, align 1\n"
+        } else if name == "string" {
+            self.require_declare("beans_str_len", "i64 @beans_str_len(ptr)")
+            setup = "  {length} = call i64 @beans_str_len(ptr {receiver})\n"
+            data = receiver
         } else {
-            let payload: int = self.fresh()
-            let some: int = self.fresh()
-            let option_llvm: string =
-                self.type_text(instruction.type)
-            output =
-                "{output}  %list.get.payload{payload} = insertvalue {option_llvm} poison, {self.type_text(element)} {present_value}, 1\n  %list.get.some{some} = insertvalue {option_llvm} %list.get.payload{payload}, i1 true, 0\n"
-            present_value = "%list.get.some{some}"
+            setup = "  %sequence.get.len.ptr{id} = getelementptr i8, ptr {receiver}, i64 8\n  {length} = load i64, ptr %sequence.get.len.ptr{id}\n"
+            load = "  {data} = load ptr, ptr {receiver}\n"
         }
-        output =
-            "{output}  br label %list.get.merge{merge_block}\n"
-        output =
-            "{output}list.get.missing{missing_block}:\n  br label %list.get.merge{merge_block}\n"
-        let option_llvm: string =
-            self.type_text(instruction.type)
-        let missing_value: string =
-            if self.type_is_reference(element) {
-                "null"
+        var present: string = "%sequence.get.value{id}"
+        if name == "Bytes" || name == "string" {
+            load = "{load}  %sequence.get.slot{id} = getelementptr i8, ptr {data}, i64 {index}\n  %sequence.get.byte{id} = load i8, ptr %sequence.get.slot{id}\n  {present} = zext i8 %sequence.get.byte{id} to i64\n"
+        } else if name == "List" {
+            if self.list_element_inline(element) {
+                load = "{load}  %sequence.get.slot{id} = getelementptr {llvm}, ptr {data}, i64 {index}\n  {present} = load {llvm}, ptr %sequence.get.slot{id}\n"
             } else {
-                "zeroinitializer"
+                load = "{load}  %sequence.get.slot{id} = getelementptr i64, ptr {data}, i64 {index}\n  %sequence.get.raw{id} = load i64, ptr %sequence.get.slot{id}\n"
+                let converted: LlvmSlotConversion = self.from_slot(
+                    element, "%sequence.get.raw{id}", present, "get")
+                load = "{load}{converted.setup}"
+                present = converted.value
             }
-        output =
-            "{output}list.get.merge{merge_block}:\n  {result} = phi {option_llvm} [ {present_value}, %list.get.have{have_block} ], [ {missing_value}, %list.get.missing{missing_block} ]\n"
+        }
+        var output: string = "{setup}  %sequence.get.ok{id} = icmp ult i64 {index}, {length}\n  br i1 %sequence.get.ok{id}, label %sequence.get.have{have}, label %sequence.get.missing{missing}\nsequence.get.have{have}:\n{load}{self.emit_arc_value(element, present, true)}"
+        if !self.type_is_reference(element) {
+            output = "{output}  %sequence.get.payload{id} = insertvalue {option} poison, {llvm} {present}, 1\n  %sequence.get.some{id} = insertvalue {option} %sequence.get.payload{id}, i1 true, 0\n"
+            present = "%sequence.get.some{id}"
+        }
+        let absent: string =
+            if self.type_is_reference(element) { "null" } else { "zeroinitializer" }
         values[instruction.result] = result
-        return output
+        return "{output}  br label %sequence.get.merge{merge}\nsequence.get.missing{missing}:\n  br label %sequence.get.merge{merge}\nsequence.get.merge{merge}:\n  {result} = phi {option} [ {present}, %sequence.get.have{have} ], [ {absent}, %sequence.get.missing{missing} ]\n"
     }
 
     fn emit_map_index(
@@ -3329,6 +3310,12 @@ partial class LlvmTextEmitter {
             }
             return self.emit_map_index(
                 function, instruction, values)
+        }
+        if canonical_hir_name(collection_type.name) == "Bytes" {
+            return self.emit_registry_builtin(
+                function, instruction, values,
+                new RuntimeBuiltin(["i64"],
+                    "i64", "beans_bytes_get", true), true)
         }
         if canonical_hir_name(
                collection_type.name) == "array" &&

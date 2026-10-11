@@ -152,7 +152,7 @@ pub fn hmac(algorithm: Algorithm, key: Bytes, data: Bytes) -> Result<Bytes> {
     var inner_pad: Bytes = new Bytes(block)
     var outer_pad: Bytes = new Bytes(block)
     for index: int in 0..block {
-        let byte: int = normalized.get(index)
+        let byte: int = normalized.get_u8(index)
         inner_pad.set(index, byte ^ 0x36)
         outer_pad.set(index, byte ^ 0x5c)
     }

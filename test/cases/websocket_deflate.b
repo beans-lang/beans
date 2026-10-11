@@ -111,7 +111,7 @@ fn noise(size: int, seed: int) -> Bytes {
 fn same_bytes(left: Bytes, right: Bytes) -> bool {
     if left.len() != right.len() { return false }
     for index: int in 0..left.len() {
-        if left.get(index) != right.get(index) { return false }
+        if left.get_u8(index) != right.get_u8(index) { return false }
     }
     return true
 }
@@ -163,21 +163,21 @@ unique class Wire {
     /// server's are not, so the mask bit decides rather than a role flag.
     pub fn read_frame() -> Result<bool> {
         let header: Bytes = self.grab(2)?
-        let first: int = header.get(0)
+        let first: int = header.get_u8(0)
         self.fin = first >= 128
         self.rsv = (first / 16) % 8
         self.opcode = first % 16
-        let second: int = header.get(1)
+        let second: int = header.get_u8(1)
         let masked: bool = second >= 128
         var length: int = second % 128
         if length == 126 {
             let wide: Bytes = self.grab(2)?
-            length = wide.get(0) * 256 + wide.get(1)
+            length = wide.get_u8(0) * 256 + wide.get_u8(1)
         } else if length == 127 {
             let wide: Bytes = self.grab(8)?
             length = 0
             for index: int in 0..8 {
-                length = length * 256 + wide.get(index)
+                length = length * 256 + wide.get_u8(index)
             }
         }
         var key: Bytes = new Bytes(0)
@@ -187,7 +187,7 @@ unique class Wire {
         var body: Bytes = self.grab(length)?
         if masked {
             for index: int in 0..body.len() {
-                body.set(index, body.get(index) ^ key.get(index % 4))
+                body.set(index, body.get_u8(index) ^ key.get_u8(index % 4))
             }
         }
         self.payload = move body
@@ -199,7 +199,7 @@ unique class Wire {
     }
 
     pub fn size() -> int { return self.payload.len() }
-    pub fn byte(index: int) -> int { return self.payload.get(index) }
+    pub fn byte(index: int) -> int { return self.payload.get_u8(index) }
     pub fn body() -> Bytes { return self.payload.slice(0, self.payload.len()) }
     pub fn text() -> string { return self.payload.to_string() }
 
@@ -239,9 +239,9 @@ fn build_frame(opcode: int, fin: bool, rsv: int, payload: Bytes,
     }
     for index: int in 0..payload.len() {
         if mask {
-            out.push(payload.get(index) ^ key.get(index % 4))
+            out.push(payload.get_u8(index) ^ key.get_u8(index % 4))
         } else {
-            out.push(payload.get(index))
+            out.push(payload.get_u8(index))
         }
     }
     return move out
@@ -649,9 +649,9 @@ fn server_probe(offer: string, frames: Bytes, limit: int, finish: bool,
     let text: string = answer.to_string()
     var head_end: int = -1
     for index: int in 0..answer.len() {
-        if index + 4 <= answer.len() && answer.get(index) == 13 &&
-           answer.get(index + 1) == 10 && answer.get(index + 2) == 13 &&
-           answer.get(index + 3) == 10 {
+        if index + 4 <= answer.len() && answer.get_u8(index) == 13 &&
+           answer.get_u8(index + 1) == 10 && answer.get_u8(index + 2) == 13 &&
+           answer.get_u8(index + 3) == 10 {
             if head_end < 0 { head_end = index + 4 }
         }
     }
@@ -659,22 +659,22 @@ fn server_probe(offer: string, frames: Bytes, limit: int, finish: bool,
     if head_end >= 0 {
         var pos: int = head_end
         for pos + 2 <= answer.len() {
-            let opcode: int = answer.get(pos) % 16
-            var length: int = answer.get(pos + 1) % 128
+            let opcode: int = answer.get_u8(pos) % 16
+            var length: int = answer.get_u8(pos + 1) % 128
             var body_at: int = pos + 2
             if length == 126 {
-                length = answer.get(pos + 2) * 256 + answer.get(pos + 3)
+                length = answer.get_u8(pos + 2) * 256 + answer.get_u8(pos + 3)
                 body_at = pos + 4
             } else if length == 127 {
                 length = 0
                 for index: int in 0..8 {
-                    length = length * 256 + answer.get(pos + 2 + index)
+                    length = length * 256 + answer.get_u8(pos + 2 + index)
                 }
                 body_at = pos + 10
             }
             if body_at + length > answer.len() { break }
             if opcode == 8 && length >= 2 {
-                close_code = answer.get(body_at) * 256 + answer.get(body_at + 1)
+                close_code = answer.get_u8(body_at) * 256 + answer.get_u8(body_at + 1)
             }
             pos = body_at + length
         }
@@ -1187,9 +1187,9 @@ fn read_response_extension(stream: net.TcpStream) -> Result<string> {
         }
         head.append(piece)
         for index: int in 0..head.len() {
-            if end < 0 && index + 4 <= head.len() && head.get(index) == 13 &&
-               head.get(index + 1) == 10 && head.get(index + 2) == 13 &&
-               head.get(index + 3) == 10 {
+            if end < 0 && index + 4 <= head.len() && head.get_u8(index) == 13 &&
+               head.get_u8(index + 1) == 10 && head.get_u8(index + 2) == 13 &&
+               head.get_u8(index + 3) == 10 {
                 end = index + 4
             }
         }

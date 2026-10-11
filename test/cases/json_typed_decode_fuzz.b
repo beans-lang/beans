@@ -391,9 +391,9 @@ fn break_document(label: string, doc: string, stats: Stats, kind: int) {
         flipped.reserve(n)
         for i: int in 0..n {
             if i == at {
-                flipped.push((bytes.get(i) + 1) % 256)
+                flipped.push((bytes.get_u8(i) + 1) % 256)
             } else {
-                flipped.push(bytes.get(i))
+                flipped.push(bytes.get_u8(i))
             }
         }
         let text: string = flipped.to_string()

@@ -13,7 +13,7 @@ fn main() {
     data.set(1, 105)
     data.append_string("!")
     io.println(data.len())
-    io.println(data.get(1))
+    io.println(data.get_u8(1))
     let text: string = data.slice(0, 2).to_string_until_nul()
     io.println(text)
     io.println(Bytes.from("xy").len())

@@ -4522,7 +4522,7 @@ fn main() { io.println("local {%s.answer()}") }
         lines += ["        let data: Bytes = Bytes.from_raw(pointer, {})".format(length),
                   "        data.as_ptr().offset({}).write({} as u8)".format(
                       length - 1, changed),
-                  "        io.println(\"bytes {data.len()} {data.get(0)} {data.get(%d)}\")" %
+                  "        io.println(\"bytes {data.len()} {data[0]} {data[%d]}\")" %
                   (length - 1),
                   "        pointer.free()", "    }", "}"]
         files[main_rel] = "\n".join(lines) + "\n"

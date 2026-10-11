@@ -4,10 +4,10 @@ Slice<T> is a borrowed {pointer, length} view over memory you already own.
 What it is:
   An inline two-word view. It owns nothing and frees nothing. Build one with
   `Slice.from_raw(ptr, len)`, cut a smaller window with `subslice(start, end)`,
-  read with `get`/`[]`, write with `set`, and hand the pointer back out with
-  `as_ptr()`. Reads and writes are bounds checked, and a non-empty slice
-  rejects a null pointer. These operations need `unsafe` because the
-  accesses are unchecked, but because the compiler cannot prove the backing
+  read optionally with `get` (Option<T>) or require an element with `[]`,
+  write with `set`, and hand the pointer back out with `as_ptr()`. Reads and
+  writes are bounds checked, and a non-empty slice rejects a null pointer.
+  These operations need `unsafe` because the compiler cannot prove the backing
   allocation is still alive.
 
 Use it when:
@@ -50,7 +50,7 @@ fn main() {
         }
         let middle: Slice<i32> = all.subslice(1, 5)
         middle.set(1, 99)
-        io.println("slice {middle.len()} {middle[0]} {middle.get(2)} {sum_view(middle)}")
+        io.println("slice {middle.len()} {middle[0]} {middle[2]} {sum_view(middle)}")
         io.println("slice ptr {middle.as_ptr() == storage.offset(1)} tail {all[5]}")
         storage.free()
     }

@@ -34,7 +34,7 @@ fn main() {
                         var index: int = 0
                         var found: bool = false
                         for index < chunk.len() && !found {
-                            if chunk.get(index) == 0 {
+                            if chunk.get_u8(index) == 0 {
                                 cut = index
                                 found = true
                                 done = true

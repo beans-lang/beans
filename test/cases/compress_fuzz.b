@@ -103,7 +103,7 @@ fn main() {
         if mutation == 0 && wire.len() > 8 {
             // one corrupted byte
             let at: int = rng.below(wire.len())
-            wire.set(at, wire.get(at) ^ (1 + rng.below(255)))
+            wire.set(at, wire.get_u8(at) ^ (1 + rng.below(255)))
         } else if mutation == 1 && wire.len() > 8 {
             // truncation
             wire.resize(1 + rng.below(wire.len() - 1))

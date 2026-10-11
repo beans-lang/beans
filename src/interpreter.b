@@ -1045,7 +1045,7 @@ class TreeInterpreter {
         if naming == "camel_case" {
             var upper: bool = false
             for index: int in 0..source.len() {
-                let byte: int = source.get(index)
+                let byte: int = source.get_u8(index)
                 if byte == 95 {
                     upper = true
                 } else if upper && byte >= 97 && byte <= 122 {
@@ -1060,7 +1060,7 @@ class TreeInterpreter {
         }
         if naming == "snake_case" {
             for index: int in 0..source.len() {
-                let byte: int = source.get(index)
+                let byte: int = source.get_u8(index)
                 if byte >= 65 && byte <= 90 {
                     if index != 0 { output.push(95) }
                     output.push(byte + 32)
@@ -1821,7 +1821,7 @@ class TreeInterpreter {
         output.push(34)
         var index: int = 0
         for index < length {
-            let byte: int = source.get(index)
+            let byte: int = source.get_u8(index)
             if byte < 128 {
                 if byte == 34 {
                     output.push(92)
@@ -1867,22 +1867,22 @@ class TreeInterpreter {
                     return none
                 }
                 if index + need > length { return none }
-                let c1: int = source.get(index + 1)
+                let c1: int = source.get_u8(index + 1)
                 if (c1 & 192) != 128 { return none }
                 if need == 3 {
-                    let c2: int = source.get(index + 2)
+                    let c2: int = source.get_u8(index + 2)
                     if (c2 & 192) != 128 { return none }
                     if byte == 224 && c1 < 160 { return none } // overlong
                     if byte == 237 && c1 > 159 { return none } // surrogate
                 } else if need == 4 {
-                    let c2: int = source.get(index + 2)
-                    let c3: int = source.get(index + 3)
+                    let c2: int = source.get_u8(index + 2)
+                    let c3: int = source.get_u8(index + 3)
                     if (c2 & 192) != 128 || (c3 & 192) != 128 { return none }
                     if byte == 240 && c1 < 144 { return none } // overlong
                     if byte == 244 && c1 > 143 { return none } // > U+10FFFF
                 }
                 for offset: int in 0..need {
-                    output.push(source.get(index + offset))
+                    output.push(source.get_u8(index + offset))
                 }
                 index += need
             }
@@ -4247,7 +4247,7 @@ class TreeInterpreter {
                 }
             result =
                 result |
-                ((memory.data.get(offset + index) as u64) <<
+                ((memory.data.get_u8(offset + index) as u64) <<
                  (shift as u64))
         }
         return result
@@ -4705,7 +4705,7 @@ class TreeInterpreter {
                     pointer.memory_address)
             for index: int in 0..answer.value.size {
                 host.offset(index).write(
-                    temporary.data.get(index) as u8)
+                    temporary.data.get_u8(index) as u8)
             }
         }
     }
@@ -7125,8 +7125,15 @@ class TreeInterpreter {
             data.push(arguments[1].int_data)
             return some(TreeValue.unit())
         }
-        if (node.value == "get" ||
-            node.value == "get_u8") &&
+        if node.value == "get" && arguments.len() == 2 {
+            let offset: int = arguments[1].int_data
+            if offset < 0 || offset >= data.len() {
+                return some(TreeValue.option_none())
+            }
+            return some(TreeValue.option_some(
+                TreeValue.integer(data.get_u8(offset))))
+        }
+        if node.value == "get_u8" &&
            arguments.len() == 2 {
             let offset: int = arguments[1].int_data
             if offset < 0 || offset >= data.len() {
@@ -7136,12 +7143,7 @@ class TreeInterpreter {
                     "byte index {offset} out of range (len {data.len()})")
                 return some(TreeValue.unit())
             }
-            return some(TreeValue.integer(
-                if node.value == "get" {
-                    data.get(offset)
-                } else {
-                    data.get_u8(offset)
-                }))
+            return some(TreeValue.integer(data.get_u8(offset)))
         }
         if node.value == "set" &&
            arguments.len() == 3 {
@@ -7340,7 +7342,7 @@ class TreeInterpreter {
                         problem = "varint too long at {pos}"
                         scanning = false
                     } else {
-                        let byte: int = data.get(i)
+                        let byte: int = data.get_u8(i)
                         i = i + 1
                         if byte < 128 {
                             scanning = false
@@ -8854,6 +8856,9 @@ class TreeInterpreter {
                     arguments[1].int_data
                 if index < 0 ||
                    index >= receiver.slice_len {
+                    if node.value == "get" {
+                        return some(TreeValue.option_none())
+                    }
                     self.fail(
                         node,
                         "slice index {index} out of range (len {receiver.slice_len})")
@@ -8867,10 +8872,10 @@ class TreeInterpreter {
                             ((index *
                               piece.value.size) as u64)
                         if node.value == "get" {
-                            return some(
+                            return some(TreeValue.option_some(
                                 self.memory_read_value(
                                     node, memory,
-                                    address, element))
+                                    address, element)))
                         }
                         self.memory_write_value(
                             node, memory, address,
@@ -9979,18 +9984,24 @@ class TreeInterpreter {
                     start, end))
         }
         if receiver.kind == "string" &&
-           node.value == "byte_at" &&
+           (node.value == "byte_at" || node.value == "get_byte") &&
            arguments.len() == 2 {
             let index: int = arguments[1].int_data
             if index < 0 ||
                index >= receiver.text.len() {
+                if node.value == "get_byte" {
+                    return TreeValue.option_none()
+                }
                 return self.fail_at(
                     node,
                     node.col,
                     "byte index {index} out of range (len {receiver.text.len()})")
             }
-            return TreeValue.integer(
+            let value: TreeValue = TreeValue.integer(
                 receiver.text.byte_at(index))
+            return if node.value == "get_byte" {
+                TreeValue.option_some(value)
+            } else { value }
         }
         if receiver.kind == "string" &&
            (node.value == "find" ||
@@ -10507,7 +10518,7 @@ class TreeInterpreter {
             }
             return TreeValue.unit()
         }
-        if receiver.kind == "list" &&
+        if (receiver.kind == "list" || receiver.kind == "array") &&
            node.value == "get" &&
            arguments.len() == 2 &&
            arguments[1].kind == "int" {
@@ -13060,6 +13071,18 @@ class TreeInterpreter {
                    receiver: TreeValue,
                    key: TreeValue,
                    borrowed: bool) -> TreeValue {
+        if receiver.kind == "bytes" && key.kind == "int" {
+            match receiver.bytes_data {
+                some(data) => {
+                    if key.int_data < 0 || key.int_data >= data.len() {
+                        return self.fail_at(node, node.col,
+                            "byte index {key.int_data} out of range (len {data.len()})")
+                    }
+                    return TreeValue.integer(data.get_u8(key.int_data))
+                }
+                none => { return self.fail(node, "missing byte storage") }
+            }
+        }
         if (receiver.kind == "list" ||
             receiver.kind == "array") &&
            key.kind == "int" {
@@ -14209,6 +14232,20 @@ class TreeInterpreter {
                     self.expression(
                         target.children[1], frame)
                 }
+            if receiver.kind == "bytes" && key.kind == "int" {
+                match receiver.bytes_data {
+                    some(data) => {
+                        if key.int_data < 0 || key.int_data >= data.len() {
+                            self.fail_at(target, target.col,
+                                "byte index {key.int_data} out of range (len {data.len()})")
+                            return TreeExec.next()
+                        }
+                        data.set(key.int_data, value.int_data)
+                    }
+                    none => { self.fail(target, "missing byte storage") }
+                }
+                return TreeExec.next()
+            }
             if (receiver.kind == "list" ||
                 receiver.kind == "array") &&
                key.kind == "int" {
@@ -14844,7 +14881,7 @@ class TreeInterpreter {
                     for index: int in
                         0..memory.data.len() {
                         host.offset(index).write(
-                            memory.data.get(index) as u8)
+                            memory.data.get_u8(index) as u8)
                     }
                     bridges.push(
                         new TreeFfiMemory(
@@ -15031,7 +15068,7 @@ class TreeInterpreter {
                 for index: int in
                     0..answer.value.size {
                     let byte: u8 =
-                        temporary.data.get(index) as u8
+                        temporary.data.get_u8(index) as u8
                     host.offset(index).write(
                         byte)
                 }
@@ -15081,7 +15118,7 @@ class TreeInterpreter {
         unsafe {
             for index: int in 0..answer.value.size {
                 host.offset(index).write(
-                    temporary.data.get(index) as u8)
+                    temporary.data.get_u8(index) as u8)
             }
         }
     }

@@ -45,7 +45,7 @@ fn main() {
 
     // each encoding decodes its own output
     match base64.Encoding.url_safe_no_pad.decode("-_8") {
-        ok(data) => io.println("url decode {data.get(0)} {data.get(1)}"),
+        ok(data) => io.println("url decode {data.get_u8(0)} {data.get_u8(1)}"),
         err(e) => io.println("url decode err {e.msg}"),
     }
 

@@ -188,11 +188,11 @@ fn main() {
             err(_) => { setup_failures += 1 }
         }
     }
-    io.println("flow-control windows stayed sane {report.get(0) == 0}")
-    io.println("every stream opened, served and answered {report.get(1) == 0}")
-    io.println("no stream outlived its close {report.get(2) == 0}")
+    io.println("flow-control windows stayed sane {report.get_u8(0) == 0}")
+    io.println("every stream opened, served and answered {report.get_u8(1) == 0}")
+    io.println("no stream outlived its close {report.get_u8(2) == 0}")
     io.println("every session established {setup_failures == 0}")
-    if report.get(0) == 0 && report.get(1) == 0 && report.get(2) == 0 &&
+    if report.get_u8(0) == 0 && report.get_u8(1) == 0 && report.get_u8(2) == 0 &&
        setup_failures == 0 {
         io.println("ok http2_fuzz seed={seed} rounds={rounds}")
     } else {

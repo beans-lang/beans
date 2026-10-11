@@ -147,7 +147,7 @@ fn float_from_high(first: int, second: int) -> float {
 fn fold(data: Bytes) -> u64 {
     var h: u64 = 14695981039346656037
     for i: int in 0..data.len() {
-        h = (h ^ (data.get(i) as u64)) * 1099511628211
+        h = (h ^ (data.get_u8(i) as u64)) * 1099511628211
     }
     return h
 }

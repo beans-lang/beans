@@ -70,7 +70,7 @@ pub class Field {
 pub fn field_is_safe(text: string) -> bool {
     let raw: Bytes = Bytes.from(text)
     for index: int in 0..raw.len() {
-        let byte: int = raw.get(index)
+        let byte: int = raw.get_u8(index)
         // RFC field-value permits HTAB, visible ASCII, and obs-text. Every
         // other control byte makes different recipients disagree about the
         // line's shape, which is the root of splitting and smuggling bugs.
@@ -83,7 +83,7 @@ fn http_token_is_safe(text: string) -> bool {
     if text.len() == 0 { return false }
     let raw: Bytes = Bytes.from(text)
     for index: int in 0..raw.len() {
-        let byte: int = raw.get(index)
+        let byte: int = raw.get_u8(index)
         let alpha: bool =
             (byte >= 65 && byte <= 90) ||
             (byte >= 97 && byte <= 122)
@@ -108,7 +108,7 @@ fn request_target_is_safe(target: string) -> bool {
     if target.len() == 0 { return false }
     let raw: Bytes = Bytes.from(target)
     for index: int in 0..raw.len() {
-        let byte: int = raw.get(index)
+        let byte: int = raw.get_u8(index)
         if byte <= 32 || byte == 127 { return false }
     }
     return true
@@ -177,7 +177,7 @@ fn bytes_equal_text(data: Bytes, text: string) -> bool {
     if data.len() != text.len() { return false }
     var index: int = 0
     for index < data.len() {
-        if data.get(index) != text.byte_at(index) { return false }
+        if data.get_u8(index) != text.byte_at(index) { return false }
         index += 1
     }
     return true

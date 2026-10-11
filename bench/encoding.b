@@ -115,7 +115,7 @@ fn load_raw(data: Bytes) -> int {
         }
         let tail: RawPtr<u8> = RawPtr.from_address(address as u64)
         for index: int in (whole * 8)..data.len() {
-            tail.offset(index).write(data.get(index) as u8)
+            tail.offset(index).write(data.get_u8(index) as u8)
         }
     }
     return address

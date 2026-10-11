@@ -1895,7 +1895,7 @@ class ExpressionChecker {
         let source: Bytes = Bytes.from(name)
         var upper: bool = false
         for index: int in 0..source.len() {
-            let byte: int = source.get(index)
+            let byte: int = source.get_u8(index)
             if byte == 95 {
                 upper = true
             } else if upper && byte >= 97 && byte <= 122 {
@@ -1913,7 +1913,7 @@ class ExpressionChecker {
         var output: Bytes = new Bytes(0)
         let source: Bytes = Bytes.from(name)
         for index: int in 0..source.len() {
-            let byte: int = source.get(index)
+            let byte: int = source.get_u8(index)
             if byte >= 65 && byte <= 90 {
                 if index != 0 { output.push(95) }
                 output.push(byte + 32)
@@ -4706,6 +4706,10 @@ class ExpressionChecker {
                 return some(new BuiltinSignature(
                     [integer], integer))
             }
+            if name == "get_byte" {
+                return some(new BuiltinSignature(
+                    [integer], hir_option(integer)))
+            }
             if name == "find_byte" {
                 return some(new BuiltinSignature(
                     [integer, integer], integer))
@@ -4760,6 +4764,11 @@ class ExpressionChecker {
         if receiver.name == "array" {
             if name == "len" {
                 return some(new BuiltinSignature([], integer))
+            }
+            if name == "get" && receiver.args.len() == 1 &&
+               !self.is_move_only(receiver.args[0]) {
+                return some(new BuiltinSignature(
+                    [integer], hir_option(receiver.args[0])))
             }
         }
         if receiver.name == "List" && receiver.args.len() == 1 {
@@ -5180,12 +5189,16 @@ class ExpressionChecker {
             }
         }
         if receiver.name == "Bytes" {
+            if name == "get" {
+                return some(new BuiltinSignature(
+                    [integer], hir_option(integer)))
+            }
             if name == "as_ptr" {
                 return some(new BuiltinSignature(
                     [], hir_named(
                         "RawPtr", [new HirType("u8")])))
             }
-            if name == "len" || name == "get" ||
+            if name == "len" ||
                name == "get_u8" || name == "get_u16" ||
                name == "get_u32" || name == "get_u64" ||
                name == "get_i64" || name == "get_uvarint" {
@@ -5433,7 +5446,7 @@ class ExpressionChecker {
             }
             if name == "get" {
                 return some(new BuiltinSignature(
-                    [integer], element))
+                    [integer], hir_option(element)))
             }
             if name == "set" {
                 return some(new BuiltinSignature(
@@ -11965,22 +11978,7 @@ class ExpressionChecker {
                 result_type = poison_hir_type()
             }
         } else if receiver.type.name == "Bytes" {
-            // Neither backend can emit this. The checker used to accept it and
-            // type it `int`, so `bytes[i]` reached the interpreter as a panic
-            // saying indexing bytes "is not in the Beans interpreter yet" and
-            // reached the native build as an emitter error about the LLVM
-            // emitter: two messages about the compiler, for a program that
-            // was refused by neither. Bytes has had `get` and `set` all along.
-            if place {
-                self.fail(
-                    node,
-                    "Bytes cannot be assigned by index — write one with set(index, value)")
-            } else {
-                self.fail(
-                    node,
-                    "Bytes cannot be indexed — read one byte with get(index), which answers int")
-            }
-            result_type = poison_hir_type()
+            result_type = new HirType("int")
         } else if !hir_already_refused(receiver.type) {
             self.fail(
                 node,
@@ -13983,6 +13981,7 @@ class ExpressionChecker {
             if target.kind == "index" && node.value != "=" &&
                place.children.len() != 0 &&
                (place.children[0].type.name == "List" ||
+                place.children[0].type.name == "Bytes" ||
                 place.children[0].type.name == "Map" ||
                 place.children[0].type.name == "OrderedMap") {
                 let collection: HirType =
@@ -13991,6 +13990,8 @@ class ExpressionChecker {
                     if collection.name == "Map" ||
                        collection.name == "OrderedMap" {
                         "map"
+                    } else if collection.name == "Bytes" {
+                        "byte"
                     } else {
                         "list"
                     }

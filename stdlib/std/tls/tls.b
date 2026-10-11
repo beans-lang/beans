@@ -102,7 +102,7 @@ fn validate_server_identities(identities: List<TlsIdentity>) -> Result<bool> {
         if identity.name.len() == 0 { defaults += 1 }
         let name: Bytes = Bytes.from(identity.name)
         for index: int in 0..name.len() {
-            let byte: int = name.get(index)
+            let byte: int = name.get_u8(index)
             if byte <= 32 || byte == 127 || byte > 127 {
                 return err("a TLS identity name must be visible ASCII", "invalid")
             }

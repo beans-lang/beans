@@ -64,7 +64,7 @@ fn one_shot_pair(pick: int, data: Bytes, level: int) -> Result<bool> {
     }
     if back.len() != data.len() { return err("length diverged", "invalid") }
     for index: int in 0..back.len() {
-        if back.get(index) != data.get(index) {
+        if back.get_u8(index) != data.get_u8(index) {
             return err("byte {index} diverged", "invalid")
         }
     }
@@ -172,7 +172,7 @@ fn main() {
                             if back.len() != data.len() { clean = false }
                             if clean {
                                 for index: int in 0..back.len() {
-                                    if back.get(index) != data.get(index) {
+                                    if back.get_u8(index) != data.get_u8(index) {
                                         clean = false
                                     }
                                 }

@@ -73,7 +73,7 @@ fn make_record(index: int) -> Record {
 fn fnv1a64(data: Bytes) -> u64 {
     var hash: u64 = 14695981039346656037
     for index: int in 0..data.len() {
-        hash = (hash ^ (data.get(index) as u64)) * 1099511628211
+        hash = (hash ^ (data.get_u8(index) as u64)) * 1099511628211
     }
     return hash
 }

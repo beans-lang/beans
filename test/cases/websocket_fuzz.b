@@ -73,7 +73,7 @@ fn frame(rng: Rng, opcode: int, fin: bool, rsv: int, payload: Bytes) -> Bytes {
     for index: int in 0..4 { key.push(rng.below(256)) }
     out.append(key)
     for index: int in 0..payload.len() {
-        out.push(payload.get(index) ^ key.get(index % 4))
+        out.push(payload.get_u8(index) ^ key.get_u8(index % 4))
     }
     return move out
 }
@@ -221,11 +221,11 @@ fn main() {
             err(_) => { setup_failures += 1 }
         }
     }
-    io.println("text messages always decoded {report.get(0) == 0}")
-    io.println("error kinds documented {report.get(1) == 0}")
-    io.println("every session terminated {report.get(2) == 0}")
+    io.println("text messages always decoded {report.get_u8(0) == 0}")
+    io.println("error kinds documented {report.get_u8(1) == 0}")
+    io.println("every session terminated {report.get_u8(2) == 0}")
     io.println("sessions established {setup_failures == 0}")
-    if report.get(0) == 0 && report.get(1) == 0 && report.get(2) == 0 &&
+    if report.get_u8(0) == 0 && report.get_u8(1) == 0 && report.get_u8(2) == 0 &&
        setup_failures == 0 {
         io.println("ok websocket_fuzz seed={seed} rounds={rounds}")
     } else {

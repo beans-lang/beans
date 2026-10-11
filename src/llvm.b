@@ -1054,30 +1054,25 @@ partial class LlvmTextEmitter {
                     instruction.text == "is_some")
         } else if instruction.op == "builtin_method" &&
                   instruction.text == "get" &&
-                  instruction.operands.len() != 0 &&
-                  (llvm_type_is_map(
-                       self.value_type(
-                           function,
-                           instruction.operands[0])) ||
-                   canonical_hir_name(
-                       self.value_type(
-                           function,
-                           instruction.operands[0]).name) ==
-                       "List") {
-            if llvm_type_is_map(
-                   self.value_type(
-                       function,
-                       instruction.operands[0])) {
-                output =
-                    self.emit_map_get(
-                        function,
-                        instruction, values)
-            } else {
-                output =
-                    self.emit_list_get(
-                        function,
-                        instruction, values)
-            }
+                  instruction.operands.len() == 2 &&
+                  llvm_type_is_map(self.value_type(
+                      function, instruction.operands[0])) {
+            output = self.emit_map_get(function, instruction, values)
+        } else if instruction.op == "builtin_method" &&
+                  instruction.operands.len() == 2 &&
+                  ((instruction.text == "get" &&
+                    (canonical_hir_name(self.value_type(function,
+                         instruction.operands[0]).name) == "List" ||
+                     canonical_hir_name(self.value_type(function,
+                         instruction.operands[0]).name) == "array" ||
+                     canonical_hir_name(self.value_type(function,
+                         instruction.operands[0]).name) == "Slice" ||
+                     canonical_hir_name(self.value_type(function,
+                         instruction.operands[0]).name) == "Bytes")) ||
+                   (instruction.text == "get_byte" &&
+                    canonical_hir_name(self.value_type(function,
+                        instruction.operands[0]).name) == "string")) {
+            output = self.emit_sequence_get(function, instruction, values)
         } else if instruction.op == "builtin_method" &&
                   instruction.text == "set" &&
                   instruction.operands.len() == 3 &&

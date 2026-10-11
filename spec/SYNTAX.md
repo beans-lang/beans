@@ -530,7 +530,7 @@ pub fn show(id: int) -> int { return id }
 
 **Methods (v0.5, implemented, byte-based - unicode arrives later as explicit `chars()`, `len` stays bytes forever):**
 `len`, `is_empty`, `first(n)`, `last(n)`, `slice(from, to)` (half-open, panics out of range),
-`byte_at(i)` (panics), `contains`, `starts_with`, `ends_with`, `find`/`rfind -> Option<int>`
+`byte_at(i) -> int` (panics), `get_byte(i) -> Option<int>` (none out of range), `contains`, `starts_with`, `ends_with`, `find`/`rfind -> Option<int>`
 (empty needle: `find` says 0, `rfind` says len), `trim`/`trim_start`/`trim_end` (ASCII whitespace),
 `to_upper`/`to_lower` (ASCII), `replace(old, new)` (all occurrences; empty `old` changes nothing),
 `repeat(n)` (panics on negative), `split(sep) -> List<string>` (keeps empties; empty sep = one piece),
@@ -588,8 +588,10 @@ explicit deep copy.
   value stays alive and is not resized, reserved, appended to, or pushed to.
   Do not free the borrowed pointer.
 - `len()`, `reserve(n)`, `resize(n)` (regrown range reads zero), `fill(v)`
-- `get(i)` / `set(i, v)` - one byte, panics out of range; `push(v)` appends one
-  byte. These are low-level storage operations used by Beans-written formats.
+- `get(i) -> Option<int>` reads one byte, returning `none` out of range.
+- `bytes[i] -> int` requires a byte and panics out of range. `bytes[i] = v`
+  and `set(i, v)` replace an existing byte and panic out of range; `push(v)`
+  appends one byte. Bracket assignment supports only `=`.
 - `get_u8/u16/u32/u64/i64(pos)` / `put_...(pos, v)` - fixed width, little-endian, panics out of range
 - `slice(from, to)`, `copy_from(src, at)`, `append(other)`, `append_string(s)`,
   `append_int_text(v)`, `append_i64(v)` (little-endian),
@@ -1646,11 +1648,20 @@ The rule for the other iterables follows from what they are:
   that have not run yet.
 - A **range** is fixed when the loop starts.
 
-Bracket reads are checked, required reads: `list[i]` panics when the index is
-outside the list, and `map[key]` panics when the key is missing. Use
-`list.get(i)` or `map.get(key)` when absence is expected; both return `Option`.
-Bracket assignment stays `list[i] = value` and `map[key] = value`; List and
-Map bracket assignment does not have compound forms. Fixed arrays support
+Bracket reads are checked, required reads: `List`, fixed arrays, `Bytes`,
+`Slice`, `Map`, and `OrderedMap` return the element and panic when the index or
+key is absent. Their `get(index_or_key)` method returns `Option<T>` instead:
+`some(value)` when present, `none` when missing, including negative and
+out-of-range sequence indexes. A read never inserts, supplies a default, or
+resizes a collection. Strings use explicit byte operations:
+`byte_at(i) -> int` requires a byte; `get_byte(i) -> Option<int>` allows absence.
+Both use byte offsets, including UTF-8 continuation bytes and embedded NULs.
+`Slice` access still requires `unsafe`: bounds checks cannot prove the backing
+allocation is alive. Existing copy and borrow rules apply to both read forms.
+
+Bracket assignment stays `list[i] = value` and `map[key] = value`; List, Bytes,
+Map, and OrderedMap bracket assignment does not have compound forms. Sequence
+writes require an existing index; map writes insert or replace a key. Fixed arrays support
 numeric compound element assignment because their element is a real inline
 place. Every assignment evaluates left to right - receiver, then index or
 key, then the right-hand side - and a compound form evaluates its receiver
@@ -4564,7 +4575,8 @@ helpers, globals, and functions for a library package's consumers.
   literal gets fixed-array meaning from its declared spot:
   `var lanes: [f32; 4] = [1, 2, 3, 4]`. Arrays copy by value, pass and return
   inline, support checked integer indexing, element assignment on `var`
-  locals, `len()`, equality, and `for` iteration. List, Box, and Arena store
+  locals, `get(i) -> Option<T>` for copyable elements, `len()`, equality,
+  and `for` iteration. List, Box, and Arena store
   arrays inline; Map stores them inline as values and as structural keys when
   their element type implements `Hash`. Shared, Mutex, Channel, and thread
   results use the same typed-width layout.
@@ -4572,6 +4584,8 @@ helpers, globals, and functions for a library package's consumers.
   element set above. `Slice.from_raw(ptr, len)`,
   `get`, `set`, indexing, `subslice`,
   `as_ptr`, and iteration require `unsafe`; reads and writes are bounds checked.
+  `get(i) -> Option<T>` returns `none` out of range; indexing returns `T` and
+  panics out of range, as do writes.
   Indexing is a place: `view[i] = v` stores through the pointer, and - as with
   a fixed array, and unlike `List` and `Map` - a compound `view[i] += v` on a
   numeric element is the read-modify-write of that one cell. The write lands in

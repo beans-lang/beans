@@ -14,7 +14,7 @@ fn hex(data: Bytes) -> string {
     var out: string = ""
     let digits: string = "0123456789abcdef"
     for index: int in 0..data.len() {
-        let byte: int = data.get(index)
+        let byte: int = data.get_u8(index)
         out = "{out}{digits.slice(byte / 16, byte / 16 + 1)}{digits.slice(byte % 16, byte % 16 + 1)}"
     }
     return move out

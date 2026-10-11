@@ -7,13 +7,13 @@ fn main() {
     let b: Bytes = new Bytes(16)
     io.println("{b.len()}")
     let hello: Bytes = Bytes.from("hello")
-    io.println("{hello.len()} {hello.get(0)} {hello.get(4)}")
+    io.println("{hello.len()} {hello[0]} {hello[4]}")
 
     // single bytes
     b.set(0, 65)
     b.set(1, 66)
     b.set(2, 300)
-    io.println("{b.get(0)} {b.get(1)} {b.get(2)}")
+    io.println("{b[0]} {b[1]} {b[2]}")
 
     // fixed widths, little-endian, chained like a page header
     let page: Bytes = new Bytes(64)
@@ -29,10 +29,10 @@ fn main() {
     // resize: shrink then regrow reads zeros
     let r: Bytes = new Bytes(4)
     r.fill(255)
-    io.println("{r.get(3)}")
+    io.println("{r[3]}")
     r.resize(2)
     r.resize(6)
-    io.println("{r.get(0)} {r.get(2)} {r.get(5)} {r.len()}")
+    io.println("{r[0]} {r[2]} {r[5]} {r.len()}")
 
     // slice / copy_from / append
     let word: Bytes = Bytes.from("beans language")

@@ -4,6 +4,31 @@ Reviewed all 13 open reports and their comments on 2026-10-04 against `main`
 at `0a40860`, current with `origin/main`. An open issue alone does not prove
 the current code is broken; verify existing fixes before adding another path.
 
+## Follow-up: nested reference Options (2026-10-11)
+
+Open, kept separate from collection-access standardization by the owner.
+The released v0.1.53 compiler (`be872ee8`) and the working compiler both
+collapse `some(none)` into `none` natively when an Option wraps an
+Option of a reference. The interpreter keeps these states distinct.
+
+```beans
+import std.io
+fn main() {
+    let values: List<Option<string>> = [none]
+    io.println("{values.get(0)} {values.get(1)}")
+}
+```
+
+Expected/interpreter: `some(none) none`. Native: `none none`.
+`Option<Option<int>>` retains its tags and is unaffected. The existing
+`llvm_option_type`, `LlvmTextEmitter.type_is_reference`, and `reference_tree`
+propagate the nullable-pointer representation through every Option level.
+This requires a coordinated representation fix across layout, construction,
+matching, ARC, collection reads, and ABI consumers; changing only `get` would
+leave other Option producers inconsistent. Add regressions for both nested
+reference states, matching, equality, ownership, and collection access before
+changing that representation.
+
 ## Bug sequence
 
 1. [x] **[#191](https://github.com/beans-lang/beans/issues/191): generic type annotations.**

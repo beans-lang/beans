@@ -107,7 +107,7 @@ fn write_some(stream: net.TcpStream, offset: int, want: int) -> Result<int> {
 fn read_matches(stream: net.TcpStream, offset: int, want: int) -> Result<int> {
     let data: Bytes = stream.read(want)?
     for index: int in 0..data.len() {
-        if data.get(index) != pattern_at(offset + index) {
+        if data.get_u8(index) != pattern_at(offset + index) {
             return err("delivered byte diverged from the model", "corrupt")
         }
     }

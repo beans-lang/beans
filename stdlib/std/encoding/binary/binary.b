@@ -401,7 +401,7 @@ pub fn read_uvarint(data: Bytes, pos: int) -> Result<Uvarint> {
         if index - pos >= 10 {
             return err("uvarint at {pos} runs past 10 bytes", "overflow")
         }
-        let piece: u64 = data.get(index) as u64
+        let piece: u64 = data.get_u8(index) as u64
         if shift == 63 && (piece & 0xfe) != 0 {
             return err("uvarint at {pos} overflows 64 bits", "overflow")
         }

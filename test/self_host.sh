@@ -1493,7 +1493,7 @@ grep -q 'call void @beans_list_insert_typed' \
     "$tmp/wide-lists.first.ll"
 grep -q 'call void @beans_list_remove_typed' \
     "$tmp/wide-lists.first.ll"
-grep -q 'list.get.have' "$tmp/wide-lists.first.ll"
+grep -q 'sequence.get.have' "$tmp/wide-lists.first.ll"
 grep -q 'arc.array' "$tmp/wide-lists.first.ll"
 grep -q 'call void @beans_list_decv_min' \
     "$tmp/wide-lists.first.ll"

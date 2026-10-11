@@ -18,7 +18,7 @@ fn main() {
             total += value
         }
         io.println(
-            "slice {values.len()} {values.get(2)} {total} {values.as_ptr() == memory}")
+            "slice {values.len()} {values[2]} {total} {values.as_ptr() == memory}")
 
         let lanes: Simd4i32 =
             Simd4i32.load(memory)

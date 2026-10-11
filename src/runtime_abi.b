@@ -196,11 +196,6 @@ pub fn runtime_builtin_method(key: string) -> Option<RuntimeBuiltin> {
             ["i64"],
             "unit", "beans_bytes_append_int_text", false))
     }
-    if key == "Bytes.get" {
-        return some(new RuntimeBuiltin(
-            ["i64"],
-            "i64", "beans_bytes_get", true))
-    }
     if key == "Bytes.set" {
         return some(new RuntimeBuiltin(
             ["i64", "i64"],

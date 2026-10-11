@@ -55,7 +55,7 @@ fn reusable_read() -> Result<bool> {
     let number: Bytes = new Bytes(0)
     number.append_int_text(-9223372036854775808)
     return ok(count == 6 && buffer.slice(0, count).to_string() == "abcdef" &&
-              buffer.get(6) == 255 &&
+              buffer.get_u8(6) == 255 &&
               number.to_string() == "-9223372036854775808")
 }
 

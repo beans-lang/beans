@@ -55,7 +55,7 @@ partial class LlvmTextEmitter {
         let source: Bytes = Bytes.from(name)
         var upper: bool = false
         for index: int in 0..source.len() {
-            let byte: int = source.get(index)
+            let byte: int = source.get_u8(index)
             if byte == 95 {
                 upper = true
             } else if upper && byte >= 97 && byte <= 122 {
@@ -73,7 +73,7 @@ partial class LlvmTextEmitter {
         var output: Bytes = new Bytes(0)
         let source: Bytes = Bytes.from(name)
         for index: int in 0..source.len() {
-            let byte: int = source.get(index)
+            let byte: int = source.get_u8(index)
             if byte >= 65 && byte <= 90 {
                 if index != 0 { output.push(95) }
                 output.push(byte + 32)
@@ -268,7 +268,7 @@ partial class LlvmTextEmitter {
         let source: Bytes = Bytes.from(name)
         var hash: int = 0
         for index: int in 0..source.len() {
-            hash = (hash * 33 + source.get(index)) & mask
+            hash = (hash * 33 + source.get_u8(index)) & mask
         }
         return hash
     }

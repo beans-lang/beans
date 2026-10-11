@@ -37,7 +37,7 @@ fn matches(body: Bytes, size: int) -> bool {
     if body.len() != size { return false }
     var i: int = 0
     for i < size {
-        if body.get(i) != (i * 31 + 7) % 251 { return false }
+        if body.get_u8(i) != (i * 31 + 7) % 251 { return false }
         i += 1
     }
     return true

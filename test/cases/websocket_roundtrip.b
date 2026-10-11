@@ -61,7 +61,7 @@ fn client_side(port: int) -> int {
                                     if body.len() != payload.len() { failures += 1 }
                                     var intact: bool = true
                                     for index: int in 0..body.len() {
-                                        if body.get(index) != payload.get(index) {
+                                        if body.get_u8(index) != payload.get_u8(index) {
                                             intact = false
                                         }
                                     }

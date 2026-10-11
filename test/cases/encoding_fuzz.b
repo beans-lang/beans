@@ -102,17 +102,17 @@ class Mutator {
                 if choice == 0 { continue }
                 if choice == 1 {
                     out.push(self.next(256))
-                    out.push(source.get(index))
+                    out.push(source.get_u8(index))
                     continue
                 }
                 if choice == 2 {
-                    out.push(source.get(index) ^ (1 << self.next(8)))
+                    out.push(source.get_u8(index) ^ (1 << self.next(8)))
                     continue
                 }
                 // choice 3: truncate here
                 break
             }
-            out.push(source.get(index))
+            out.push(source.get_u8(index))
         }
         return move out
     }

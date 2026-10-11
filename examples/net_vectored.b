@@ -338,12 +338,12 @@ fn contract_corners() {
     // only be this write's.
     corner("last-byte bytes", server.write_vectored(head, body, total - 1))
     let got_bytes: Bytes = drain(client, 1).expect("drain byte")
-    io.println("last-byte bytes arrived {got_bytes.get(0)} expected {body.get(body.len() - 1)}")
+    io.println("last-byte bytes arrived {got_bytes.get_u8(0)} expected {body.get_u8(body.len() - 1)}")
     corner("last-byte text", server.write_vectored_text(head, text, total - 1))
     let got_text: Bytes = drain(client, 1).expect("drain text byte")
     let text_tail: Bytes = new Bytes(0)
     text_tail.append_string(text)
-    io.println("last-byte text arrived {got_text.get(0)} expected {text_tail.get(text_tail.len() - 1)}")
+    io.println("last-byte text arrived {got_text.get_u8(0)} expected {text_tail.get_u8(text_tail.len() - 1)}")
 
     // A closed stream refuses both forms, before it looks at the offset at all.
     let shut: bool = server.close().expect("close")

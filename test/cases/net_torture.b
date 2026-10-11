@@ -36,7 +36,7 @@ fn make_pattern(count: int) -> Bytes {
 
 fn pattern_intact(data: Bytes, offset: int) -> bool {
     for index: int in 0..data.len() {
-        if data.get(index) != pattern_at(offset + index) {
+        if data.get_u8(index) != pattern_at(offset + index) {
             return false
         }
     }

@@ -88,7 +88,7 @@ pub class KeyDecoder {
     pub fn next() -> Option<Key> {
         let n: int = self.buffer.len()
         if n == 0 { return none }
-        let b0: int = self.buffer.get(0)
+        let b0: int = self.buffer.get_u8(0)
         if b0 != 27 {
             return self.decode_plain()
         }
@@ -97,7 +97,7 @@ pub class KeyDecoder {
             // arriving. Held until more bytes come or flush() decides.
             return none
         }
-        let b1: int = self.buffer.get(1)
+        let b1: int = self.buffer.get_u8(1)
         if b1 == 91 {
             return self.decode_csi()
         }
@@ -116,7 +116,7 @@ pub class KeyDecoder {
             some(key) => { return some(key) }
             none => {}
         }
-        if self.buffer.len() > 0 && self.buffer.get(0) == 27 {
+        if self.buffer.len() > 0 && self.buffer.get_u8(0) == 27 {
             // Drop the stuck ESC and report it; a following byte, if any, is
             // decoded on the next call.
             self.consume(1)
@@ -128,7 +128,7 @@ pub class KeyDecoder {
     // buffer[0] is not ESC: a control byte, a printable ASCII char, or the start
     // of a UTF-8 character.
     fn decode_plain() -> Option<Key> {
-        let b: int = self.buffer.get(0)
+        let b: int = self.buffer.get_u8(0)
         if b == 13 || b == 10 {
             self.consume(1)
             return some(Key.enter)
@@ -156,7 +156,7 @@ pub class KeyDecoder {
 
     // buffer[0] is a byte >= 0x80: a UTF-8 lead, or a stray continuation byte.
     fn decode_utf8() -> Option<Key> {
-        let b: int = self.buffer.get(0)
+        let b: int = self.buffer.get_u8(0)
         if b < 192 {
             // A continuation byte with no lead: not valid, but passing it
             // through keeps the decoder from stalling on it.
@@ -178,7 +178,7 @@ pub class KeyDecoder {
         }
         var i: int = 1
         for i < length {
-            let c: int = self.buffer.get(i)
+            let c: int = self.buffer.get_u8(i)
             value = value * 64 + (c - 128)
             i += 1
         }
@@ -191,7 +191,7 @@ pub class KeyDecoder {
         let n: int = self.buffer.len()
         var i: int = 2
         for i < n {
-            let c: int = self.buffer.get(i)
+            let c: int = self.buffer.get_u8(i)
             if c >= 64 && c <= 126 {
                 return self.finish_csi(i)
             }
@@ -213,7 +213,7 @@ pub class KeyDecoder {
         var have: bool = false
         var i: int = 2
         for i < final_index {
-            let c: int = self.buffer.get(i)
+            let c: int = self.buffer.get_u8(i)
             if c >= 48 && c <= 57 {
                 current = current * 10 + (c - 48)
                 have = true
@@ -227,7 +227,7 @@ pub class KeyDecoder {
         if have {
             params.push(current)
         }
-        let final: int = self.buffer.get(final_index)
+        let final: int = self.buffer.get_u8(final_index)
         let total: int = final_index + 1
         var result: Key = Key.unknown(final)
         match self.map_csi(final, params) {
@@ -295,7 +295,7 @@ pub class KeyDecoder {
         if self.buffer.len() < 3 {
             return none
         }
-        let c: int = self.buffer.get(2)
+        let c: int = self.buffer.get_u8(2)
         var result: Key = Key.unknown(c)
         if c == 65 {
             result = Key.up(0)
@@ -326,7 +326,7 @@ pub class KeyDecoder {
     // key. Alt is reported for a printable ASCII byte; anything else reports the
     // ESC as Escape and leaves the rest for the next call.
     fn decode_alt() -> Option<Key> {
-        let b1: int = self.buffer.get(1)
+        let b1: int = self.buffer.get_u8(1)
         if b1 >= 32 && b1 < 127 {
             self.consume(2)
             return some(Key.alt(b1))

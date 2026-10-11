@@ -197,7 +197,7 @@ fn split_field(value: string, delimiter: int) -> List<string> {
     var index: int = 0
     var quoted: bool = false
     for index < raw.len() {
-        let byte: int = raw.get(index)
+        let byte: int = raw.get_u8(index)
         if quoted {
             if byte == 92 && index + 1 < raw.len() {
                 index += 1
@@ -221,14 +221,14 @@ fn split_field(value: string, delimiter: int) -> List<string> {
 fn unquote(value: string) -> string {
     let raw: Bytes = Bytes.from(value)
     if raw.len() < 2 { return value }
-    if raw.get(0) != 34 || raw.get(raw.len() - 1) != 34 { return value }
+    if raw.get_u8(0) != 34 || raw.get_u8(raw.len() - 1) != 34 { return value }
     var out: Bytes = new Bytes(0)
     var index: int = 1
     for index < raw.len() - 1 {
-        var byte: int = raw.get(index)
+        var byte: int = raw.get_u8(index)
         if byte == 92 && index + 1 < raw.len() - 1 {
             index += 1
-            byte = raw.get(index)
+            byte = raw.get_u8(index)
         }
         out.push(byte)
         index += 1
@@ -242,10 +242,10 @@ fn unquote(value: string) -> string {
 fn parse_window_bits(text: string) -> int {
     let raw: Bytes = Bytes.from(text)
     if raw.len() == 0 || raw.len() > 2 { return 0 }
-    if raw.get(0) == 48 { return 0 }
+    if raw.get_u8(0) == 48 { return 0 }
     var value: int = 0
     for index: int in 0..raw.len() {
-        let byte: int = raw.get(index)
+        let byte: int = raw.get_u8(index)
         if byte < 48 || byte > 57 { return 0 }
         value = value * 10 + (byte - 48)
     }
@@ -518,7 +518,7 @@ fn target_is_safe(target: string) -> bool {
     if target.len() == 0 { return false }
     let raw: Bytes = Bytes.from(target)
     for index: int in 0..raw.len() {
-        let byte: int = raw.get(index)
+        let byte: int = raw.get_u8(index)
         if byte <= 32 || byte == 127 { return false }
     }
     return true
@@ -985,9 +985,9 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
             if self.send_resets { self.drop_deflater() }
             return ok(move out)
         }
-        if out.len() < 4 || out.get(out.len() - 4) != 0 ||
-           out.get(out.len() - 3) != 0 || out.get(out.len() - 2) != 255 ||
-           out.get(out.len() - 1) != 255 {
+        if out.len() < 4 || out.get_u8(out.len() - 4) != 0 ||
+           out.get_u8(out.len() - 3) != 0 || out.get_u8(out.len() - 2) != 255 ||
+           out.get_u8(out.len() - 1) != 255 {
             return err("the message compressor produced no sync boundary", "protocol")
         }
         out.resize(out.len() - 4)
@@ -1349,7 +1349,7 @@ pub unique class WebSocketTransport<T implements net.ByteStream> implements Send
                 var reason: string = ""
                 if length >= 2 {
                     // RFC 6455 puts the close code in network byte order.
-                    code = buffer.get(pos) * 256 + buffer.get(pos + 1)
+                    code = buffer.get_u8(pos) * 256 + buffer.get_u8(pos + 1)
                     reason = buffer.slice(pos + 2, pos + length).to_string()
                 }
                 self.pending.push(Message.closed(code, reason))

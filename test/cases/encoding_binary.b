@@ -12,7 +12,7 @@ import std.encoding.binary
 fn dump(label: string, data: Bytes) {
     var pieces: List<string> = []
     for index: int in 0..data.len() {
-        pieces.push("{data.get(index)}")
+        pieces.push("{data.get_u8(index)}")
     }
     io.println("{label} [{pieces.join(",")}]")
 }
@@ -219,6 +219,6 @@ fn main() {
     // native order matches exactly one of the fixed orders
     var native_probe: Bytes = new Bytes(0)
     binary.append_u16(native_probe, 0x0102, binary.ByteOrder.native)
-    let first: int = native_probe.get(0)
+    let first: int = native_probe.get_u8(0)
     io.println("native matches little {first == 2} big {first == 1}")
 }

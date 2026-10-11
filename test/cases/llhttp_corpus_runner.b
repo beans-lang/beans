@@ -386,7 +386,7 @@ fn push_span(out: List<string>, kind: int, start: int, text: Bytes) {
     }
     var index: int = 0
     for index < text.len() {
-        let byte: int = text.get(index)
+        let byte: int = text.get_u8(index)
         if byte == 13 {
             let at: int = start + index
             out.push("off={at} len=1 span[{label}]=cr")
@@ -398,7 +398,7 @@ fn push_span(out: List<string>, kind: int, start: int, text: Bytes) {
         } else {
             var stop: int = index
             for stop < text.len() &&
-                text.get(stop) != 13 && text.get(stop) != 10 {
+                text.get_u8(stop) != 13 && text.get_u8(stop) != 10 {
                 stop += 1
             }
             let at: int = start + index

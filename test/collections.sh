@@ -107,26 +107,37 @@ fi
 grep -q "SortedMap needs K implements Order, got main.Key" "$tmp/order.bad"
 grep -q "PriorityQueue needs P implements Order, got main.Key" "$tmp/order.bad"
 
-# Bytes is the one builtin the checker let through to a backend that could not
-# emit it. `get` and `set` have always been the way to reach a byte, so this is
-# a spelling being refused rather than a capability being withdrawn, and the
-# message says which spelling to use instead of naming a stage of the compiler.
-echo "checking Bytes indexing is refused at the type"
-if ./build/beansc check test/cases/bytes_index_bad.b \
-    >"$tmp/bytes-index.bad" 2>&1; then
-    echo "the checker accepted Bytes indexing, which neither backend emits" >&2
+echo "checking required and optional collection access on both backends"
+./build/beansc run test/cases/collection_access.b >"$tmp/access.interp"
+./build/beansc build test/cases/collection_access.b -o "$tmp/access.native" \
+    >"$tmp/access.build" 2>&1
+"$tmp/access.native" >"$tmp/access.native.out"
+diff -u test/cases/collection_access.out "$tmp/access.interp"
+diff -u "$tmp/access.interp" "$tmp/access.native.out"
+# Optional reads of inline structs must retain owned fields after the source
+# is dropped. Empty and invalid reads must never touch backing storage.
+BEANS_SANITIZE=address,undefined ./build/beansc llvm test/cases/collection_access.b \
+    >"$tmp/access.ll"
+clang -O1 -g -pthread -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+    -Wno-override-module "$tmp/access.ll" build/beans_rt.c -lm -o "$tmp/access.asan"
+if ! BEANS_NO_POOL=1 "$tmp/access.asan" >"$tmp/access.asan.out" 2>"$tmp/access.asan.err"; then
+    cat "$tmp/access.asan.err" >&2
+    echo "collection access exited non-zero under the sanitizers" >&2
     exit 1
 fi
-grep -q "Bytes cannot be indexed — read one byte with get(index), which answers int" \
-    "$tmp/bytes-index.bad"
-grep -q "Bytes cannot be assigned by index — write one with set(index, value)" \
-    "$tmp/bytes-index.bad"
-# The refusal has to come from the checker, not from a backend leaking its own
-# vocabulary into a program's error.
-if grep -qi "emitter\|interpreter yet" "$tmp/bytes-index.bad"; then
-    echo "the refusal names a compiler stage instead of the program" >&2
-    cat "$tmp/bytes-index.bad" >&2
+diff -u "$tmp/access.interp" "$tmp/access.asan.out"
+if grep -Eq 'AddressSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer' "$tmp/access.asan.err"; then
+    cat "$tmp/access.asan.err" >&2
     exit 1
 fi
 
-echo "ok std.collections models, both ASan lanes, and the element/key rules"
+if ./build/beansc check test/cases/collection_access_bad.b >"$tmp/access.bad" 2>&1; then
+    echo "optional access bypassed its type or unsafe requirement" >&2
+    exit 1
+fi
+test "$(grep -c 'expected int, got Option<int>' "$tmp/access.bad")" -eq 3
+grep -q 'expected i32, got Option<i32>' "$tmp/access.bad"
+grep -q 'Slice.get requires unsafe' "$tmp/access.bad"
+grep -q "byte index assignment only supports '='" "$tmp/access.bad"
+
+echo "ok collections, required/optional access, sanitizers, and element/key rules"

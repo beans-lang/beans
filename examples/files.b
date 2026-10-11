@@ -93,7 +93,7 @@ fn main() {
     io.println("{f.size().expect("fsize")} {f.tell()}")
     io.println("{f.seek_from_end(0)} {f.seek(2)}")
     let cur: Bytes = f.read(2).expect("cursor read")
-    io.println("{cur.get(0)} {cur.get(1)} {f.tell()}")
+    io.println("{cur.get_u8(0)} {cur.get_u8(1)} {f.tell()}")
     f.truncate(8).expect("truncate")
     io.println("{f.size().expect("after truncate")}")
     f.sync().expect("sync")

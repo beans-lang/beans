@@ -1,0 +1,20 @@
+array 22 some(11) some(22) none none none 2
+nested 3 4 true
+owned ARRAY 7 LIST 8 TEXT
+bytes 0 255 some(0) some(255) none none none 2
+empty bytes none none 0
+string 195 some(195) some(169) none none none 2
+empty string none
+nul string some(0)
+list 31 some(31) none none none 1
+empty list none 0
+nested option some(none) some(some(23)) none
+map none some(none) some(some(9)) none 2
+ordered 10 some(10) none 1
+once some(66) some(41) some(67) 33
+required once 66 44
+write once 56
+slice 52 some(51) some(52) none none none 2
+empty slice none none
+null pointer true true true
+wide slice 61 62 true

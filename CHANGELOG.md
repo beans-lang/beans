@@ -2,6 +2,19 @@
 
 This file records user-facing changes in each Beans release.
 
+## Unreleased
+
+- Collection reads use one contract: brackets require an existing element and
+  panic when it is absent; `get` returns `Option` without inserting or growing
+  the collection. Fixed arrays gain `get`, and Bytes gains checked bracket
+  reads and writes. String byte lookup gains `get_byte`; `byte_at` still panics.
+- **Migration:** `Bytes.get(i)` now returns `Option<int>` and `Slice<T>.get(i)`
+  returns `Option<T>`. Use brackets for a required read, or handle the Option.
+  `Bytes.get_u8` remains a required byte read and is compatible with older
+  bootstrap compilers. Slice access still requires `unsafe`. No runtime ABI
+  or ownership rules change. The pre-existing nested-reference Option bug is
+  tracked separately in `docs/BUGFIX_TODO.md`.
+
 ## [0.1.53] - 2026-10-10
 
 Release contract: language=1.0, runtime_abi=23.

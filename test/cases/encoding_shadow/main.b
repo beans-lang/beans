@@ -18,18 +18,18 @@ fn main() {
     var probe: Bytes = new Bytes(4)
 
     json.enc_copy_to_raw(probe, 0, 0, 0)
-    io.println("json copy_to_raw mark {probe.get(0)}")
+    io.println("json copy_to_raw mark {probe.get_u8(0)}")
     json.enc_copy_from_raw(0, probe, 0, 0)
-    io.println("json copy_from_raw mark {probe.get(0)}")
+    io.println("json copy_from_raw mark {probe.get_u8(0)}")
     io.println("json bytes_address {json.enc_bytes_address(probe)}")
     io.println("json string_address {json.enc_string_address("x")}")
 
     xml.enc_copy_to_raw(probe, 0, 0, 0)
-    io.println("xml copy_to_raw mark {probe.get(0)}")
+    io.println("xml copy_to_raw mark {probe.get_u8(0)}")
     io.println("xml bytes_address {xml.enc_bytes_address(probe)}")
 
     base64.enc_copy_to_raw(probe, 0, 0, 0)
-    io.println("base64 copy_to_raw mark {probe.get(0)}")
+    io.println("base64 copy_to_raw mark {probe.get_u8(0)}")
     io.println("base64 bytes_address {base64.enc_bytes_address(probe)}")
     io.println("base64 string_uninit {base64.enc_string_uninit(7)}")
 

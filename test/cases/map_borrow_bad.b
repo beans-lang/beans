@@ -12,7 +12,7 @@ fn two_readers(store: Map<string, Bytes>) {
             match store.get("k") {
                 some(second) => {
                     first.set(0, 66)
-                    io.println("{first.get(0)} {second.get(0)}")
+                    io.println("{first.get_u8(0)} {second.get_u8(0)}")
                 }
                 none => {}
             }

@@ -32,7 +32,7 @@ fn datagram_payload(size: int, rounds: int) {
         checksum += sender.send_to(payload, destination).expect("send")
         let received: net.Datagram = receiver.recv_from(size).expect("receive")
         checksum += received.data.len()
-        checksum += received.data.get(round % size)
+        checksum += received.data.get_u8(round % size)
     }
     io.println("payload datagram {size} {rounds} {time.monotonic_nanos() - started} {checksum}")
 }

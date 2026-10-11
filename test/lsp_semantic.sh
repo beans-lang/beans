@@ -301,7 +301,7 @@ $got"
 # A built-in receiver answers from the checker's own registry.
 sed 's/^    x\.$/    text./' "$scratch/members.b" >"$scratch/members_s.b"
 got=$(complete "$scratch/members_s.b:24:10")
-for want in len trim split to_int starts_with; do
+for want in len trim split to_int starts_with byte_at get_byte; do
     grep -q "^item method $want builtin:string.$want\$" <<<"$got" ||
         fail "text. should offer string.$want:
 $got"
@@ -313,7 +313,7 @@ fi
 
 sed 's/^    x\.$/    items./' "$scratch/members.b" >"$scratch/members_l.b"
 got=$(complete "$scratch/members_l.b:24:11")
-for want in push pop len sort; do
+for want in push pop len sort get; do
     grep -q "^item method $want builtin:List.$want\$" <<<"$got" ||
         fail "items. should offer List.$want:
 $got"
@@ -322,6 +322,20 @@ if grep -q 'builtin:string' <<<"$got"; then
     fail "a List receiver offered string members:
 $got"
 fi
+
+# Fixed arrays, Bytes and raw slices expose the same optional lookup name.
+for receiver in 'array:[int; 2]' 'Bytes:Bytes' 'Slice:Slice<i32>'; do
+    owner=${receiver%%:*}
+    type=${receiver#*:}
+    cat >"$scratch/lookup_$owner.b" <<BEANS
+fn lookup(value: $type) {
+    value.
+}
+BEANS
+    got=$(complete "$scratch/lookup_$owner.b:2:11")
+    grep -q "^item method get builtin:$owner.get\$" <<<"$got" ||
+        fail "$type should offer optional get: $got"
+done
 
 # A half-typed member filters by what is already written.
 sed 's/^    x\.$/    x.only/' "$scratch/members.b" >"$scratch/members_p.b"

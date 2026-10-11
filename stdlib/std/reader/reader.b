@@ -52,7 +52,7 @@ pub class Reader {
             }
 
             var end: int = self.position
-            for end < self.limit && self.buffer.get(end) != 10 { end += 1 }
+            for end < self.limit && self.buffer.get_u8(end) != 10 { end += 1 }
             output.append_range(self.buffer, self.position, end)
             self.position = end
             if end < self.limit {

@@ -7,7 +7,7 @@ pub fn crc32(data: Bytes) -> u32 {
     var crc: u32 = 0xffffffff
     var index: int = 0
     for index < data.len() {
-        crc = crc ^ (data.get(index) as u32)
+        crc = crc ^ (data.get_u8(index) as u32)
         // CRC32 always takes eight steps per byte. Writing them out removes a
         // small source-level loop that LLVM did not reliably unroll for Beans.
         crc = (crc >> 1) ^ (0xedb88320 & ((0 as u32) - (crc & 1)))
@@ -63,7 +63,7 @@ pub fn decode_uvarint(data: Bytes) -> Option<u64> {
     var shift: u64 = 0
     var index: int = 0
     for index < data.len() && index < 10 {
-        let byte: u64 = data.get(index) as u64
+        let byte: u64 = data.get_u8(index) as u64
         if shift == 63 && (byte & 0xfe) != 0 { return none }
         result = result | ((byte & 0x7f) << shift)
         if (byte & 0x80) == 0 { return some(result) }
@@ -80,7 +80,7 @@ pub fn decode_uvarint_at_or(data: Bytes, start: int, fallback: u64) -> u64 {
     var index: int = start
     let limit: int = if data.len() < start + 10 { data.len() } else { start + 10 }
     for index < limit {
-        let byte: u64 = data.get(index) as u64
+        let byte: u64 = data.get_u8(index) as u64
         if shift == 63 && (byte & 0xfe) != 0 { return fallback }
         result = result | ((byte & 0x7f) << shift)
         if (byte & 0x80) == 0 { return result }

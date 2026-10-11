@@ -25,7 +25,7 @@ import std.thread
 fn escaped(data: Bytes) -> string {
     var out: Bytes = new Bytes(0)
     for index: int in 0..data.len() {
-        let byte: int = data.get(index)
+        let byte: int = data.get_u8(index)
         if byte == 13 {
             out.append_string("\\r")
         } else if byte == 10 {

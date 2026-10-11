@@ -184,7 +184,7 @@ agree bytes_copy_from beans_bytes_copy_from 'fn main() {
 
 agree bytes_set beans_bytes_set 'fn main() {
     var data: Bytes = new Bytes(4)
-    data.set(9, 1)
+    data[9] = 1
 }'
 
 # ---- List ----
@@ -278,7 +278,7 @@ fn main() {
 #      where they have one, and count toward coverage. ----
 agree guard_bytes_get beans_bytes_get 'fn main() {
     let data: Bytes = new Bytes(4)
-    let b: int = data.get(9)
+    let b: int = data[9]
 }'
 
 agree guard_bytes_slice beans_bytes_slice 'fn main() {

@@ -23,7 +23,7 @@ fn main() {
     // gzip: the file format, magic bytes and all.
     match compress.gzip_compress(raw) {
         ok(packed) => {
-            io.println("gzip magic present {packed.get(0) == 31 && packed.get(1) == 139}")
+            io.println("gzip magic present {packed.get_u8(0) == 31 && packed.get_u8(1) == 139}")
             match compress.gzip_decompress(packed, raw.len()) {
                 ok(back) => { io.println("gzip round-trips {back.len() == raw.len()}") }
                 err(e) => { io.println("gunzip failed: {e.kind}") }

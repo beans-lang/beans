@@ -14,11 +14,11 @@ fn main() {
 
         let copied: Bytes = Bytes.from_raw(source, 4)
         source.write(99 as u8)
-        io.println("{copied.get(0)} {copied.get(3)}")
+        io.println("{copied.get_u8(0)} {copied.get_u8(3)}")
 
         let borrowed: RawPtr<u8> = copied.as_ptr()
         borrowed.offset(1).write(9 as u8)
-        io.println("{copied.get(0)} {copied.get(1)} {copied.get(2)} {copied.get(3)}")
+        io.println("{copied.get_u8(0)} {copied.get_u8(1)} {copied.get_u8(2)} {copied.get_u8(3)}")
 
         let empty: Bytes = Bytes.from_raw(null_pointer, 0)
         io.println("{empty.len()} {empty.as_ptr().is_null()}")

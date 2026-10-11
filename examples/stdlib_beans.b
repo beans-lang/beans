@@ -72,7 +72,7 @@ fn main() {
     appended.set(0, 99)
     byte_algo.append_uvarint(appended, 300)
     io.println("{byte_algo.crc32(raw)} {raw.crc32(0, raw.len()) as u32}")
-    io.println("{byte_algo.uvarint_size(300)} {encoded.get(0)} {encoded.get(1)} {byte_algo.decode_uvarint(encoded).or(0)}")
+    io.println("{byte_algo.uvarint_size(300)} {encoded.get_u8(0)} {encoded.get_u8(1)} {byte_algo.decode_uvarint(encoded).or(0)}")
     io.println("append {appended.len()} {byte_algo.decode_uvarint_at_or(appended, 1, 0)} {byte_algo.decode_uvarint_at_or(appended, 99, 77)}")
 
     let boundaries: List<u64> = [0, 1, 127, 128, 300, 16384, 18446744073709551615]
