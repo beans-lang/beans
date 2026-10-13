@@ -4,7 +4,7 @@ This file records user-facing changes in each Beans release.
 
 ## Unreleased
 
-## [0.1.54] - 2026-10-11
+## [0.1.54] - 2026-10-13
 
 Release contract: language=1.0, runtime_abi=23.
 
@@ -25,6 +25,25 @@ Release contract: language=1.0, runtime_abi=23.
 - Project loading normalizes native Windows entry paths before finding and
   validating the manifest. Compiler discovery records UTF-8 evidence and uses
   the selected Git Bash and compiler for its Windows LSP gate.
+- The language server reads Windows drive URIs such as `file:///C:/dir` as
+  `C:/dir` and writes drive paths back the same way, so navigation into
+  other packages works on Windows.
+- On macOS, `std.time.monotonic_nanos` and fiber sleep deadlines read the raw
+  monotonic clock. Short timings resolve to about 42 ns instead of 1 µs, and a
+  timed sleep can no longer measure shorter than requested (#220, #221).
+- Native code is faster in counted loops and in debug builds:
+  - A counted loop whose list and Bytes indexes are `base + counter` checks
+    the whole range once before it starts, then runs without per-element
+    checks, so LLVM can unroll and vectorize it. When the range check fails,
+    the original checked loop runs: the panic, its message and the stores
+    before it are unchanged.
+  - Bytes element reads and writes are inlined instead of calling the runtime.
+  - Division and remainder by a literal other than `0` and `-1` skip the
+    run-time divide checks. This mostly helps debug builds.
+  - arm64 function definitions are aligned to 16 bytes, so LTO builds no
+    longer lose speed to code placement.
+  - `docs/PERF_VS_CPP_RUST.md` records the before and after timings against
+    C++ and the remaining gaps.
 
 ## [0.1.53] - 2026-10-10
 
