@@ -202,6 +202,9 @@ jobs:
           else
             args+=(--seconds "$CAMPAIGN_SECONDS")
           fi
+          # Native Python must inherit Git Bash, not find the Windows WSL stub.
+          if [ "$RUNNER_OS" = Windows ]; then BASH=$(cygpath -m "$BASH"); fi
+          export BASH
           python -u tools/compiler_campaign.py "${args[@]}"
       - name: Upload candidate evidence, including failures and missing gates
         if: always()
@@ -269,6 +272,9 @@ jobs:
           args=(--replay-only --seconds 0 --seed "$GITHUB_RUN_NUMBER"
                 --replay-root build/retained --out build/compiler-discovery/replay)
           if [ "$RUNNER_OS" = Windows ]; then args+=(--beansc build/beansc.exe); fi
+          # Native Python must inherit Git Bash, not find the Windows WSL stub.
+          if [ "$RUNNER_OS" = Windows ]; then BASH=$(cygpath -m "$BASH"); fi
+          export BASH
           python -u tools/compiler_campaign.py "${args[@]}"
       - name: Upload replay evidence
         if: always()

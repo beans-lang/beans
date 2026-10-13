@@ -566,10 +566,10 @@ def diagnostic_cases():
     for manifest in sorted(directory.glob("*.json")):
         if manifest.name == "known_failures.json":
             continue
-        c = json.loads(manifest.read_text())
+        c = json.loads(manifest.read_text(encoding="utf-8"))
         c["files"] = {rel: (directory / source).read_bytes().decode("utf-8")
                       for rel, source in c.pop("source_files").items()}
-        c["snapshots"] = {stream: (directory / path).read_text()
+        c["snapshots"] = {stream: (directory / path).read_text(encoding="utf-8")
                           for stream, path in c.get("snapshot_files", {}).items()}
         result.append(c)
     return result
@@ -578,7 +578,7 @@ def diagnostic_cases():
 def spec_anchors():
     """Slugs of every heading in spec/SYNTAX.md, as a Markdown renderer links them."""
     anchors = set()
-    for line in SPEC.read_text().splitlines():
+    for line in SPEC.read_text(encoding="utf-8").splitlines():
         if not line.startswith("#"):
             continue
         text = re.sub(r"^#+\s*", "", line).strip().replace("`", "").lower()
@@ -737,22 +737,22 @@ def reduce_nesting(args, c, failures, artifact):
         final = [execute(args.beansc, mode, directory, args.timeout) for mode in c["modes"]]
         reduced_failures = [f for r in final for f in evaluate(r, best, directory)]
         # Record final evidence; do not call an unreproduced shrink confirmed.
-        with open(os.path.join(artifact, "reduced_meta.json"), "w") as f:
+        with open(os.path.join(artifact, "reduced_meta.json"), "w", encoding="utf-8") as f:
             json.dump({"case": best, "target_failures": failures, "failures": reduced_failures,
                        "preserved": target.issubset(df.failure_signature(reduced_failures)),
                        "search": observations}, f, indent=2)
         for r in final:
-            pathlib.Path(artifact, "reduced-" + r.lane + ".stdout").write_text(r.stdout)
-            pathlib.Path(artifact, "reduced-" + r.lane + ".stderr").write_text(r.stderr)
+            pathlib.Path(artifact, "reduced-" + r.lane + ".stdout").write_text(r.stdout, encoding="utf-8")
+            pathlib.Path(artifact, "reduced-" + r.lane + ".stderr").write_text(r.stderr, encoding="utf-8")
 
 
 def replay(args):
-    meta = json.loads(pathlib.Path(args.replay_dir, "meta.json").read_text())
+    meta = json.loads(pathlib.Path(args.replay_dir, "meta.json").read_text(encoding="utf-8"))
     c = meta["configuration"]["syntax_case"]
     c["files"] = {rel: pathlib.Path(args.replay_dir, rel).read_bytes().decode()
                   for rel in meta["files"]}
     if args.replay_reduced:
-        reduced = json.loads(pathlib.Path(args.replay_dir, "reduced_meta.json").read_text())
+        reduced = json.loads(pathlib.Path(args.replay_dir, "reduced_meta.json").read_text(encoding="utf-8"))
         c = reduced["case"]
         c["files"] = {rel: pathlib.Path(args.replay_dir, "reduced", rel).read_bytes().decode()
                       for rel in c["files"]}
@@ -792,7 +792,7 @@ def signature(failures):
 def load_baseline(path):
     if not path or not os.path.exists(path):
         return {}
-    data = json.loads(pathlib.Path(path).read_text())
+    data = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
     for name, entry in data.items():
         if not isinstance(entry, dict) or not entry.get("finding") or \
                 not isinstance(entry.get("failures"), list) or not entry["failures"]:
@@ -882,7 +882,7 @@ def self_test():
         checks.append(("baseline-names-exist", not orphans))
         if orphans:
             print("baseline entries without a case: " + ", ".join(orphans))
-        todo = (ROOT / "docs/BUGFIX_TODO.md").read_text() if (ROOT / "docs/BUGFIX_TODO.md").exists() else ""
+        todo = (ROOT / "docs/BUGFIX_TODO.md").read_text(encoding="utf-8") if (ROOT / "docs/BUGFIX_TODO.md").exists() else ""
         untracked = sorted({e["finding"] for e in recorded.values() if e["finding"] not in todo})
         checks.append(("baseline-findings-tracked", not untracked))
         if untracked:
@@ -936,7 +936,7 @@ def main():
         os.makedirs(args.emit_corpus, exist_ok=True)
         for c in cases:
             df.write_case_files(os.path.join(args.emit_corpus, c["name"]), c["files"])
-        pathlib.Path(args.emit_corpus, "manifest.json").write_text(json.dumps(cases, indent=2) + "\n")
+        pathlib.Path(args.emit_corpus, "manifest.json").write_text(json.dumps(cases, indent=2) + "\n", encoding="utf-8")
         return 0
     baseline = {} if args.ignore_baseline else load_baseline(args.baseline)
     os.makedirs(args.out, exist_ok=True)
@@ -963,12 +963,12 @@ def main():
               "compiler": df.compiler_evidence(args.beansc), "cases": rows,
               "counts": counts, "seconds": time.monotonic() - started,
               "status": "blocked" if blocked else "passed"}
-    pathlib.Path(args.out, "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    pathlib.Path(args.out, "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     if args.write_baseline:
         observed = {r["case"]: {"finding": (r["finding"] or "UNASSIGNED"),
                                 "failures": signature(r["failures"])}
                     for r in rows if r["failures"]}
-        pathlib.Path(args.write_baseline).write_text(json.dumps(observed, indent=2, sort_keys=True) + "\n")
+        pathlib.Path(args.write_baseline).write_text(json.dumps(observed, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     matrix = ["# Syntax discovery coverage", "",
               "Seed: `{}`; status: **{}**; {} passed, {} known, {} new, {} changed, {} stale.".format(
                   args.seed, report["status"], counts["passed"], counts["known"], counts["new"],
@@ -982,7 +982,7 @@ def main():
         ", ".join(x["mode"] for x in r["results"]), r["disposition"],
         ", ".join(signature(r["failures"])) or "passed",
         r["status"] + (" ({})".format(r["finding"]) if r["finding"] else "")) for r in rows]
-    pathlib.Path(args.out, "coverage.md").write_text("\n".join(matrix) + "\n")
+    pathlib.Path(args.out, "coverage.md").write_text("\n".join(matrix) + "\n", encoding="utf-8")
     print("syntax discovery: {} cases; {} passed, {} known, {} new, {} changed, {} stale; {}".format(
         len(rows), counts["passed"], counts["known"], counts["new"], counts["changed"],
         counts["stale"], report["status"]))

@@ -55,7 +55,7 @@ class Session:
             "jsonrpc": "2.0", "method": "textDocument/didOpen",
             "params": {"textDocument": {
                 "uri": p.as_uri(), "languageId": "beans", "version": 1,
-                "text": p.read_text() if text is None else text}}}))
+                "text": p.read_text(encoding="utf-8") if text is None else text}}}))
 
     def change(self, path, text, version=2):
         self.msgs.append(frame({
@@ -350,7 +350,7 @@ def apply_edits(changes, into):
     for uri, edits in changes.items():
         name = pathlib.Path(uri.split("/")[-1]).name
         target = next(p for p in into.rglob("*.b") if p.name == name)
-        lines = target.read_text().split("\n")
+        lines = target.read_text(encoding="utf-8").split("\n")
         # Back to front, so earlier edits keep their columns.
         for e in sorted(edits, key=lambda e: (-e["range"]["start"]["line"],
                                               -e["range"]["start"]["character"])):
@@ -358,7 +358,7 @@ def apply_edits(changes, into):
             start = e["range"]["start"]["character"]
             end = e["range"]["end"]["character"]
             lines[row] = lines[row][:start] + e["newText"] + lines[row][end:]
-        target.write_text("\n".join(lines))
+        target.write_text("\n".join(lines), encoding="utf-8")
 
 
 def run_project(main):
@@ -480,14 +480,14 @@ with tempfile.TemporaryDirectory() as tmp:
     # has to survive the round trip through a file URI.
     proj = tmp / "a project" / "ünïcode"
     (proj / "helpers").mkdir(parents=True)
-    (proj / "beans.pot").write_text("module spacey\n")
+    (proj / "beans.pot").write_text("module spacey\n", encoding="utf-8")
     (proj / "helpers" / "helpers.b").write_text(
         "package helpers\n\npub fn twice(n: int) -> int {\n"
-        "    return n * 2\n}\n")
+        "    return n * 2\n}\n", encoding="utf-8")
     main = proj / "main.b"
     main.write_text(
         "package main\n\nimport std.io\nimport spacey.helpers\n\n"
-        "fn main() {\n    io.println(\"{helpers.twice(21)}\")\n}\n")
+        "fn main() {\n    io.println(\"{helpers.twice(21)}\")\n}\n", encoding="utf-8")
 
     s = Session(main)
     # `helpers.twice` sits at line 7; `twice` starts at column 26.
@@ -528,7 +528,7 @@ with tempfile.TemporaryDirectory() as tmp:
     wide.write_text(
         "package main\n\nimport std.io\n\n"
         "fn main() {\n    let noodles: int = 1\n"
-        "    io.println(\"🍜 {noodles}\")\n}\n")
+        "    io.println(\"🍜 {noodles}\")\n}\n", encoding="utf-8")
     s = Session(wide)
     # `🍜` is two UTF-16 units; a byte-counting server would miss `noodles` by two columns.
 
@@ -547,13 +547,13 @@ print("ok editing: unsaved buffers, incremental sync, URIs, UTF-16 columns")
 # there carries the constant's type and its folded value.
 with tempfile.TemporaryDirectory() as tmp:
     proj = pathlib.Path(tmp)
-    (proj / "beans.pot").write_text("module consts_demo\n")
+    (proj / "beans.pot").write_text("module consts_demo\n", encoding="utf-8")
     main = proj / "main.b"
     main.write_text(
         "package main\n\nimport std.io\n\n"
         "const MAX_FRAME: int = 1 << 20\n\n"
         "fn main() {\n    let n: int = MAX_FRAME\n"
-        "    io.println(\"{n}\")\n}\n")
+        "    io.println(\"{n}\")\n}\n", encoding="utf-8")
 
     s = Session(main)
     # `MAX_FRAME` is used on line 8, starting at column 18.
@@ -775,7 +775,7 @@ print("ok the other half of a partial class answers for itself")
 # text; the campaign's BEANS_DISCOVERY_CONTEXT=1 no longer changes anything.
 with tempfile.TemporaryDirectory(prefix="beans-lsp-discovery-") as directory:
     path = pathlib.Path(directory) / "main.b"
-    path.write_text("fn main() {}\n")
+    path.write_text("fn main() {}\n", encoding="utf-8")
     source = 'import std.io\r\nfn main() {\r\n\tio.println("🙂 {missing + 1}")\r\n}\r\n'
     s = Session()
     s.open(path, source)
@@ -801,7 +801,7 @@ with tempfile.TemporaryDirectory(prefix="beans-lsp-discovery-") as directory:
         fail(f"diagnostic needs its unsaved enclosing function location: {primary}")
     # Parser errors inside string pieces retain their own primary and
     # inner-to-outer context, translated onto the unsaved document.
-    piece_source = pathlib.Path("test/cases/discovery/interpolation.b").read_text()
+    piece_source = pathlib.Path("test/cases/discovery/interpolation.b").read_text(encoding="utf-8")
     piece_session = Session()
     piece_session.open(path, piece_source)
     piece_session.ask("textDocument/documentSymbol", path)
@@ -879,12 +879,12 @@ print("ok discovery LSP: unsaved source, Unicode, tabs, CRLF and repair")
 # both files are valid and put the import elsewhere.
 with tempfile.TemporaryDirectory(prefix="beans-lsp-imported-") as directory:
     root = pathlib.Path(directory)
-    (root / "beans.pot").write_text("module discovery\n")
+    (root / "beans.pot").write_text("module discovery\n", encoding="utf-8")
     (root / "broken").mkdir()
     importer = root / "main.b"
     imported = root / "broken" / "broken.b"
-    importer.write_text("package main\nimport discovery.broken\nfn main() { broken.answer() }\n")
-    imported.write_text("package broken\npub fn answer() -> int {\n    return 1\n}\n")
+    importer.write_text("package main\nimport discovery.broken\nfn main() { broken.answer() }\n", encoding="utf-8")
+    imported.write_text("package broken\npub fn answer() -> int {\n    return 1\n}\n", encoding="utf-8")
     importer_text = ("package main\r\n/* 🙂 */ import discovery.broken\r\n"
                      "fn main() { broken.answer() }\r\n")
     s = Session()
@@ -921,12 +921,12 @@ with tempfile.TemporaryDirectory(prefix="beans-lsp-corpus-") as directory:
                              capture_output=True, timeout=120)
     if emitted.returncode != 0:
         fail("could not emit the discovery mutation corpus: " + emitted.stderr.decode(errors="replace"))
-    manifest = json.loads((pathlib.Path(directory) / "manifest.json").read_text())
+    manifest = json.loads((pathlib.Path(directory) / "manifest.json").read_text(encoding="utf-8"))
     if len(manifest) < 20:
         fail(f"the mutation corpus is unexpectedly small: {len(manifest)} cases")
     for case in manifest:
         path = pathlib.Path(directory) / case["name"] / "main.b"
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         s = Session()
         s.open(path, text)
         rid = s.ask("textDocument/documentSymbol", path)

@@ -3126,7 +3126,7 @@ class Runner:
         probe_dir = os.path.join(self.workdir, "lto-probe")
         os.makedirs(probe_dir, exist_ok=True)
         src = os.path.join(probe_dir, "p.b")
-        with open(src, "w") as f:
+        with open(src, "w", encoding="utf-8") as f:
             f.write('import std.io\n\nfn main() {\n'
                     '    io.println("x")\n}\n')
         for lane in wanted:
@@ -3287,18 +3287,18 @@ def save_failure(out_root, seed, case, files, expected, lane_results,
     for rel, text in files.items():
         path = os.path.join(fail_dir, rel)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(text)
-    with open(os.path.join(fail_dir, "expected_stdout.txt"), "w") as f:
+    with open(os.path.join(fail_dir, "expected_stdout.txt"), "w", encoding="utf-8") as f:
         f.write(expected[0])
     lanes_meta = {}
     cmd_lines = []
     for lr in lane_results:
         with open(os.path.join(fail_dir,
-                               "{}.stdout".format(lr.lane)), "w") as f:
+                               "{}.stdout".format(lr.lane)), "w", encoding="utf-8") as f:
             f.write(lr.stdout or "")
         with open(os.path.join(fail_dir,
-                               "{}.stderr".format(lr.lane)), "w") as f:
+                               "{}.stderr".format(lr.lane)), "w", encoding="utf-8") as f:
             f.write(lr.stderr or "")
         lanes_meta[lr.lane] = {
             "status": lr.status,
@@ -3310,7 +3310,7 @@ def save_failure(out_root, seed, case, files, expected, lane_results,
         for cmd in lr.commands:
             cmd_lines.append("{}: {}".format(
                 lr.lane, " ".join(shlex.quote(c) for c in cmd)))
-    with open(os.path.join(fail_dir, "commands.txt"), "w") as f:
+    with open(os.path.join(fail_dir, "commands.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(cmd_lines) + "\n")
     meta = {
         "generator_version": GENERATOR_VERSION,
@@ -3332,7 +3332,7 @@ def save_failure(out_root, seed, case, files, expected, lane_results,
             "python": sys.version.split()[0],
         },
     }
-    with open(os.path.join(fail_dir, "meta.json"), "w") as f:
+    with open(os.path.join(fail_dir, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, sort_keys=True)
         f.write("\n")
     return fail_dir
@@ -3940,7 +3940,7 @@ def make_runner(args, workdir):
     runner.probe_lto()
     if runner.skipped:
         os.makedirs(workdir, exist_ok=True)
-        with open(os.path.join(workdir, "incomplete.json"), "w") as f:
+        with open(os.path.join(workdir, "incomplete.json"), "w", encoding="utf-8") as f:
             json.dump({"required_lanes": lanes, "missing": runner.skipped,
                        "compiler": compiler_evidence(args.beansc)}, f, indent=2)
         raise SystemExit("required execution lanes unavailable: " +
@@ -3959,7 +3959,7 @@ def write_case_files(case_dir, files):
     for rel, text in files.items():
         path = os.path.join(case_dir, rel)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", newline="\n") as f:
+        with open(path, "w", newline="\n", encoding="utf-8") as f:
             f.write(text)
 
 
@@ -4076,7 +4076,7 @@ def reduce_failure(runner, out_root, seed, case, config, budget,
     if os.path.isdir(fail_dir):
         reduced_files = reduced.emit_files()
         if len(reduced_files) == 1:
-            with open(os.path.join(fail_dir, "reduced.b"), "w") as f:
+            with open(os.path.join(fail_dir, "reduced.b"), "w", encoding="utf-8") as f:
                 f.write(reduced.emit())
         else:
             # a package project reduces to a smaller package project
@@ -4086,9 +4086,9 @@ def reduce_failure(runner, out_root, seed, case, config, budget,
             os.makedirs(reduced_dir)
             write_case_files(reduced_dir, reduced_files)
         with open(os.path.join(fail_dir,
-                               "reduced_expected_stdout.txt"), "w") as f:
+                               "reduced_expected_stdout.txt"), "w", encoding="utf-8") as f:
             f.write(expected[0])
-        with open(os.path.join(fail_dir, "reduced_meta.json"), "w") as f:
+        with open(os.path.join(fail_dir, "reduced_meta.json"), "w", encoding="utf-8") as f:
             scratch = os.path.join(out_root, "reduce-work")
             write_case_files(scratch, reduced_files)
             results = runner.check_case(os.path.join(scratch, "main.b"))
@@ -4099,7 +4099,7 @@ def reduce_failure(runner, out_root, seed, case, config, budget,
                        "failures": classify_failures(expected, results, runner.lanes),
                        "compiler": compiler_evidence(runner.beansc)}, f, indent=2)
             f.write("\n")
-        with open(os.path.join(fail_dir, "reduction.log"), "w") as f:
+        with open(os.path.join(fail_dir, "reduction.log"), "w", encoding="utf-8") as f:
             f.write("\n".join(log) + "\n")
     print("reduced {}-{}: {} bytes -> {} bytes ({} evaluations)".format(
         seed, case, len(prog.emit()), len(reduced.emit()), reducer.evals))
@@ -4197,7 +4197,7 @@ def replay_case(args):
 def replay_dir(args):
     """Re-run a saved failure directory from its recorded metadata."""
     fail_dir = args.replay_dir
-    with open(os.path.join(fail_dir, "meta.json")) as f:
+    with open(os.path.join(fail_dir, "meta.json"), encoding="utf-8") as f:
         meta = json.load(f)
     seed, case = meta["seed"], meta["case"]
     file_list = meta.get("files", ["main.b"])
@@ -4205,7 +4205,7 @@ def replay_dir(args):
     if meta.get("configuration", {}).get("rejection"):
         scratch = os.path.join(args.out, "replay-negative")
         os.makedirs(scratch, exist_ok=True)
-        saved = {rel: open(os.path.join(fail_dir, rel)).read() for rel in file_list}
+        saved = {rel: open(os.path.join(fail_dir, rel), encoding="utf-8").read() for rel in file_list}
         write_case_files(scratch, saved)
         cmd = [args.beansc, "check", os.path.join(scratch, "main.b")]
         kind, out, err, code = run_proc(cmd, args.timeout_build)
@@ -4217,7 +4217,7 @@ def replay_dir(args):
         print("replay-dir negative: " + ("still failing" if failures else "passing"))
         return int(bool(failures))
     if meta.get("configuration", {}).get("edge_kind"):
-        files = {rel: open(os.path.join(fail_dir, rel)).read() for rel in file_list}
+        files = {rel: open(os.path.join(fail_dir, rel), encoding="utf-8").read() for rel in file_list}
         config = meta["configuration"]
         scratch = os.path.join(args.out, "replay-work")
         write_case_files(scratch, files)
@@ -4225,7 +4225,7 @@ def replay_dir(args):
         results = runner.check_case(os.path.join(scratch, config["main_file"]))
         if not results:
             results = runner.run_case(scratch, os.path.join(scratch, config["main_file"]))
-        expected = (open(os.path.join(fail_dir, "expected_stdout.txt")).read(), meta["expected_exit"])
+        expected = (open(os.path.join(fail_dir, "expected_stdout.txt"), encoding="utf-8").read(), meta["expected_exit"])
         failures = classify_failures(expected, results, runner.lanes)
         save_failure(args.out, seed, case, files, expected, results, failures,
                      dict(config, beansc=args.beansc))
@@ -4240,7 +4240,7 @@ def replay_dir(args):
         if reduced:
             path = (os.path.join(fail_dir, "reduced.b") if len(file_list) == 1 else
                     os.path.join(fail_dir, "reduced", rel))
-        saved[rel] = open(path).read()
+        saved[rel] = open(path, encoding="utf-8").read()
     if saved != regenerated:
         print("replay-dir: regenerated source differs from the saved "
               "program (generator changed since the failure was recorded); "
@@ -4254,7 +4254,7 @@ def replay_dir(args):
     os.makedirs(scratch)
     main_file = os.path.join(scratch, "main.b")
     write_case_files(scratch, saved)
-    expected = (open(os.path.join(fail_dir, "reduced_expected_stdout.txt" if reduced else "expected_stdout.txt")).read(),
+    expected = (open(os.path.join(fail_dir, "reduced_expected_stdout.txt" if reduced else "expected_stdout.txt"), encoding="utf-8").read(),
                 meta["expected_exit"])
     lane_results = runner.check_case(main_file)
     if not any(r.status in ("check-reject", "timeout", "crash")
@@ -4338,14 +4338,14 @@ def emit_corpus(args):
         name = "case_{}_{}".format(args.seed, case)
         if len(files) == 1:
             with open(os.path.join(args.corpus, name + ".b"), "w",
-                      newline="\n") as f:
+                      newline="\n", encoding="utf-8") as f:
                 f.write(files["main.b"])
             with open(os.path.join(args.corpus,
                                    name + ".stdout"), "w",
-                      newline="\n") as f:
+                      newline="\n", encoding="utf-8") as f:
                 f.write(expected[0])
             with open(os.path.join(args.corpus, name + ".exit"), "w",
-                      newline="\n") as f:
+                      newline="\n", encoding="utf-8") as f:
                 f.write(str(expected[1]) + "\n")
         else:
             case_dir = os.path.join(args.corpus, name)
@@ -4355,10 +4355,10 @@ def emit_corpus(args):
             write_case_files(case_dir, files)
             with open(os.path.join(case_dir,
                                    "expected_stdout.txt"), "w",
-                      newline="\n") as f:
+                      newline="\n", encoding="utf-8") as f:
                 f.write(expected[0])
             with open(os.path.join(case_dir, "expected_exit.txt"),
-                      "w", newline="\n") as f:
+                      "w", newline="\n", encoding="utf-8") as f:
                 f.write(str(expected[1]) + "\n")
         manifest.append(name)
     # newline="\n": the shell gates read this file with `read -r`, which strips
@@ -4366,7 +4366,7 @@ def emit_corpus(args):
     # mode would write CRLF and every case name would end in \r, turning a path
     # into one that does not exist.
     with open(os.path.join(args.corpus, "MANIFEST"), "w",
-              newline="\n") as f:
+              newline="\n", encoding="utf-8") as f:
         f.write("\n".join(manifest) + "\n")
     print("wrote {} corpus cases (seed {}) to {}".format(
         args.cases, args.seed, args.corpus))
@@ -4826,12 +4826,18 @@ def negative_case_files(seed, case):
 def normalize_diagnostics(text, case_dir):
     """Strip the machine-specific path prefix — absolute or as given —
     so the two compilers' reports are comparable byte for byte."""
-    prefixes = [os.path.abspath(case_dir), os.path.normpath(case_dir),
-                case_dir]
+    paths = [os.path.abspath(case_dir), os.path.normpath(case_dir), case_dir]
+    # The loader normalizes native Windows separators; lex/parse diagnostics
+    # retain the written path. Accept either spelling without changing message
+    # text (which can itself contain meaningful backslash escapes).
+    prefixes = sorted({variant for path in paths
+                       for variant in (path, path.replace("\\", "/"))},
+                      key=len, reverse=True)
     out = []
     for line in text.splitlines():
         for prefix in prefixes:
-            line = line.replace(prefix + os.sep, "")
+            for separator in ("/", "\\"):
+                line = line.replace(prefix + separator, "")
             line = line.replace(prefix, "")
         out.append(line.rstrip())
     while out and not out[-1]:
@@ -4938,7 +4944,7 @@ def run_negative_case(args, out_root, seed, case):
                                  "beansc": args.beansc,
                                  "rejection": expectation})
         for lane in outputs:
-            with open(os.path.join(fail_dir, lane + ".diag"), "w") as f:
+            with open(os.path.join(fail_dir, lane + ".diag"), "w", encoding="utf-8") as f:
                 f.write(outputs[lane])
     shutil.rmtree(case_dir, ignore_errors=True)
     return kind, failures, fail_dir
@@ -4997,6 +5003,18 @@ def self_test(args):
             break
     report("determinism", ok)
 
+    # Corpus bytes are UTF-8 with LF even when the host's text locale is not.
+    unicode_dir = os.path.join(out_root, "unicode-corpus")
+    unicode_source = "\ufeff// বাংলা 日本語\nfn main() {}\n"
+    write_case_files(unicode_dir, {"main.b": unicode_source})
+    with open(os.path.join(unicode_dir, "main.b"), "rb") as stream:
+        report("utf8-corpus", stream.read() == unicode_source.encode("utf-8"))
+
+    diagnostic = 'main.b:2:1: error: expected literal \\n\n'
+    report("windows-diagnostic-paths", all(
+        normalize_diagnostics(prefix + diagnostic, r"build/discovery\case") == diagnostic
+        for prefix in ("build/discovery/case/", "build/discovery\\case\\")))
+
     # 2. the oracle accepts its own programs and both checkers agree
     runner = Runner(args.beansc, ["interp"],
                     args.timeout_build, args.timeout_run, out_root)
@@ -5013,7 +5031,7 @@ def self_test(args):
             shutil.rmtree(scratch)
         os.makedirs(scratch)
         main_file = os.path.join(scratch, "main.b")
-        with open(main_file, "w") as f:
+        with open(main_file, "w", encoding="utf-8") as f:
             f.write(source)
         rejects = runner.check_case(main_file)
         if rejects:
@@ -5033,7 +5051,7 @@ def self_test(args):
         shutil.rmtree(scratch)
     os.makedirs(scratch)
     main_file = os.path.join(scratch, "main.b")
-    with open(main_file, "w") as f:
+    with open(main_file, "w", encoding="utf-8") as f:
         f.write(source)
     results = runner.run_case(scratch, main_file)
     fails = classify_failures(corrupted, results)
@@ -5047,7 +5065,7 @@ def self_test(args):
     crash_src = ('import std.io\n\nfn main() {\n'
                  '    io.println("before")\n'
                  '    panic("boom")\n}\n')
-    with open(main_file, "w") as f:
+    with open(main_file, "w", encoding="utf-8") as f:
         f.write(crash_src)
     results = runner.run_case(scratch, main_file)
     fails = classify_failures(("before\n", 0), results)
@@ -5055,7 +5073,7 @@ def self_test(args):
 
     # 5. a timeout is detected
     hang_src = 'fn main() {\n    for { }\n}\n'
-    with open(main_file, "w") as f:
+    with open(main_file, "w", encoding="utf-8") as f:
         f.write(hang_src)
     quick = Runner(args.beansc, ["interp"],
                    args.timeout_build, 2, out_root)
@@ -5066,7 +5084,7 @@ def self_test(args):
 
     # 6. an exit-code difference is detected
     exit_src = ('import std.os\n\nfn main() {\n    os.exit(5)\n}\n')
-    with open(main_file, "w") as f:
+    with open(main_file, "w", encoding="utf-8") as f:
         f.write(exit_src)
     results = runner.run_case(scratch, main_file)
     fails = classify_failures(("", 0), results)
@@ -5082,14 +5100,14 @@ def self_test(args):
         prog, source = generate_case(97, sab_case, groups, args.max_depth,
                                      args.max_stmts)
         wrong = oracle_expected(prog, sabotage="flip-gt")
-        with open(main_file, "w") as f:
+        with open(main_file, "w", encoding="utf-8") as f:
             f.write(source)
         results = runner.run_case(scratch, main_file)
         fails = classify_failures(wrong, results)
         fail_dir = save_failure(out_root, 97, sab_case,
                                 {"main.b": source}, wrong, results, fails,
                                 config)
-        saved = open(os.path.join(fail_dir, "main.b")).read()
+        saved = open(os.path.join(fail_dir, "main.b"), encoding="utf-8").read()
         _, regen = generate_case(97, sab_case, groups, args.max_depth,
                                  args.max_stmts)
         meta_ok = os.path.exists(os.path.join(fail_dir, "meta.json"))

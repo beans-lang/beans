@@ -22,6 +22,9 @@ Release contract: language=1.0, runtime_abi=23.
   after a concurrent setup call fails on macOS. This fixes intermittent
   `git: Operation not permitted` errors during dependency resolution while
   preserving rejection of real setup failures and process-tree timeout cleanup.
+- Project loading normalizes native Windows entry paths before finding and
+  validating the manifest. Compiler discovery records UTF-8 evidence and uses
+  the selected Git Bash and compiler for its Windows LSP gate.
 
 ## [0.1.53] - 2026-10-10
 

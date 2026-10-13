@@ -91,6 +91,8 @@ fn pong(n: int) -> int { return ping(n - 1) + 1 }
 EOF
 printf 'cart\n2\n' >"$tmp/same.expected"
 accept "$same/main.b" "$tmp/same.expected" same-package
+# Native Windows callers and Python-generated paths can mix separators.
+accept "$same\main.b" "$tmp/same.expected" same-package-mixed-separators
 
 # A second Cart anywhere in the package is a duplicate, not an ambiguity.
 dup="$tmp/duplicate-decl"

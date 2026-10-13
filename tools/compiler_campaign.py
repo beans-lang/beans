@@ -27,8 +27,8 @@ def run_step(name, cmd, out, timeout, steps, env=None, expected_sanitizer=False,
     kind, stdout, stderr, code = df.run_proc(cmd, timeout, env=env)
     directory = pathlib.Path(out, "steps")
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / (name + ".stdout")).write_text(stdout)
-    (directory / (name + ".stderr")).write_text(stderr)
+    (directory / (name + ".stdout")).write_text(stdout, encoding="utf-8")
+    (directory / (name + ".stderr")).write_text(stderr, encoding="utf-8")
     status = "passed" if kind == "ok" and code == 0 else "failed"
     if kind == "error" or code == 2:
         status = "incomplete"
@@ -149,7 +149,7 @@ def sanitize_compiler(args, steps):
                        "src/main.b", "-o", str(ir_path)], args.out, 1800, steps, env=env)
     if emitted["status"] != "passed" or not ir_path.exists():
         return False
-    ir = ir_path.read_text()
+    ir = ir_path.read_text(encoding="utf-8")
     definitions = [line for line in ir.splitlines() if line.startswith("define ")]
     marked = bool(definitions) and all("sanitize_address" in line for line in definitions)
     ir_bytes = len(ir.encode())
@@ -161,7 +161,7 @@ def sanitize_compiler(args, steps):
         "chunked_backend_by_default": None, "chunk_objects_linked": None,
         "generated_ir_ubsan": False, "runtime_ubsan": True,
         "compiler": df.compiler_evidence(args.beansc)}
-    pathlib.Path(root, "instrumentation.json").write_text(json.dumps(instrumentation, indent=2) + "\n")
+    pathlib.Path(root, "instrumentation.json").write_text(json.dumps(instrumentation, indent=2) + "\n", encoding="utf-8")
     steps.append({"name": "compiler-asan-ir-reach", "status": "passed" if marked else "failed",
                   "commands": [], "seconds": 0, "definitions": len(definitions)})
     if not marked:
@@ -171,7 +171,7 @@ def sanitize_compiler(args, steps):
     copied = root / "fault-source"
     shutil.copytree("src", copied, dirs_exist_ok=True)
     main = copied / "main.b"
-    text = main.read_text()
+    text = main.read_text(encoding="utf-8")
     anchor = "fn main() {"
     if text.count(anchor) != 1:
         raise ValueError("test-only compiler fault must identify exactly one main function")
@@ -179,10 +179,10 @@ def sanitize_compiler(args, steps):
                         "        let probe: RawPtr<i64> = RawPtr.alloc(1)\n"
                         "        probe.offset(1).write(42)\n"
                         "        probe.free()\n    }\n", 1)
-    main.write_text(text)
+    main.write_text(text, encoding="utf-8")
     # The driver's Clang (BEANS_CC, else clang) runs behind the logging one.
     logging_cc = root / "logging-clang"
-    logging_cc.write_text(LOGGING_CC)
+    logging_cc.write_text(LOGGING_CC, encoding="utf-8")
     logging_cc.chmod(0o755)
     real_cc = os.environ.get("BEANS_CC") or "clang"
     real_cc = shutil.which(real_cc) or real_cc
@@ -200,7 +200,7 @@ def sanitize_compiler(args, steps):
         if built["status"] != "passed":
             return False
         backend = backend_evidence("compiler-asan-fault-backend" + label,
-                                   [path.read_text().splitlines() for path in sorted(log.iterdir())],
+                                   [path.read_text(encoding="utf-8").splitlines() for path in sorted(log.iterdir())],
                                    str(fault), ir_bytes, single_module)
         steps.append(backend)
         print(backend_line(backend), flush=True)
@@ -209,7 +209,7 @@ def sanitize_compiler(args, steps):
             instrumentation.update(chunk_objects_linked=linked,
                                    chunked_backend_by_default=None if linked is None else linked > 0)
             pathlib.Path(root, "instrumentation.json").write_text(
-                json.dumps(instrumentation, indent=2) + "\n")
+                json.dumps(instrumentation, indent=2) + "\n", encoding="utf-8")
         observed = run_step("compiler-asan-fault-reach" + label, [str(fault), "--version"],
                             args.out, 60, steps, env=env, expected_sanitizer=True)
         reach = reach and backend["status"] == "passed" and observed["status"] == "passed"
@@ -221,10 +221,10 @@ def sanitize_compiler(args, steps):
     if built["status"] != "passed":
         return False
     source = root / "clean.b"
-    source.write_text("fn main() {\n    let x: int = (1 + (2 * 3))\n}\n")
+    source.write_text("fn main() {\n    let x: int = (1 + (2 * 3))\n}\n", encoding="utf-8")
     checked = run_step("compiler-asan-clean", [str(clean), "check", str(source)],
                        args.out, 60, steps, env=env)
-    source.write_text("fn main() { let x: int = " + "(" * 256 + "1" + ")" * 256 + " }\n")
+    source.write_text("fn main() { let x: int = " + "(" * 256 + "1" + ")" * 256 + " }\n", encoding="utf-8")
     nested = run_step("compiler-asan-nested-clean", [str(clean), "check", str(source)],
                       args.out, 120, steps, env=env)
     return reach and checked["status"] == "passed" and nested["status"] == "passed"
@@ -237,7 +237,7 @@ def replay_failures(args, roots, steps):
             if str(meta_path.resolve()) in seen:
                 continue
             seen.add(str(meta_path.resolve()))
-            meta = json.loads(meta_path.read_text())
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
             syntax = "syntax_case" in meta.get("configuration", {})
             script = "tools/syntax_fuzz.py" if syntax else "tools/differential_fuzz.py"
             cmd = [sys.executable, script, "--beansc", args.beansc,
@@ -250,7 +250,7 @@ def replay_failures(args, roots, steps):
             run_step("replay-{}-{}".format(len(seen), meta_path.parent.name), cmd,
                      args.out, 600, steps, expect_reproduced=True)
             reduced_meta = meta_path.parent / "reduced_meta.json"
-            if reduced_meta.exists() and not json.loads(reduced_meta.read_text()).get("preserved", True):
+            if reduced_meta.exists() and not json.loads(reduced_meta.read_text(encoding="utf-8")).get("preserved", True):
                 # The reducer said so itself: this shrink did not keep the
                 # failure, so it is not evidence and is not replayed as such.
                 row = {"name": "replay-reduced-{}-{}".format(len(seen), meta_path.parent.name),
@@ -294,7 +294,7 @@ def main():
         ok = sanitize_compiler(args, steps)
         pathlib.Path(args.out, "sanitizer-report.json").write_text(json.dumps({
             "status": "passed" if ok else "blocked", "compiler": evidence,
-            "steps": steps, "seconds": time.monotonic() - started}, indent=2) + "\n")
+            "steps": steps, "seconds": time.monotonic() - started}, indent=2) + "\n", encoding="utf-8")
         return int(not ok)
     common = ["--beansc", args.beansc, "--seed", str(args.seed)]
     run_step("harness", [sys.executable, "tools/syntax_fuzz.py", "--self-test"],
@@ -365,9 +365,9 @@ def main():
             missing.append("final frontend/LSP/core/self-host/fixed-point gates not run")
         else:
             for name, cmd in (
-                ("diagnostics", ["bash", "test/diagnostics.sh"]),
-                ("parser-recovery", ["bash", "test/parse_recovery.sh"]),
-                ("lsp", ["bash", "test/lsp_navigation.sh"]),
+                ("diagnostics", [os.environ.get("BASH", "bash"), "test/diagnostics.sh"]),
+                ("parser-recovery", [os.environ.get("BASH", "bash"), "test/parse_recovery.sh"]),
+                ("lsp", [os.environ.get("BASH", "bash"), "test/lsp_navigation.sh"]),
                 ("frontend", ["make", "test-frontend"]),
                 ("core", ["make", "test-core"]),
                 ("self-host", ["make", "test-self-host"]),
@@ -377,8 +377,9 @@ def main():
             if not sanitize_compiler(args, steps):
                 missing.append("compiler sanitizer instrumentation/reach gate did not pass")
     if not args.smoke and not args.skip_final_gates:
-        context_env = dict(os.environ, BEANS_DISCOVERY_CONTEXT="1")
-        run_step("lsp-context", ["bash", "test/lsp_navigation.sh"], args.out, 600, steps, env=context_env)
+        context_env = dict(os.environ, BEANS_DISCOVERY_CONTEXT="1",
+                           BEANSC=str(pathlib.Path(args.beansc).resolve()))
+        run_step("lsp-context", [os.environ.get("BASH", "bash"), "test/lsp_navigation.sh"], args.out, 600, steps, env=context_env)
     elif not args.smoke:
         missing.append("LSP relatedInformation context gate not run")
     if any(s["status"] == "incomplete" for s in steps):
@@ -393,7 +394,7 @@ def main():
               "missing_evidence": missing, "seconds": time.monotonic() - started,
               "host": {"system": platform.system(), "machine": platform.machine()},
               "matrix_required": ["Linux-x86_64", "Darwin-arm64", "Windows-AMD64"]}
-    pathlib.Path(args.out, "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    pathlib.Path(args.out, "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     summary = ["# Compiler {} evidence".format(report["kind"]), "", "Status: **{}**".format(status),
                "", "Compiler revision: `{}`; binary SHA-256: `{}`.".format(
                    evidence["revision"], evidence["sha256"]), "",
@@ -408,7 +409,7 @@ def main():
         completed, soak_seconds, replays), "", "Remaining evidence:"]
     summary += ["- " + item for item in missing] or ["- None within this run's scope."]
     summary += ["", "A passing smoke or single-host report is not cross-platform release acceptance.", ""]
-    pathlib.Path(args.out, "report.md").write_text("\n".join(summary))
+    pathlib.Path(args.out, "report.md").write_text("\n".join(summary), encoding="utf-8")
     print("compiler campaign {}: {} -> {}/report.json".format(report["kind"], status, args.out))
     return 1 if failures else 2 if missing else 0
 

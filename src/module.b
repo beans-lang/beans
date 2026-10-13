@@ -2049,7 +2049,10 @@ class ModuleLoader {
         self.kind = "application"
     }
 
-    fn load(entry: string) -> bool {
+    fn load(written_entry: string) -> bool {
+        // std.path consumes forward slashes; native Windows argv can use both.
+        // Preserve dots and the rest of the spelling used by editor overlays.
+        let entry: string = written_entry.replace("\\", "/")
         self.root = self.find_root(entry)
         if self.root == "" {
             if self.locked || self.offline {
