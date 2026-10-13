@@ -117,6 +117,7 @@ agree_with_args() {
 echo "checking the two backends answer alike and work alike"
 agree test/cases/parity/float_remainder.b
 agree test/cases/parity/literal_divisor.b
+agree test/cases/parity/bytes_element_bounds.b
 agree test/cases/parity/map_move_only_get.b
 agree test/cases/parity/default_effects.b 5
 agree test/cases/parity/interface_upcast.b 6
@@ -404,7 +405,7 @@ agree test/cases/parity/json_typed_decode.b
 
 # Every case in the directory has to be listed above with its own expected
 # count; a file added and forgotten would otherwise be silently unchecked.
-listed=64
+listed=65
 present=$(find test/cases/parity -name '*.b' | wc -l | tr -d ' ')
 if [ "$present" != "$listed" ]; then
     echo "test/cases/parity holds $present cases but $listed are run" >&2

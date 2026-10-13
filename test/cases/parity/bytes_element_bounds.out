@@ -1,0 +1,11 @@
+bytes 44 255 9 255
+read -1: runtime panic at 11:16: byte index -1 out of range (len 4)
+write -1: runtime panic at 15:9: byte index -1 out of range (len 4)
+set -1: runtime panic at 20:13: byte index -1 out of range (len 4)
+read 4: runtime panic at 11:16: byte index 4 out of range (len 4)
+write 4: runtime panic at 15:9: byte index 4 out of range (len 4)
+set 4: runtime panic at 20:13: byte index 4 out of range (len 4)
+read 1000: runtime panic at 11:16: byte index 1000 out of range (len 4)
+write 1000: runtime panic at 15:9: byte index 1000 out of range (len 4)
+set 1000: runtime panic at 20:13: byte index 1000 out of range (len 4)
+still 44 255 9 255 len 4

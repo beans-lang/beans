@@ -2777,6 +2777,37 @@ partial class LlvmTextEmitter {
         return "{output}  br label %sequence.get.merge{merge}\nsequence.get.missing{missing}:\n  br label %sequence.get.merge{merge}\nsequence.get.merge{merge}:\n  {result} = phi {option} [ {present}, %sequence.get.have{have} ], [ {absent}, %sequence.get.missing{missing} ]\n"
     }
 
+    // `bytes[i]`, `bytes[i] = v` and `bytes.set(i, v)`, inline: a length
+    // check and one byte access, the shape `bytes.get(i)` already had. The
+    // runtime functions they called live in a separately compiled unit, so
+    // nothing could inline them, and a sieve paid a call for every store.
+    // An index out of range still calls the runtime function, which raises
+    // the panic with the message and position it always had.
+    fn emit_bytes_element(
+        function: MirFunction,
+        instruction: MirInstruction,
+        values: Map<int, string>,
+        row: RuntimeBuiltin) -> string {
+        self.require_builtin_declare(row, true)
+        let receiver: string = self.value(
+            function, values, instruction.operands[0], instruction)
+        let index: string = self.value(
+            function, values, instruction.operands[1], instruction)
+        let id: int = self.fresh()
+        let output: string =
+            "  %bytes.len.ptr{id} = getelementptr i8, ptr {receiver}, i64 8\n  %bytes.len{id} = load i64, ptr %bytes.len.ptr{id}\n  %bytes.ok{id} = icmp ult i64 {index}, %bytes.len{id}\n  br i1 %bytes.ok{id}, label %bytes.have{id}, label %bytes.out{id}\nbytes.out{id}:\n"
+        let position: string =
+            "i64 {instruction.line}, i64 {instruction.col}"
+        if row.symbol == "beans_bytes_set" {
+            let byte: string = self.value(
+                function, values, instruction.operands[2], instruction)
+            return "{output}  call void @beans_bytes_set(ptr {receiver}, i64 {index}, i64 {byte}, {position})\n  unreachable\nbytes.have{id}:\n  %bytes.data{id} = load ptr, ptr {receiver}\n  %bytes.slot{id} = getelementptr i8, ptr %bytes.data{id}, i64 {index}\n  %bytes.byte{id} = trunc i64 {byte} to i8\n  store i8 %bytes.byte{id}, ptr %bytes.slot{id}\n"
+        }
+        let result: string = "%v{instruction.result}"
+        values[instruction.result] = result
+        return "{output}  %bytes.refused{id} = call i64 @beans_bytes_get(ptr {receiver}, i64 {index}, {position})\n  unreachable\nbytes.have{id}:\n  %bytes.data{id} = load ptr, ptr {receiver}\n  %bytes.slot{id} = getelementptr i8, ptr %bytes.data{id}, i64 {index}\n  %bytes.byte{id} = load i8, ptr %bytes.slot{id}\n  {result} = zext i8 %bytes.byte{id} to i64\n"
+    }
+
     fn emit_map_index(
         function: MirFunction,
         instruction: MirInstruction,

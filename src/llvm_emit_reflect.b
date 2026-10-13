@@ -546,6 +546,12 @@ partial class LlvmTextEmitter {
                 "LLVM emitter does not support builtin '{instruction.resolved}' yet")
             return ""
         }
+        if has_receiver &&
+           (row.symbol == "beans_bytes_get" ||
+            row.symbol == "beans_bytes_set") {
+            return self.emit_bytes_element(
+                function, instruction, values, row)
+        }
         self.require_builtin_declare(
             row, has_receiver)
         var arguments: List<string> = []
