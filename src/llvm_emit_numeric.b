@@ -387,6 +387,25 @@ partial class LlvmTextEmitter {
         result: string,
         modulo: bool) -> string {
         let llvm: string = self.type_text(type)
+        // A literal divisor answers both run-time questions here: it is not
+        // zero, and unless it is -1 it cannot meet the signed minimum. An
+        // unoptimized build folds nothing, so `x % 1000000007` used to run two
+        // compares and four extra blocks on every operation.
+        match right.to_int() {
+            ok(divisor) => {
+                if divisor != 0 &&
+                   (llvm_type_is_unsigned(type) || divisor != -1) {
+                    let opcode: string =
+                        if llvm_type_is_unsigned(type) {
+                            if modulo { "urem" } else { "udiv" }
+                        } else {
+                            if modulo { "srem" } else { "sdiv" }
+                        }
+                    return "  {result} = {opcode} {llvm} {left}, {right}\n"
+                }
+            }
+            err(error) => {}
+        }
         let guard: int = self.fresh()
         let zero_block: int = self.fresh()
         let nonzero_block: int = self.fresh()
