@@ -343,11 +343,17 @@ def main():
             # process runner; arbitrary mutations carry no must-reject claim.
             if time.monotonic() >= deadline:
                 break
+            stress_out = os.path.join(args.out, "syntax-stress", str(completed))
             run_step("syntax-stress-" + str(completed),
                      [sys.executable, "tools/syntax_fuzz.py", "--beansc", args.beansc,
                       "--seed", str(args.seed + completed), "--mutations-only", "--out",
-                      os.path.join(args.out, "syntax-stress", str(completed))],
+                      stress_out],
                      args.out, 300, steps)
+            # work/ is scratch: about 150 case sources per iteration. Failures
+            # are saved under failures/, which is all that replay reads. Kept,
+            # a two-hour soak left about 200,000 files in the evidence, and the
+            # macOS and Windows replay hosts could not download and unpack it.
+            shutil.rmtree(os.path.join(stress_out, "work"), ignore_errors=True)
     soak_seconds = time.monotonic() - soak_started
     replays = replay_failures(args, [syntax, semantic, os.path.join(args.out, "syntax-stress")]
                              + args.replay_root, steps)
