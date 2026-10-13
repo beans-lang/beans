@@ -3058,7 +3058,11 @@ def run_proc(cmd, timeout, cwd=None, input_bytes=None, max_output_bytes=4 * 1024
             except BrokenPipeError:
                 pass
         while p.poll() is None:
-            if stdout.tell() + stderr.tell() > max_output_bytes:
+            # Measure with fstat, not tell(): the child shares these files'
+            # position, and Windows implements tell() as read-then-set. A child
+            # write between the two is overwritten by the next one, which
+            # silently dropped a newline from a diagnostic.
+            if os.fstat(stdout.fileno()).st_size + os.fstat(stderr.fileno()).st_size > max_output_bytes:
                 kind = "output-limit"
                 break
             if time.monotonic() - started >= timeout:
