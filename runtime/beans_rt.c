@@ -12696,7 +12696,13 @@ long long beans_time_monotonic_nanos(void) {
     return fiber_now();
 #else
     struct timespec ts;
+#if defined(__APPLE__) && defined(CLOCK_MONOTONIC_RAW)
+    // Darwin's CLOCK_MONOTONIC is commonly quantized to microseconds. RAW keeps
+    // the same sleep-inclusive monotonic meaning with the clock's finer resolution.
+    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+#else
     clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
     return (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
 #endif
 }

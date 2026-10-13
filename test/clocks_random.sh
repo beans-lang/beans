@@ -53,6 +53,32 @@ PY
 clang -std=c11 "$tmp/windows_clock.c" -o "$tmp/windows_clock"
 "$tmp/windows_clock"
 
+if [[ "$(uname -s)" == Darwin ]]; then
+    echo "checking Darwin monotonic readings keep sub-microsecond resolution"
+    cat >"$tmp/darwin_resolution.b" <<'DARWIN_CLOCK'
+import std.io
+import std.time
+fn main() {
+    var fine: int = 0
+    var i: int = 0
+    for i < 5000 {
+        let before: int = time.monotonic_nanos()
+        let after: int = time.monotonic_nanos()
+        let delta: int = after - before
+        if delta > 0 && delta % 1000 != 0 { fine += 1 }
+        i += 1
+    }
+    io.println("observed a non-microsecond delta {fine > 0}")
+}
+DARWIN_CLOCK
+    ./build/beansc run "$tmp/darwin_resolution.b" >"$tmp/darwin_resolution.interp"
+    ./build/beansc build "$tmp/darwin_resolution.b" -o "$tmp/darwin_resolution" \
+        >"$tmp/darwin_resolution.build.log" 2>&1
+    "$tmp/darwin_resolution" >"$tmp/darwin_resolution.native"
+    diff -u "$tmp/darwin_resolution.interp" "$tmp/darwin_resolution.native"
+    grep -q '^observed a non-microsecond delta true$' "$tmp/darwin_resolution.interp"
+fi
+
 echo "checking clocks and secure random in both backends"
 ./build/beansc run examples/clocks_random.b >"$tmp/interp"
 ./build/beansc build examples/clocks_random.b -o "$tmp/native" >"$tmp/build.log" 2>&1
