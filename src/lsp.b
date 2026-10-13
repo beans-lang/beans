@@ -103,7 +103,24 @@ fn lsp_uri_path(uri: string) -> string {
         bytes.push(byte)
         index += 1
     }
-    return bytes.to_string()
+    let decoded: string = bytes.to_string()
+    // file:///C:/dir, or file:///c%3A/dir from VS Code, names the Windows
+    // path C:/dir, which absolute_local_path already treats as absolute.
+    // Keeping the authority's slash would make it /C:/dir, which no Windows
+    // file call can open.
+    if lsp_drive_path(decoded, 1) && decoded.byte_at(0) == 47 {
+        return decoded.slice(1, decoded.len())
+    }
+    return decoded
+}
+
+// Whether `text` has a drive prefix such as `C:/` at byte `start`.
+fn lsp_drive_path(text: string, start: int) -> bool {
+    if text.len() < start + 3 { return false }
+    let letter: int = text.byte_at(start)
+    return ((letter >= 65 && letter <= 90) ||
+            (letter >= 97 && letter <= 122)) &&
+           text.byte_at(start + 1) == 58 && text.byte_at(start + 2) == 47
 }
 
 fn lsp_ident_byte(byte: int) -> bool {

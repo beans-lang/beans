@@ -49,10 +49,12 @@ fn lsp_span_location(text: string, file_path: string, line: int,
 
 // A `file://` URI with every byte outside the unreserved set percent-encoded,
 // so a path with spaces or non-ASCII characters round-trips through
-// `lsp_uri_path` unchanged.
+// `lsp_uri_path` unchanged. A Windows drive path keeps its colon and gets the
+// empty authority's slash: C:/dir becomes file:///C:/dir.
 fn lsp_file_uri(file_path: string) -> string {
     let source: string = absolute_local_path(file_path)
-    var out: string = "file://"
+    let drive: bool = lsp_drive_path(source, 0)
+    var out: string = if drive { "file:///" } else { "file://" }
     for index: int in 0..source.len() {
         let byte: int = source.byte_at(index)
         let unreserved: bool =
@@ -60,7 +62,7 @@ fn lsp_file_uri(file_path: string) -> string {
             (byte >= 65 && byte <= 90) ||
             (byte >= 97 && byte <= 122) ||
             byte == 45 || byte == 46 || byte == 95 ||
-            byte == 126 || byte == 47
+            byte == 126 || byte == 47 || (drive && index == 1)
         if unreserved {
             out = "{out}{lsp_byte_text(byte)}"
         } else {
