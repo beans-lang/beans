@@ -7,13 +7,14 @@ locally, then fixed in beansc 0.1.54.
 ## Answer
 
 Every gap on the dashboard had a cause in the compiler. Beans 0.1.54 closes
-five of them. Release builds of hash, fib, collatz, sieve and matmul now run
-level with C++, and so do the debug builds of hash and collatz, where Beans
-now beats C++ on collatz. In plain release builds Rust is within 1–6% of C++
-on every workload, so C++ parity there is also Rust parity.
+five of them. Release builds of hash, fib, collatz and matmul now run level
+with C++, and release sieve is within about 5%. Debug hash is level with
+C++, and Beans now beats C++ on debug collatz. In plain release builds Rust
+is within 1–6% of C++ on every workload, so C++ parity there is also Rust
+parity.
 
-Three gaps remain: debug matmul, the last few percent of sieve, and Rust's
-LTO fib. See [What is left](#what-is-left).
+Gaps remain in debug matmul, sieve (release and debug), and Rust's LTO fib.
+See [What is left](#what-is-left).
 
 ## Results
 
@@ -23,11 +24,12 @@ c59867f); "0.1.54" is with them.
 
 | Case | C++ | 0.1.53 | 0.1.54 |
 |---|---|---|---|
-| sieve, release | 320–333 | 502 | 333 |
+| sieve, release | 320–333 | 502 | 333–340 |
 | matmul, release | 16 | 54 | 16 |
 | fib, release + LTO | 176 | 202 | 179 |
 | hash, debug | 781 | 1090 | 787 |
 | collatz, debug | 457 | 500 | 340 |
+| sieve, debug | 552 | 957 | 668 |
 | matmul, debug | 317–330 | 485 | 448 |
 
 Release hash, fib and collatz were already level with C++ and did not change.
@@ -98,9 +100,12 @@ for arm64 targets now carry `align 16`.
   builds too, but the rest of the gap is not explained. Loading elements as
   `double` instead of `i64` plus a bitcast was tried and made no difference
   at `-O0`.
-- **Sieve**, about 3% behind C++ in some runs. The outer loop's step is the
-  prime, and the inner loop starts at its square, so each prime pays one
-  range test. C++ pays nothing.
+- **Release sieve**, 333–340 vs 321–327 ms, so 3–5% behind C++. The cause
+  is not confirmed. One cost C++ does not have: each prime's marking loop
+  pays one range test before it starts.
+- **Debug sieve**, 668 vs 552 ms against local C++. The dashboard's C++
+  debug sieve is slower than this one, and Beans already led it there
+  (0.84×), so this gap only shows against a `std::vector<uint8_t>` sieve.
 - **Negative literal divisors.** `x / -7` lowers as `x / (0 - 7)`, so it
   keeps the run-time checks. Debug builds only.
 - **Rust LTO fib** is 6% faster than C++ LTO fib (172 vs 182 ms on the
@@ -119,7 +124,7 @@ for arm64 targets now carry `align 16`.
   dashboard's sieve uses `std::vector<bool>` or nested vectors.
 - Rust is not installed on this machine. Rust figures come from the dashboard.
 - For part of the work this machine shared its CPU with a busy virtual
-  machine. The table uses runs taken while it was quiet. A sweep under load
+  machine. The table uses the quietest runs. A sweep under load
   moved even the C++ times by up to 3×, so only ratios from the same run are
   comparable.
 - Measured on Apple M4 only. The guards and divide changes are
