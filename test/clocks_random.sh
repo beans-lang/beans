@@ -134,20 +134,31 @@ grep -q '^never went backwards over 2000 reads true$' "$tmp/clocks.interp"
 
 echo "checking sleep_nanos is a floor, not an estimate"
 # A signal must not shorten it. Measured with the monotonic clock, which is what it
-# is for.
+# is for. A brewed fiber sleeps on the scheduler's deadline clock instead, and
+# microsecond sleeps there expose any gap between that clock and the measuring one:
+# on Darwin a deadline on the microsecond CLOCK_MONOTONIC came back short by the raw
+# clock about one sleep in ten.
 cat >"$tmp/sleep.b" <<'SLEEP'
 import std.io
 import std.time
-fn main() {
-    var short_sleeps: int = 0
+fn short_sleeps(count: int, nanos: int) -> int {
+    var short: int = 0
     var i: int = 0
-    for i < 20 {
+    for i < count {
         let before: int = time.monotonic_nanos()
-        time.sleep_nanos(1000000)
-        if time.monotonic_nanos() - before < 1000000 { short_sleeps += 1 }
+        time.sleep_nanos(nanos)
+        if time.monotonic_nanos() - before < nanos { short += 1 }
         i += 1
     }
-    io.println("no sleep came back early {short_sleeps == 0}")
+    return short
+}
+fn main() {
+    io.println("no sleep came back early {short_sleeps(20, 1000000) == 0}")
+    let fiber: Brew<int> = brew short_sleeps(5000, 1000)
+    match fiber.join() {
+        ok(short) => io.println("no fiber sleep came back early {short == 0}"),
+        err(e) => io.println("fiber failed: {e.msg}"),
+    }
 }
 SLEEP
 ./build/beansc run "$tmp/sleep.b" >"$tmp/sleep.interp"
@@ -155,6 +166,7 @@ SLEEP
 "$tmp/sleep" >"$tmp/sleep.native"
 diff -u "$tmp/sleep.interp" "$tmp/sleep.native"
 grep -q '^no sleep came back early true$' "$tmp/sleep.interp"
+grep -q '^no fiber sleep came back early true$' "$tmp/sleep.interp"
 
 echo "checking the millisecond clocks live in std.time and match the nanosecond ones"
 # The millisecond clocks moved out of std.os, where their names said nothing about

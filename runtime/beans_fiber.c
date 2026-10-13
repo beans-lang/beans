@@ -711,7 +711,14 @@ static long long fiber_now(void) {
                        frequency.QuadPart);
 #else
     struct timespec ts;
+#if defined(__APPLE__) && defined(CLOCK_MONOTONIC_RAW)
+    // Same clock as std.time.monotonic_nanos: a deadline on the microsecond
+    // CLOCK_MONOTONIC can fall due before the raw clock has moved the full
+    // duration, so a timed sleep would measure short.
+    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+#else
     clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
     return (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
 #endif
 }
