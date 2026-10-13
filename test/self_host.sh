@@ -302,9 +302,9 @@ cmp "$tmp/self-host.first.ll" "$tmp/self-host.second.ll"
 grep -q '^target triple = "' "$tmp/self-host.first.ll"
 grep -q '^@beans_deinit_sel = global i64 -1$' \
     "$tmp/self-host.first.ll"
-grep -q '^define i64 @.next.fn0(i64 %arg0, i64 %arg1) {' \
+grep -Eq '^define i64 @[.]next[.]fn0[(]i64 %arg0, i64 %arg1[)]( align [0-9]+)? [{]' \
     "$tmp/self-host.first.ll"
-grep -q '^define i32 @main(i32 %beans.argc, ptr %beans.argv) {' \
+grep -Eq '^define i32 @main[(]i32 %beans[.]argc, ptr %beans[.]argv[)]( align [0-9]+)? [{]' \
     "$tmp/self-host.first.ll"
 # MIR phis lower to stack slots stored on the taken edge, so the
 # join reads a load rather than an LLVM phi

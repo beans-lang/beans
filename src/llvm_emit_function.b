@@ -2050,6 +2050,18 @@ partial class LlvmTextEmitter {
         // carries only what the emitter wrote.
         let unwind_attribute: string =
             if self.unwind_enabled() { " uwtable" } else { "" }
+        // An LTO link lays arm64 functions out on 4-byte boundaries: a
+        // recursive fib compiled to the same instructions as the release
+        // build, started at ...754 instead of ...7d0, and ran 25% slower.
+        // clang already gives each function 16 bytes when it compiles a file
+        // for arm64; saying so in the IR keeps that true at link time. x86-64
+        // aligns functions to 16 already.
+        let align_attribute: string =
+            if self.program.target.arch == "arm64" {
+                " align 16"
+            } else {
+                ""
+            }
         // A `contained` catch pad is a landing pad too, and a landing pad
         // without a personality does not verify, so the definition names one
         // whether the frame's own cleanup pad was used or the catch pad was.
@@ -2061,7 +2073,7 @@ partial class LlvmTextEmitter {
                 ""
             }
         var output: string =
-            "; {display_symbol(function.name)}\ndefine {result_type} {symbol}({parameters.join(", ")}){unwind_attribute}{feature_attribute}{self.debug_function_attribute()}{personality}{self.debug_function_metadata(subprogram)} \{\nentry:\n"
+            "; {display_symbol(function.name)}\ndefine {result_type} {symbol}({parameters.join(", ")}){unwind_attribute}{feature_attribute}{self.debug_function_attribute()}{align_attribute}{personality}{self.debug_function_metadata(subprogram)} \{\nentry:\n"
         if is_main {
             // `beans_module_start` rather than the initializers inline. A
             // program reaches them here and nothing about its startup moves;

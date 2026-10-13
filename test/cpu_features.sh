@@ -105,7 +105,7 @@ echo "checking only the marked function carries the permission"
 awk '
     /^; main[.]mix_fast$/ {
         getline
-        if ($0 ~ /^define i64 @[^ (]+\(.*\) "target-features"="\+aes" \{$/) {
+        if ($0 ~ /^define i64 @[^ (]+\(.*\) "target-features"="\+aes"( align [0-9]+)? \{$/) {
             found = 1
         }
     }

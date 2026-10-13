@@ -288,12 +288,12 @@ for ir_case in "${ir_cases[@]}"; do
     ir_defines=$((ir_defines + ir_count))
 done
 
-# A definition header can carry a target-features string, `uwtable` and a
-# personality routine, debug metadata, or none of them. The attribute has to
-# land after the plain attributes and before the personality and the `!dbg`,
-# because that is the order LLVM's grammar puts them in -- llvm_declaration_for
-# cuts a chunk's re-declaration at exactly those two markers for the same
-# reason. Each shape is asserted rather than assumed: putting the attribute in
+# A definition header can carry a target-features string, `uwtable`, an
+# alignment (arm64) and a personality routine, debug metadata, or none of them.
+# The attribute has to land after the plain attributes and before the
+# alignment, the personality and the `!dbg`, because that is the order LLVM's
+# grammar puts them in -- llvm_attribute_end finds that point for both the
+# splice and llvm_declaration_for's re-declaration. Each shape is asserted rather than assumed: putting the attribute in
 # the wrong place produces either IR clang refuses or, worse, IR it accepts
 # with the attribute somewhere that means nothing.
 want_shape() {   # <label> <file> <extended regex>
@@ -306,11 +306,11 @@ want_shape() {   # <label> <file> <extended regex>
     fi
 }
 want_shape "plain" "$ir/reflect_calls.asan.ll" \
-    '^define .*\) sanitize_address \{$'
+    '^define .*\) sanitize_address( align [0-9]+)? \{$'
 want_shape "unwinding" "$ir/brew_unwind_leak.asan.ll" \
-    '^define .* uwtable sanitize_address personality '
+    '^define .* uwtable sanitize_address( align [0-9]+)? personality '
 want_shape "feature-gated" "$ir/cpu_dispatch.asan.ll" \
-    '^define .*"target-features"="[^"]*" sanitize_address \{$'
+    '^define .*"target-features"="[^"]*" sanitize_address( align [0-9]+)? \{$'
 
 BEANS_SANITIZE=address,undefined ./build/beansc llvm --debug \
     test/cases/brew_unwind_leak.b >"$ir/brew_debug.asan.ll"

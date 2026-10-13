@@ -166,16 +166,10 @@ fn llvm_declaration_for(body: string,
         body.slice(offset + 7 + width, cut)
     // A definition that can unwind names its personality routine, and a
     // definition with debug info names its subprogram; neither belongs on a
-    // declaration (LLVM refuses both) so the header is cut before them.
+    // declaration (LLVM refuses both) so the header is cut before them. The
+    // function's alignment describes its body and goes with them.
     // Attributes (uwtable, frame-pointer) stay: a declaration may carry them.
-    for marker: string in [" personality ", " !dbg "] {
-        match header.find(marker) {
-            some(at) => {
-                header = header.slice(0, at)
-            }
-            none => {}
-        }
-    }
+    header = header.slice(0, llvm_attribute_end(header))
     var trimmed: int = header.len()
     for trimmed > 0 && header.byte_at(trimmed - 1) == 32 {
         trimmed -= 1
@@ -183,27 +177,44 @@ fn llvm_declaration_for(body: string,
     return "declare {header.slice(0, trimmed)}\n"
 }
 
-// One `define` header line with the attribute a sanitized build asks for
-// spliced into it.
-//
-// LLVM's grammar puts a definition's attribute list before its personality
-// routine and before the metadata attached to it, which is why
-// llvm_declaration_for cuts a declaration at exactly those two markers. The
-// attribute therefore goes in ahead of whichever of them appears first, and
-// with neither present just before the `{` that opens the body. Everything
-// else on the line: linkage, return type, parameters, `uwtable`, a
-// "target-features" string: is left where it was.
-fn llvm_sanitized_definition(line: string,
-                             attribute: string) -> string {
-    var cut: int = line.len()
-    for marker: string in [" personality ", " !dbg "] {
-        match line.find(marker) {
+// Where a definition header's attribute list ends, or the header's length
+// when nothing follows it. LLVM's grammar puts the function's alignment, its
+// personality routine and its attached metadata after the attributes, in that
+// order, so the list ends at whichever of them comes first. Only the text
+// past the parameter list is searched: a parameter's own `align` must never
+// be taken for the function's.
+fn llvm_attribute_end(header: string) -> int {
+    var parameters_end: int = header.len()
+    for parameters_end > 0 &&
+        header.byte_at(parameters_end - 1) != 41 {
+        parameters_end -= 1
+    }
+    let tail: string =
+        header.slice(parameters_end, header.len())
+    var cut: int = header.len()
+    for marker: string in [" align ", " personality ", " !dbg "] {
+        match tail.find(marker) {
             some(at) => {
-                if at < cut { cut = at }
+                if parameters_end + at < cut {
+                    cut = parameters_end + at
+                }
             }
             none => {}
         }
     }
+    return cut
+}
+
+// One `define` header line with the attribute a sanitized build asks for
+// spliced into it.
+//
+// The attribute goes where llvm_attribute_end says the attribute list ends,
+// and with nothing after the list, just before the `{` that opens the body.
+// Everything else on the line: linkage, return type, parameters, `uwtable`, a
+// "target-features" string: is left where it was.
+fn llvm_sanitized_definition(line: string,
+                             attribute: string) -> string {
+    var cut: int = llvm_attribute_end(line)
     if cut == line.len() {
         // Back over the opening brace and the space before it. The scan runs
         // from the end, so a `{` inside an anonymous-struct return type is
