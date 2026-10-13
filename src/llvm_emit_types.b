@@ -765,6 +765,7 @@ partial class LlvmTextEmitter {
         self.borrowed_local_of = {}
         self.borrowed_place_of = {}
         self.list_headers = {}
+        self.guard_slots = {}
         self.inout_addresses = {}
         self.field_init_names = {}
         self.defer_sites = []

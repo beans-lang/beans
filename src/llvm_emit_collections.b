@@ -575,8 +575,11 @@ partial class LlvmTextEmitter {
             self.list_header_len(instruction, list)
         let buffer: LlvmSlotConversion =
             self.list_header_data(instruction, list)
+        let check: LlvmSlotConversion =
+            self.bounds_condition(
+                instruction, index, length.value, "list.store.ok")
         var output: string =
-            "{length.setup}  %list.store.ok{id} = icmp ult i64 {index}, {length.value}\n  br i1 %list.store.ok{id}, label %list.store.have{okay}, label %list.store.bad{bad}\n"
+            "{length.setup}{check.setup}  br i1 {check.value}, label %list.store.have{okay}, label %list.store.bad{bad}\n"
         output =
             "{output}list.store.bad{bad}:\n  call void @beans_panic_index(i64 {index}, i64 {length.value}, i64 1, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\n"
         if self.list_element_inline(element) {
@@ -1763,6 +1766,15 @@ partial class LlvmTextEmitter {
                 "  %hdr.len{id} = load i64, ptr {cache.len}\n",
                 "%hdr.len{id}")
         }
+        if instruction.bounds_site >= 0 {
+            let slot: string =
+                self.guard_slot(
+                    instruction.bounds_guard,
+                    "{instruction.bounds_site}.len", "i64")
+            return new LlvmSlotConversion(
+                "  %hdr.guard.len{id} = load i64, ptr {slot}\n",
+                "%hdr.guard.len{id}")
+        }
         return new LlvmSlotConversion(
             "  %hdr.heap.len.ptr{id} = getelementptr i8, ptr {list}, i64 8\n  %hdr.heap.len{id} = load i64, ptr %hdr.heap.len.ptr{id}\n",
             "%hdr.heap.len{id}")
@@ -1779,6 +1791,15 @@ partial class LlvmTextEmitter {
             return new LlvmSlotConversion(
                 "  %hdr.data{id} = load ptr, ptr {cache.data}\n",
                 "%hdr.data{id}")
+        }
+        if instruction.bounds_site >= 0 {
+            let slot: string =
+                self.guard_slot(
+                    instruction.bounds_guard,
+                    "{instruction.bounds_site}.data", "ptr")
+            return new LlvmSlotConversion(
+                "  %hdr.guard.data{id} = load ptr, ptr {slot}\n",
+                "%hdr.guard.data{id}")
         }
         return new LlvmSlotConversion(
             "  %hdr.heap.data{id} = load ptr, ptr {list}\n",
@@ -2748,6 +2769,15 @@ partial class LlvmTextEmitter {
             self.require_declare("beans_str_len", "i64 @beans_str_len(ptr)")
             setup = "  {length} = call i64 @beans_str_len(ptr {receiver})\n"
             data = receiver
+        } else if instruction.bounds_site >= 0 {
+            let length_slot: LlvmSlotConversion =
+                self.list_header_len(instruction, receiver)
+            let data_slot: LlvmSlotConversion =
+                self.list_header_data(instruction, receiver)
+            setup = length_slot.setup
+            length = length_slot.value
+            load = data_slot.setup
+            data = data_slot.value
         } else {
             setup = "  %sequence.get.len.ptr{id} = getelementptr i8, ptr {receiver}, i64 8\n  {length} = load i64, ptr %sequence.get.len.ptr{id}\n"
             load = "  {data} = load ptr, ptr {receiver}\n"
@@ -2766,7 +2796,10 @@ partial class LlvmTextEmitter {
                 present = converted.value
             }
         }
-        var output: string = "{setup}  %sequence.get.ok{id} = icmp ult i64 {index}, {length}\n  br i1 %sequence.get.ok{id}, label %sequence.get.have{have}, label %sequence.get.missing{missing}\nsequence.get.have{have}:\n{load}{self.emit_arc_value(element, present, true)}"
+        let check: LlvmSlotConversion =
+            self.bounds_condition(
+                instruction, index, length, "sequence.get.ok")
+        var output: string = "{setup}{check.setup}  br i1 {check.value}, label %sequence.get.have{have}, label %sequence.get.missing{missing}\nsequence.get.have{have}:\n{load}{self.emit_arc_value(element, present, true)}"
         if !self.type_is_reference(element) {
             output = "{output}  %sequence.get.payload{id} = insertvalue {option} poison, {llvm} {present}, 1\n  %sequence.get.some{id} = insertvalue {option} %sequence.get.payload{id}, i1 true, 0\n"
             present = "%sequence.get.some{id}"
@@ -2775,6 +2808,114 @@ partial class LlvmTextEmitter {
             if self.type_is_reference(element) { "null" } else { "zeroinitializer" }
         values[instruction.result] = result
         return "{output}  br label %sequence.get.merge{merge}\nsequence.get.missing{missing}:\n  br label %sequence.get.merge{merge}\nsequence.get.merge{merge}:\n  {result} = phi {option} [ {present}, %sequence.get.have{have} ], [ {absent}, %sequence.get.missing{missing} ]\n"
+    }
+
+    // One value a bounds guard computes before its loop and its checks read
+    // inside it (analyze_bounds_guards, src/mir.b): `ok`, or a site's `data`
+    // or `len`. The preheader and a check may be emitted in either order, so
+    // whichever comes first makes the slot.
+    fn guard_slot(guard: int, name: string, llvm: string) -> string {
+        let key: string = "g{guard}.{name}"
+        match self.guard_slots.get(key) {
+            some(found) => { return found }
+            none => {}
+        }
+        let slot: string = self.spill_slot(llvm, "guard.{name}.")
+        self.guard_slots[key] = slot
+        return slot
+    }
+
+    // The condition a bounds check branches on: `index < length`, and for a
+    // guarded check `guard || index < length`. LLVM unswitches the loop on
+    // the invariant guard; in the copy where it holds the check is gone.
+    fn bounds_condition(instruction: MirInstruction,
+                        index: string,
+                        length: string,
+                        name: string) -> LlvmSlotConversion {
+        let id: int = self.fresh()
+        let compare: string =
+            "  %{name}{id} = icmp ult i64 {index}, {length}\n"
+        if instruction.bounds_site < 0 {
+            return new LlvmSlotConversion(compare, "%{name}{id}")
+        }
+        let slot: string =
+            self.guard_slot(instruction.bounds_guard, "ok", "i1")
+        return new LlvmSlotConversion(
+            "{compare}  %{name}.guard{id} = load i1, ptr {slot}\n  %{name}.pass{id} = or i1 %{name}.guard{id}, %{name}{id}\n",
+            "%{name}.pass{id}")
+    }
+
+    // A guard's postfix program (MirBoundsGuard) evaluated in the preheader:
+    // the same wrapping arithmetic over the same locals the loop reads.
+    fn guard_value(program: List<string>) -> LlvmSlotConversion {
+        var setup: string = ""
+        var stack: List<string> = []
+        for token: string in program {
+            if token.starts_with("#") {
+                stack.push(token.slice(1, token.len()))
+                continue
+            }
+            let id: int = self.fresh()
+            if token.starts_with("l") {
+                setup = "{setup}  %guard.local{id} = load i64, ptr %{token}\n"
+                stack.push("%guard.local{id}")
+                continue
+            }
+            let right: string = stack[stack.len() - 1]
+            stack.pop()
+            let left: string = stack[stack.len() - 1]
+            stack.pop()
+            let opcode: string =
+                if token == "+" {
+                    "add"
+                } else if token == "-" {
+                    "sub"
+                } else {
+                    "mul"
+                }
+            setup = "{setup}  %guard.arith{id} = {opcode} i64 {left}, {right}\n"
+            stack.push("%guard.arith{id}")
+        }
+        return new LlvmSlotConversion(setup, stack[stack.len() - 1])
+    }
+
+    // A preheader's guards, ahead of its jump into the loop. The counter
+    // starts at `start` and only steps up by `step` while below `limit`, so
+    // it stays in `[start, limit)`, and every guarded index into a site is
+    // in `[base + start, base + limit)`. That is in bounds when
+    //
+    //     start >= 0, base >= 0 and limit <= len - base,
+    //
+    // and `counter + step` cannot wrap while the counter is below the limit
+    // when `1 <= step <= MAX - limit`. Each comparison is written so it
+    // cannot overflow on the inputs where the others hold. A loop that
+    // starts at or past its limit never runs, so its guard holds too. The
+    // site's data and length are read here once: the loop cannot change them.
+    fn emit_bounds_guards(block: MirBlock) -> string {
+        var output: string = ""
+        for guard: MirBoundsGuard in block.bounds_guards {
+            let id: int = self.fresh()
+            let limit: LlvmSlotConversion = self.guard_value(guard.limit)
+            let step: LlvmSlotConversion = self.guard_value(guard.step)
+            output = "{output}  %guard.start{id} = load i64, ptr %l{guard.counter}\n{limit.setup}{step.setup}"
+            output = "{output}  %guard.empty{id} = icmp sge i64 %guard.start{id}, {limit.value}\n  %guard.from{id} = icmp sge i64 %guard.start{id}, 0\n  %guard.up{id} = icmp sge i64 {step.value}, 1\n  %guard.room{id} = sub i64 9223372036854775807, {limit.value}\n  %guard.short{id} = icmp sle i64 {step.value}, %guard.room{id}\n  %guard.counter{id} = and i1 %guard.from{id}, %guard.up{id}\n  %guard.all{id}.0 = and i1 %guard.counter{id}, %guard.short{id}\n"
+            var all: string = "%guard.all{id}.0"
+            for site_index: int in 0..guard.sites.len() {
+                let site: MirGuardSite = guard.sites[site_index]
+                let base: LlvmSlotConversion = self.guard_value(site.base)
+                let data_slot: string =
+                    self.guard_slot(guard.id, "{site_index}.data", "ptr")
+                let len_slot: string =
+                    self.guard_slot(guard.id, "{site_index}.len", "i64")
+                let tag: string = "{id}.{site_index}"
+                output = "{output}  %guard.header{tag} = load ptr, ptr %l{site.sequence}\n  %guard.data{tag} = load ptr, ptr %guard.header{tag}\n  store ptr %guard.data{tag}, ptr {data_slot}\n  %guard.len.ptr{tag} = getelementptr i8, ptr %guard.header{tag}, i64 8\n  %guard.len{tag} = load i64, ptr %guard.len.ptr{tag}\n  store i64 %guard.len{tag}, ptr {len_slot}\n{base.setup}"
+                output = "{output}  %guard.base{tag} = icmp sge i64 {base.value}, 0\n  %guard.fits{tag} = icmp sle i64 {limit.value}, %guard.len{tag}\n  %guard.rest{tag} = sub i64 %guard.len{tag}, {limit.value}\n  %guard.below{tag} = icmp sle i64 {base.value}, %guard.rest{tag}\n  %guard.site{tag} = and i1 %guard.base{tag}, %guard.fits{tag}\n  %guard.inside{tag} = and i1 %guard.site{tag}, %guard.below{tag}\n  %guard.all{id}.{site_index + 1} = and i1 {all}, %guard.inside{tag}\n"
+                all = "%guard.all{id}.{site_index + 1}"
+            }
+            let ok_slot: string = self.guard_slot(guard.id, "ok", "i1")
+            output = "{output}  %guard.ok{id} = or i1 %guard.empty{id}, {all}\n  store i1 %guard.ok{id}, ptr {ok_slot}\n"
+        }
+        return output
     }
 
     // `bytes[i]`, `bytes[i] = v` and `bytes.set(i, v)`, inline: a length
@@ -2794,18 +2935,31 @@ partial class LlvmTextEmitter {
         let index: string = self.value(
             function, values, instruction.operands[1], instruction)
         let id: int = self.fresh()
+        var length: LlvmSlotConversion = new LlvmSlotConversion(
+            "  %bytes.len.ptr{id} = getelementptr i8, ptr {receiver}, i64 8\n  %bytes.len{id} = load i64, ptr %bytes.len.ptr{id}\n",
+            "%bytes.len{id}")
+        var buffer: LlvmSlotConversion = new LlvmSlotConversion(
+            "  %bytes.data{id} = load ptr, ptr {receiver}\n",
+            "%bytes.data{id}")
+        if instruction.bounds_site >= 0 {
+            length = self.list_header_len(instruction, receiver)
+            buffer = self.list_header_data(instruction, receiver)
+        }
+        let check: LlvmSlotConversion =
+            self.bounds_condition(
+                instruction, index, length.value, "bytes.ok")
         let output: string =
-            "  %bytes.len.ptr{id} = getelementptr i8, ptr {receiver}, i64 8\n  %bytes.len{id} = load i64, ptr %bytes.len.ptr{id}\n  %bytes.ok{id} = icmp ult i64 {index}, %bytes.len{id}\n  br i1 %bytes.ok{id}, label %bytes.have{id}, label %bytes.out{id}\nbytes.out{id}:\n"
+            "{length.setup}{check.setup}  br i1 {check.value}, label %bytes.have{id}, label %bytes.out{id}\nbytes.out{id}:\n"
         let position: string =
             "i64 {instruction.line}, i64 {instruction.col}"
         if row.symbol == "beans_bytes_set" {
             let byte: string = self.value(
                 function, values, instruction.operands[2], instruction)
-            return "{output}  call void @beans_bytes_set(ptr {receiver}, i64 {index}, i64 {byte}, {position})\n  unreachable\nbytes.have{id}:\n  %bytes.data{id} = load ptr, ptr {receiver}\n  %bytes.slot{id} = getelementptr i8, ptr %bytes.data{id}, i64 {index}\n  %bytes.byte{id} = trunc i64 {byte} to i8\n  store i8 %bytes.byte{id}, ptr %bytes.slot{id}\n"
+            return "{output}  call void @beans_bytes_set(ptr {receiver}, i64 {index}, i64 {byte}, {position})\n  unreachable\nbytes.have{id}:\n{buffer.setup}  %bytes.slot{id} = getelementptr i8, ptr {buffer.value}, i64 {index}\n  %bytes.byte{id} = trunc i64 {byte} to i8\n  store i8 %bytes.byte{id}, ptr %bytes.slot{id}\n"
         }
         let result: string = "%v{instruction.result}"
         values[instruction.result] = result
-        return "{output}  %bytes.refused{id} = call i64 @beans_bytes_get(ptr {receiver}, i64 {index}, {position})\n  unreachable\nbytes.have{id}:\n  %bytes.data{id} = load ptr, ptr {receiver}\n  %bytes.slot{id} = getelementptr i8, ptr %bytes.data{id}, i64 {index}\n  %bytes.byte{id} = load i8, ptr %bytes.slot{id}\n  {result} = zext i8 %bytes.byte{id} to i64\n"
+        return "{output}  %bytes.refused{id} = call i64 @beans_bytes_get(ptr {receiver}, i64 {index}, {position})\n  unreachable\nbytes.have{id}:\n{buffer.setup}  %bytes.slot{id} = getelementptr i8, ptr {buffer.value}, i64 {index}\n  %bytes.byte{id} = load i8, ptr %bytes.slot{id}\n  {result} = zext i8 %bytes.byte{id} to i64\n"
     }
 
     fn emit_map_index(
@@ -3397,8 +3551,11 @@ partial class LlvmTextEmitter {
         let buffer: LlvmSlotConversion =
             self.list_header_data(
                 instruction, collection)
+        let check: LlvmSlotConversion =
+            self.bounds_condition(
+                instruction, index, length.value, "list.index.ok")
         var output: string =
-            "{length.setup}  %list.index.ok{id} = icmp ult i64 {index}, {length.value}\n  br i1 %list.index.ok{id}, label %list.index.have{okay}, label %list.index.bad{bad}\n"
+            "{length.setup}{check.setup}  br i1 {check.value}, label %list.index.have{okay}, label %list.index.bad{bad}\n"
         output =
             "{output}list.index.bad{bad}:\n  call void @beans_panic_index(i64 {index}, i64 {length.value}, i64 1, i64 {instruction.line}, i64 {instruction.col})\n  unreachable\n"
         if self.list_element_inline(element) {

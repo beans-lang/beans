@@ -98,6 +98,12 @@ class MirInstruction {
     // instead of the heap object, or -1. analyze_list_header_cache sets it
     // on every operation inside a loop it proved nobody else can reach.
     list_header_local: int
+    // The guard of the loop this index check runs in, or -1, and which of the
+    // guard's sites it reads. analyze_bounds_guards sets both on every check
+    // whose index it proved is `base + counter`, and the guard on the
+    // counter's increment, which the emitter may then mark as not wrapping.
+    bounds_guard: int
+    bounds_site: int
     // Carried from the checked HIR: this comparison is the `Order`/`Eq`
     // interface over a type parameter, not the operators of the type the
     // instantiation binds. Only float and f32 read differently under it.
@@ -139,6 +145,8 @@ class MirInstruction {
         self.type_argument_names = []
         self.type_arguments = []
         self.list_header_local = -1
+        self.bounds_guard = -1
+        self.bounds_site = -1
         self.total_order = false
     }
 }
@@ -191,6 +199,43 @@ class MirHeaderFlush {
     }
 }
 
+// A loop whose index checks one test before the loop can answer
+// (analyze_bounds_guards, src/mir.b). The loop is `for counter < limit`
+// with the counter stepping up by `step` once a turn, and every guarded
+// index into a site's sequence is `base + counter`. The limit, the step and
+// each base are postfix programs over int literals (`#7`) and int locals
+// the loop never writes (`l3`), joined by `+`, `-` and `*`, so the emitter
+// can evaluate them again before the loop. The guard rides the loop's
+// preheader, where that evaluation happens.
+class MirBoundsGuard {
+    id: int
+    counter: int
+    limit: List<string>
+    step: List<string>
+    sites: List<MirGuardSite>
+
+    fn init(id: int, counter: int,
+            move limit: List<string>, move step: List<string>) {
+        self.id = id
+        self.counter = counter
+        self.limit = move limit
+        self.step = move step
+        self.sites = []
+    }
+}
+
+// One List or Bytes local a guarded loop indexes, and the part of the index
+// that is not the counter.
+class MirGuardSite {
+    sequence: int
+    base: List<string>
+
+    fn init(sequence: int, move base: List<string>) {
+        self.sequence = sequence
+        self.base = move base
+    }
+}
+
 class MirBlock {
     id: int
     instructions: List<MirInstruction>
@@ -198,6 +243,7 @@ class MirBlock {
     reachable: bool
     edge_releases: List<MirEdgeRelease>
     header_flushes: List<MirHeaderFlush>
+    bounds_guards: List<MirBoundsGuard>
 
     fn init(id: int) {
         self.id = id
@@ -206,6 +252,7 @@ class MirBlock {
         self.reachable = false
         self.edge_releases = []
         self.header_flushes = []
+        self.bounds_guards = []
     }
 }
 

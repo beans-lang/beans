@@ -2024,6 +2024,9 @@ partial class LlvmTextEmitter {
                     values[instruction.result] = "poison"
                 }
             }
+            if block.bounds_guards.len() != 0 {
+                chunks.push(self.emit_bounds_guards(block))
+            }
             chunks.push(
                 self.unwind_chunk(
                     self.emit_terminator(

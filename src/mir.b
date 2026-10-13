@@ -4377,6 +4377,12 @@ class MirLowerer {
                 if read_inside && !inside { return false }
                 for use: MirPosition in uses {
                     if read_inside {
+                        // A bounds guard reads the header in its loop's
+                        // preheader (analyze_bounds_guards), and a cache
+                        // opened further out may not have written it back.
+                        if use.instruction.bounds_site >= 0 {
+                            return false
+                        }
                         if !self.list_header_cached_use(
                                instruction.result,
                                use.instruction) {
@@ -4872,6 +4878,550 @@ class MirLowerer {
                 instruction.effects = "none"
             }
         }
+    }
+
+    // ---- bounds guards ----
+    //
+    // A checked index is a second way out of a loop, and LLVM vectorizes and
+    // unrolls only loops with one. analyze_loop_bounds removes the check when
+    // it can prove the index in range from the source alone; most loops index
+    // with a bound only known when they run (`for j < n { c[i * n + j] = ... }`)
+    // and keep every check. C++ has none, so a matrix multiply ran 3x slower.
+    //
+    // Here the proof moves to run time. For a loop whose counter only steps
+    // up, every index of the form `base + counter` with `base` fixed for the
+    // whole loop stays in `[base + start, base + limit)`, so one test before
+    // the loop answers every check in it. The emitter evaluates that test in
+    // the preheader and each guarded check becomes `guard || index < len`:
+    // LLVM unswitches the loop on the invariant guard, and the copy where it
+    // holds has no checks left. Where it fails, the original checks run, so a
+    // panic happens at the same index, with the same message, after the same
+    // stores. The emitter also reads each guarded sequence's data and length
+    // once in the preheader: nothing the loop is allowed to do can move them.
+    //
+    // The loop may do nothing that could change a guarded sequence's length
+    // or a guard input behind the analysis' back: no calls, no pushes, no
+    // reference counting, no captures, only scalar arithmetic, index reads and
+    // index writes. Innermost loops go first, so a check is guarded by the
+    // loop it runs in most often.
+    fn analyze_bounds_guards(function: MirFunction) {
+        if function.declaration || function.external ||
+           function.blocks.len() == 0 {
+            return
+        }
+        var definitions: Map<int, MirInstruction> = {}
+        var predecessors: List<MirBlockEdges> = []
+        for unused: MirBlock in function.blocks {
+            predecessors.push(new MirBlockEdges())
+        }
+        for block: MirBlock in function.blocks {
+            if !block.reachable { continue }
+            for instruction: MirInstruction in block.instructions {
+                if !instruction.removed && instruction.result >= 0 {
+                    definitions[instruction.result] = instruction
+                }
+            }
+            for target: int in block.terminator.targets {
+                if target >= 0 && target < predecessors.len() {
+                    predecessors[target].sources.push(block.id)
+                }
+            }
+        }
+        let dominance: List<MirValueSet> =
+            self.dominators(function)
+        var heads: List<int> = []
+        var extents: List<int> = []
+        for head: MirBlock in function.blocks {
+            if !head.reachable { continue }
+            var back_edge: bool = false
+            for source: int in predecessors[head.id].sources {
+                if source >= 0 && source < dominance.len() &&
+                   dominance[source].contains(head.id) {
+                    back_edge = true
+                }
+            }
+            if !back_edge { continue }
+            let members: MirValueSet =
+                self.loop_blocks_of(
+                    function, predecessors, dominance, head.id)
+            var extent: int = 0
+            for member: MirBlock in function.blocks {
+                if members.contains(member.id) { extent += 1 }
+            }
+            heads.push(head.id)
+            extents.push(extent)
+        }
+        // Innermost first: the smallest loop around a check is the one it
+        // runs in most often.
+        for outer: int in 0..heads.len() {
+            var best: int = outer
+            for inner: int in outer..heads.len() {
+                if extents[inner] < extents[best] { best = inner }
+            }
+            let swap_head: int = heads[outer]
+            let swap_extent: int = extents[outer]
+            heads[outer] = heads[best]
+            extents[outer] = extents[best]
+            heads[best] = swap_head
+            extents[best] = swap_extent
+        }
+        var next_id: int = 0
+        for head: int in heads {
+            let members: MirValueSet =
+                self.loop_blocks_of(
+                    function, predecessors, dominance, head)
+            if self.bounds_guard_for(
+                   function, definitions, predecessors,
+                   dominance, members, head, next_id) {
+                next_id += 1
+            }
+        }
+    }
+
+    // Prove one loop and attach its guard to the preheader. True when a guard
+    // was attached.
+    fn bounds_guard_for(function: MirFunction,
+                        definitions: Map<int, MirInstruction>,
+                        predecessors: List<MirBlockEdges>,
+                        dominance: List<MirValueSet>,
+                        members: MirValueSet,
+                        head_id: int,
+                        id: int) -> bool {
+        let head: MirBlock = function.blocks[head_id]
+        if head.terminator.kind != "branch" ||
+           head.terminator.targets.len() != 2 ||
+           !members.contains(head.terminator.targets[0]) ||
+           members.contains(head.terminator.targets[1]) {
+            return false
+        }
+        // One way in and one way around: the preheader, whose only successor
+        // is the head, and the latch. A `continue` adds a second back edge,
+        // and then a turn could skip the step.
+        var preheader: int = -1
+        var latch: int = -1
+        for source: int in predecessors[head_id].sources {
+            if members.contains(source) {
+                if latch >= 0 { return false }
+                latch = source
+            } else {
+                if preheader >= 0 { return false }
+                preheader = source
+            }
+        }
+        if preheader < 0 || latch < 0 ||
+           !dominance[head_id].contains(preheader) {
+            return false
+        }
+        let entry: MirTerminator =
+            function.blocks[preheader].terminator
+        if entry.kind != "jump" || entry.targets.len() != 1 ||
+           entry.targets[0] != head_id {
+            return false
+        }
+        // `counter < limit` decides the head.
+        var condition: MirInstruction = new MirInstruction(
+            "", -1, new HirType("unit"), "", "", "", 0, 0)
+        match definitions.get(
+                  self.canonical_value(
+                      function, head.terminator.value)) {
+            some(found) => { condition = found }
+            none => { return false }
+        }
+        if condition.op != "binary" || condition.text != "<" ||
+           condition.operands.len() != 2 {
+            return false
+        }
+        var counter: int = -1
+        match definitions.get(
+                  self.canonical_value(
+                      function, condition.operands[0])) {
+            some(found) => {
+                if found.op == "borrow" { counter = found.local }
+            }
+            none => {}
+        }
+        if !self.guard_scalar_local(function, counter, "int") {
+            return false
+        }
+        // Everything the loop does, against the list of what it may do, and
+        // what it writes.
+        var written: Map<int, bool> = {}
+        var step_value: int = -1
+        var step_position: int = -1
+        for block: MirBlock in function.blocks {
+            if !members.contains(block.id) { continue }
+            for position: int in 0..block.instructions.len() {
+                let instruction: MirInstruction =
+                    block.instructions[position]
+                if instruction.removed { continue }
+                if !self.guard_allows(function, definitions, instruction) {
+                    return false
+                }
+                if instruction.local < 0 ||
+                   instruction.op == "borrow" {
+                    continue
+                }
+                written[instruction.local] = true
+                if instruction.local != counter { continue }
+                // The counter's one write: `+= step` in the latch.
+                if block.id != latch || step_value >= 0 ||
+                   instruction.op != "assign" ||
+                   instruction.text != "+=" ||
+                   instruction.operands.len() != 1 {
+                    return false
+                }
+                step_value = instruction.operands[0]
+                step_position = position
+            }
+        }
+        if step_value < 0 { return false }
+        // A read of the counter after the step sees the next turn's value,
+        // which the head has not checked yet.
+        let latch_block: MirBlock = function.blocks[latch]
+        for position: int in
+            (step_position + 1)..latch_block.instructions.len() {
+            let instruction: MirInstruction =
+                latch_block.instructions[position]
+            if !instruction.removed &&
+               instruction.op == "borrow" &&
+               instruction.local == counter {
+                return false
+            }
+        }
+        var limit: List<string> =
+            self.guard_program(
+                function, definitions, written,
+                condition.operands[1])
+        var step: List<string> =
+            self.guard_program(
+                function, definitions, written, step_value)
+        if limit.len() == 0 || step.len() == 0 { return false }
+        let guard: MirBoundsGuard =
+            new MirBoundsGuard(id, counter, move limit, move step)
+        for block: MirBlock in function.blocks {
+            if !members.contains(block.id) { continue }
+            for instruction: MirInstruction in block.instructions {
+                if instruction.removed ||
+                   instruction.bounds_guard >= 0 {
+                    continue
+                }
+                let sequence: int =
+                    self.guard_sequence(
+                        function, definitions, written, instruction)
+                if sequence < 0 { continue }
+                var base: List<string> =
+                    self.guard_offset(
+                        function, definitions, written, counter,
+                        instruction.operands[1])
+                if base.len() == 0 { continue }
+                let text: string = base.join(" ")
+                var site: int = -1
+                for index: int in 0..guard.sites.len() {
+                    if guard.sites[index].sequence == sequence &&
+                       guard.sites[index].base.join(" ") == text {
+                        site = index
+                    }
+                }
+                if site < 0 {
+                    site = guard.sites.len()
+                    guard.sites.push(
+                        new MirGuardSite(sequence, move base))
+                }
+                instruction.bounds_guard = id
+                instruction.bounds_site = site
+            }
+        }
+        if guard.sites.len() == 0 { return false }
+        for position: int in 0..latch_block.instructions.len() {
+            if position == step_position {
+                latch_block.instructions[position].bounds_guard = id
+            }
+        }
+        function.blocks[preheader].bounds_guards.push(guard)
+        return true
+    }
+
+    // A local the guard may read as a plain slot: never captured, never
+    // escaping, never split into fields, of the named type.
+    fn guard_scalar_local(function: MirFunction,
+                          local_id: int,
+                          type_name: string) -> bool {
+        if local_id < 0 || local_id >= function.locals.len() {
+            return false
+        }
+        let local: MirLocal = function.locals[local_id]
+        return local.type.name == type_name &&
+               !local.captured && !local.escapes &&
+               !local.scalar_replaced &&
+               local.scalar_replaced_owner < 0 &&
+               local.borrows_from < 0
+    }
+
+    fn guard_scalar_type(type: HirType) -> bool {
+        let name: string = canonical_hir_name(type.name)
+        return type.args.len() == 0 &&
+               (name == "int" || name == "float" ||
+                name == "bool" || name == "f32" ||
+                name == "f64" || name == "i8" ||
+                name == "i16" || name == "i32" ||
+                name == "i64" || name == "u8" ||
+                name == "u16" || name == "u32" ||
+                name == "u64")
+    }
+
+    // The List or Bytes local a sequence type names, when its elements are
+    // plain scalars.
+    fn guard_sequence_type(type: HirType) -> bool {
+        let name: string = canonical_hir_name(type.name)
+        if name == "Bytes" { return type.args.len() == 0 }
+        return name == "List" && type.args.len() == 1 &&
+               self.guard_scalar_type(type.args[0])
+    }
+
+    // What a guarded loop may contain. Anything that could call out, count
+    // references, allocate, or resize a sequence is refused outright.
+    fn guard_allows(function: MirFunction,
+                    definitions: Map<int, MirInstruction>,
+                    instruction: MirInstruction) -> bool {
+        if instruction.capture_locals.len() != 0 ||
+           instruction.closure_id >= 0 ||
+           instruction.cleanup_id >= 0 {
+            return false
+        }
+        let op: string = instruction.op
+        if op == "literal" || op == "binary" || op == "unary" ||
+           op == "cast" {
+            return self.guard_scalar_type(instruction.type)
+        }
+        if op == "borrow" {
+            if instruction.local < 0 ||
+               instruction.local >= function.locals.len() {
+                return false
+            }
+            let type: HirType = function.locals[instruction.local].type
+            return self.guard_scalar_type(type) ||
+                   self.guard_sequence_type(type)
+        }
+        if op == "local_init" {
+            if instruction.local < 0 ||
+               instruction.local >= function.locals.len() {
+                return false
+            }
+            return self.guard_scalar_type(
+                function.locals[instruction.local].type)
+        }
+        if op == "assign" {
+            if instruction.text.starts_with("index:") {
+                return instruction.text == "index::=" &&
+                       instruction.operands.len() == 3 &&
+                       self.guard_receiver(
+                           function, definitions,
+                           instruction.operands[0])
+            }
+            if instruction.local < 0 ||
+               instruction.local >= function.locals.len() {
+                return false
+            }
+            return self.guard_scalar_type(
+                function.locals[instruction.local].type)
+        }
+        if op == "index" {
+            return instruction.operands.len() == 2 &&
+                   self.guard_receiver(
+                       function, definitions,
+                       instruction.operands[0])
+        }
+        if op == "builtin_method" {
+            // Bytes.set replaces a byte; nothing here changes a length.
+            return (instruction.text == "len" ||
+                    instruction.text == "is_empty" ||
+                    instruction.text == "get" ||
+                    (instruction.text == "set" &&
+                     instruction.resolved == "Bytes.set")) &&
+                   instruction.operands.len() >= 1 &&
+                   self.guard_receiver(
+                       function, definitions,
+                       instruction.operands[0])
+        }
+        return false
+    }
+
+    // An operand that is a borrow of a plain List or Bytes local.
+    fn guard_receiver(function: MirFunction,
+                      definitions: Map<int, MirInstruction>,
+                      value: int) -> bool {
+        match definitions.get(self.canonical_value(function, value)) {
+            some(found) => {
+                if found.op != "borrow" || found.local < 0 ||
+                   found.local >= function.locals.len() {
+                    return false
+                }
+                let local: MirLocal = function.locals[found.local]
+                return self.guard_sequence_type(local.type) &&
+                       !local.captured && !local.escapes &&
+                       !local.scalar_replaced &&
+                       local.scalar_replaced_owner < 0
+            }
+            none => {}
+        }
+        return false
+    }
+
+    // The sequence local a checked index reads or writes, or -1: `xs[i]`,
+    // `xs[i] = v`, `xs.get(i)` and `bytes.set(i, v)`, on a sequence the loop
+    // never reassigns.
+    fn guard_sequence(function: MirFunction,
+                      definitions: Map<int, MirInstruction>,
+                      written: Map<int, bool>,
+                      instruction: MirInstruction) -> int {
+        let indexes: bool =
+            (instruction.op == "index" &&
+             instruction.operands.len() == 2) ||
+            (instruction.op == "assign" &&
+             instruction.text == "index::=" &&
+             instruction.operands.len() == 3) ||
+            (instruction.op == "builtin_method" &&
+             instruction.text == "get" &&
+             instruction.operands.len() == 2) ||
+            (instruction.op == "builtin_method" &&
+             instruction.text == "set" &&
+             instruction.resolved == "Bytes.set" &&
+             instruction.operands.len() == 3)
+        if !indexes { return -1 }
+        match definitions.get(
+                  self.canonical_value(
+                      function, instruction.operands[0])) {
+            some(found) => {
+                if found.op != "borrow" ||
+                   written.contains_key(found.local) ||
+                   !self.guard_receiver(
+                       function, definitions,
+                       instruction.operands[0]) {
+                    return -1
+                }
+                return found.local
+            }
+            none => {}
+        }
+        return -1
+    }
+
+    // A loop-invariant int as a postfix program; empty when it is not one.
+    fn guard_program(function: MirFunction,
+                     definitions: Map<int, MirInstruction>,
+                     written: Map<int, bool>,
+                     value: int) -> List<string> {
+        var program: List<string> = []
+        var definition: MirInstruction = new MirInstruction(
+            "", -1, new HirType("unit"), "", "", "", 0, 0)
+        match definitions.get(self.canonical_value(function, value)) {
+            some(found) => { definition = found }
+            none => { return move program }
+        }
+        if canonical_hir_name(definition.type.name) != "int" {
+            return move program
+        }
+        if definition.op == "literal" {
+            let text: string = definition.text
+            var digits: bool = text.len() != 0
+            for index: int in 0..text.len() {
+                let byte: int = text.byte_at(index)
+                if byte < 48 || byte > 57 { digits = false }
+            }
+            if digits { program.push("#{text}") }
+            return move program
+        }
+        if definition.op == "borrow" {
+            if !written.contains_key(definition.local) &&
+               self.guard_scalar_local(
+                   function, definition.local, "int") {
+                program.push("l{definition.local}")
+            }
+            return move program
+        }
+        if definition.op != "binary" ||
+           definition.operands.len() != 2 ||
+           (definition.text != "+" && definition.text != "-" &&
+            definition.text != "*") {
+            return move program
+        }
+        let left: List<string> =
+            self.guard_program(
+                function, definitions, written,
+                definition.operands[0])
+        let right: List<string> =
+            self.guard_program(
+                function, definitions, written,
+                definition.operands[1])
+        if left.len() == 0 || right.len() == 0 {
+            return move program
+        }
+        for token: string in left { program.push(token) }
+        for token: string in right { program.push(token) }
+        program.push(definition.text)
+        return move program
+    }
+
+    // For an index of the form `base + counter` (sums and differences with
+    // the counter added exactly once), `base` as a postfix program; empty for
+    // any other index. Integers wrap, and `+` and `-` stay associative under
+    // wrapping, so the base evaluated before the loop is the same base the
+    // loop adds the counter to.
+    fn guard_offset(function: MirFunction,
+                    definitions: Map<int, MirInstruction>,
+                    written: Map<int, bool>,
+                    counter: int,
+                    value: int) -> List<string> {
+        var program: List<string> = []
+        var definition: MirInstruction = new MirInstruction(
+            "", -1, new HirType("unit"), "", "", "", 0, 0)
+        match definitions.get(self.canonical_value(function, value)) {
+            some(found) => { definition = found }
+            none => { return move program }
+        }
+        if definition.op == "borrow" && definition.local == counter {
+            program.push("#0")
+            return move program
+        }
+        if definition.op != "binary" ||
+           definition.operands.len() != 2 ||
+           canonical_hir_name(definition.type.name) != "int" ||
+           (definition.text != "+" && definition.text != "-") {
+            return move program
+        }
+        // `offset + invariant` or `offset - invariant`
+        let left: List<string> =
+            self.guard_offset(
+                function, definitions, written, counter,
+                definition.operands[0])
+        if left.len() != 0 {
+            let right: List<string> =
+                self.guard_program(
+                    function, definitions, written,
+                    definition.operands[1])
+            if right.len() != 0 {
+                for token: string in left { program.push(token) }
+                for token: string in right { program.push(token) }
+                program.push(definition.text)
+            }
+            return move program
+        }
+        // `invariant + offset`
+        if definition.text != "+" { return move program }
+        let first: List<string> =
+            self.guard_program(
+                function, definitions, written,
+                definition.operands[0])
+        let second: List<string> =
+            self.guard_offset(
+                function, definitions, written, counter,
+                definition.operands[1])
+        if first.len() != 0 && second.len() != 0 {
+            for token: string in first { program.push(token) }
+            for token: string in second { program.push(token) }
+            program.push("+")
+        }
+        return move program
     }
 
     fn try_elide_iteration(function: MirFunction,
@@ -6677,6 +7227,7 @@ class MirLowerer {
             // Last: this one adds instructions and edge write-backs the
             // verifiers above have no rule for, and it reads the borrow
             // graph every pass before it has already settled.
+            self.analyze_bounds_guards(function)
             self.analyze_list_header_cache(function)
         }
         var closure_ids: Map<int, bool> = {}

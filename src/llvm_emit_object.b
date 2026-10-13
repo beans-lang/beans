@@ -3302,6 +3302,18 @@ partial class LlvmTextEmitter {
                     "{output}  %compound.shift{shift_id} = and {llvm} {right}, {mask}\n"
                 output =
                     "{output}  {result} = {opcode} {llvm} {left}, %compound.shift{shift_id}\n"
+            } else if instruction.bounds_guard >= 0 &&
+                      opcode == "add" {
+                // The step of a guarded loop: where the guard holds it
+                // proved the counter cannot pass its limit by more than one
+                // step, so the add cannot wrap, and `nsw` lets LLVM count
+                // the turns and unroll the copy of the loop the guard
+                // selects.
+                let slot: string =
+                    self.guard_slot(
+                        instruction.bounds_guard, "ok", "i1")
+                output =
+                    "{output}  %compound.nsw{result_id} = add nsw {llvm} {left}, {right}\n  %compound.wrap{result_id} = add {llvm} {left}, {right}\n  %compound.guard{result_id} = load i1, ptr {slot}\n  {result} = select i1 %compound.guard{result_id}, {llvm} %compound.nsw{result_id}, {llvm} %compound.wrap{result_id}\n"
             } else {
                 output =
                     "{output}  {result} = {opcode} {llvm} {left}, {right}\n"

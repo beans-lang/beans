@@ -84,6 +84,9 @@ partial class LlvmTextEmitter {
     borrowed_local_of: Map<int, int>
     borrowed_place_of: Map<int, LlvmBorrowedPlace>
     list_headers: Map<int, LlvmListHeader>
+    // Spill slots of the bounds guards in the function being emitted, by
+    // "g<id>.<name>" (guard_slot, src/llvm_emit_collections.b).
+    guard_slots: Map<string, string>
     inout_addresses: Map<int, bool>
     field_init_names: Map<int, string>
     cleanup_functions: Map<int, MirFunction>
@@ -298,6 +301,7 @@ partial class LlvmTextEmitter {
         self.borrowed_local_of = {}
         self.borrowed_place_of = {}
         self.list_headers = {}
+        self.guard_slots = {}
         self.inout_addresses = {}
         self.field_init_names = {}
         self.cleanup_functions = {}

@@ -200,6 +200,14 @@ fn render_mir(program: MirProgram) -> string {
                     detail =
                         "{detail} header-cache=l{instruction.list_header_local}"
                 }
+                if instruction.bounds_guard >= 0 {
+                    detail =
+                        if instruction.bounds_site >= 0 {
+                            "{detail} bounds-guard=g{instruction.bounds_guard}.{instruction.bounds_site}"
+                        } else {
+                            "{detail} bounds-guard=g{instruction.bounds_guard} step"
+                        }
+                }
                 if instruction.scalar_materialize {
                     detail =
                         "{detail} scalar-materialize"
@@ -244,6 +252,14 @@ fn render_mir(program: MirProgram) -> string {
                 block.header_flushes {
                 lines.push(
                     "    header_flush -> bb{flush.target} local=l{flush.local}")
+            }
+            for guard: MirBoundsGuard in block.bounds_guards {
+                var sites: List<string> = []
+                for site: MirGuardSite in guard.sites {
+                    sites.push("l{site.sequence}[({site.base.join(" ")}) + l{guard.counter}]")
+                }
+                lines.push(
+                    "    bounds_guard g{guard.id} l{guard.counter} < {guard.limit.join(" ")} step {guard.step.join(" ")}: {sites.join(", ")}")
             }
         }
     }

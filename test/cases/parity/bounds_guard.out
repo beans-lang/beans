@@ -1,0 +1,17 @@
+in range, ended at 6: 0 1 2 3 4 5
+past the end: runtime panic at 15:11: list index 6 out of range (len 6); kept: 0 1 2 3 4 5
+offset: runtime panic at 15:11: list index 6 out of range (len 6); kept: 0 0 0 0 1 2
+offset below zero: runtime panic at 15:11: list index -1 out of range (len 6); kept: 0 0 0 0 0 0
+start below zero: runtime panic at 15:11: list index -2 out of range (len 6); kept: 0 0 0 0 0 0
+wrapping step: runtime panic at 15:11: list index -9223372036854775808 out of range (len 6); kept: 0 1 0 0 0 0
+backward step: runtime panic at 15:11: list index -1 out of range (len 6); kept: 0 1 0 0 0 0
+step two ended at 6: 0 0 2 0 4 0
+never runs, ended at 7: 0 0 0 0 0 0
+total 21
+total shifted: runtime panic at 25:18: list index -1 out of range (len 6)
+ahead 20
+ahead to the end: runtime panic at 38:18: list index 6 out of range (len 6)
+marked 24
+marked past the end: runtime panic at 46:14: byte index 10 out of range (len 10); byte 5 is 8
+multiply 128
+multiply too wide: runtime panic at 67:54: list index 16 out of range (len 16)
