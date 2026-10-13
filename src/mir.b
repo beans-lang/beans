@@ -5231,6 +5231,12 @@ class MirLowerer {
                        function, definitions,
                        instruction.operands[0])
         }
+        if op == "builtin_method" &&
+           instruction.text == "or" &&
+           instruction.resolved.starts_with("Option<") {
+            // `xs.get(i).or(0)`: a default for a scalar payload
+            return self.guard_scalar_type(instruction.type)
+        }
         if op == "builtin_method" {
             // Bytes.set replaces a byte; nothing here changes a length.
             return (instruction.text == "len" ||
